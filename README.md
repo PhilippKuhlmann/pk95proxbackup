@@ -1,0 +1,157 @@
+# PK95 ProxBackup
+
+Backup-Appliance für Proxmox im Design von PK95 Core. Eine Debian-13-VM mit **Proxmox Backup Server**
+und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einrichtest:
+
+- **Sichern:** Sicherungsjobs in Proxmox VE anlegen, bearbeiten und sofort starten; einzelne VMs und
+  Container „jetzt sichern“; Übersicht, welche Gäste wann wohin gesichert wurden und welche in keinem Job sind.
+- **Wiederherstellen** aus jeder Sicherung als neuer Gast (das Original bleibt unberührt).
+- **Datastores** auf einer freien (virtuellen) Platte, einer **NFS-/SMB-Freigabe** oder in einem Verzeichnis,
+  mit Aufbewahrung (keep-last/daily/weekly/…), Prüfung (Verify) und Speicherfreigabe (Garbage Collection) nach Zeitplan.
+- **Vorhandener PBS:** weitere Backup-Server per API-Token einbinden; Kopierjobs zwischen den Servern (z. B. Außer-Haus-Kopie).
+- **PBS in Proxmox VE eintragen** mit einem Klick: Die Appliance legt auf dem PBS einen eigenen Token an, der nur diesen
+  Datastore benutzen darf, und trägt den Speicher in Proxmox VE ein.
+- **Wechselplatten (USB):** Sätze aus zwei oder mehr Platten, die täglich oder wöchentlich getauscht werden – am PBS
+  oder per USB-Durchreichung an dieser VM. Kopieren beim Anstecken und/oder zur Uhrzeit, aufräumen, aushängen,
+  Meldung „kann abgezogen werden“, Erinnerung, wenn eine Platte lange nicht dran war.
+- **Überwachung und Benachrichtigung** (E-Mail, ntfy, Gotify, Webhook): fehlgeschlagene Aufgaben, Server offline,
+  Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig.
+
+```
+Proxmox-VE-Host
+└─ VM pk95-backup (Debian 13)
+   ├─ Proxmox Backup Server   Port 8007 (eigene PBS-Oberfläche, root@pam)
+   ├─ PK95 ProxBackup         Port 443  (diese Oberfläche, spricht mit PBS und PVE über deren API)
+   ├─ /mnt/pk95/<freigabe>    NFS/SMB über systemd-Mount-Units
+   └─ USB-Platten             durchgereichter USB-Anschluss → Wechsel-Datastores
+```
+
+**Voraussetzungen:** Proxmox VE 8 oder 9, Proxmox Backup Server 4 (die Appliance installiert ihn selbst; ein
+vorhandener PBS sollte ebenfalls auf 4.x sein – Wechsel-Datastores und „beim Anstecken kopieren“ gibt es erst dort).
+
+## Installation auf Proxmox (ein Befehl)
+
+Auf dem **Proxmox-Host** als `root` in der Shell (Weboberfläche → Knoten → „Shell“):
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/PhilippKuhlmann/pk95proxbackup/main/install/proxmox.sh)"
+```
+
+Das Skript fragt Schritt für Schritt, Enter übernimmt den Vorschlag:
+
+```
+1. VM            VM-ID [nächste freie] · Hostname [pk95-backup]
+2. Ressourcen    Kerne [2] · RAM [4096] · Systemplatte [32 GB] · Datenplatte [0 = keine] · Speicher
+3. Netzwerk      Bridge · VLAN · IP mit Präfix oder dhcp · Gateway · DNS
+4. Zugang        root-Passwort (Konsole und PBS-Oberfläche) · SSH-Schlüssel des Hosts übernehmen
+```
+
+Danach lädt es das offizielle Debian-13-Cloud-Image (Prüfsumme wird geprüft), legt die VM an (q35, VirtIO,
+Gast-Agent, serielle Konsole, Datenplatte mit `backup=0`) und startet sie. Beim ersten Start installiert
+cloud-init darin Proxmox Backup Server und PK95 ProxBackup (`install/appliance.sh`). Am Ende stehen
+**Adresse und Einrichtungscode** im Terminal – der Code steht auch auf der Konsole der VM.
+
+Braucht cloud-init einen Speicher für „Snippets“ und gibt es keinen, bietet das Skript an, das beim Speicher
+`local` einzuschalten.
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `VMID`, `VM_HOSTNAME` | nächste freie, `pk95-backup` | |
+| `CORES` / `MEMORY` / `DISK` | `2` / `4096` / `32` | Kerne, RAM in MB, Systemplatte in GB |
+| `DATA_DISK` | `0` | Datenplatte für Sicherungen in GB (0 = keine) |
+| `STORAGE` | `local-lvm`, sonst `local-zfs` | Speicher für die Platten |
+| `BRIDGE` / `VLAN` / `IP` / `GW` / `DNS` | `vmbr0` / – / `dhcp` / – / – | Netzwerk |
+| `ROOT_PASSWORD` | wird erzeugt und angezeigt | root-Passwort der VM |
+| `SNIPPETS` | erster Speicher mit Snippets | Ablage für das cloud-init-Skript |
+
+### Auf einem vorhandenen Debian 13 oder PBS
+
+`install/appliance.sh` installiert (oder aktualisiert) die Appliance auf einem laufenden Debian 13 – auch direkt auf
+einem vorhandenen Proxmox Backup Server. PBS wird nur installiert, wenn er fehlt (`INSTALL_PBS=0` verhindert das).
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/PhilippKuhlmann/pk95proxbackup/main/install/appliance.sh)"
+```
+
+Erneut ausgeführt, holt das Skript die neueste Version.
+
+## Erste Schritte
+
+1. `https://<IP>` öffnen (selbst signiertes Zertifikat), Einrichtungscode eingeben, Konto anlegen.
+2. **Verbindungen → Proxmox VE hinzufügen.** Token auf einem Knoten anlegen:
+   `pveum user token add root@pam pk95 --privsep 0` – Token-ID `root@pam!pk95` und Secret eintragen,
+   Fingerabdruck mit „Abrufen“ holen und mit dem in PVE vergleichen.
+3. Der **PBS dieser Appliance** trägt sich selbst ein. Bei „Adresse für Proxmox VE“ die IP der VM prüfen.
+4. **Datastores → Datastore anlegen** (Datenplatte `sdb`, Freigabe oder Verzeichnis), Aufbewahrung festlegen.
+5. **Verbindungen → Backup-Speicher** beim Proxmox VE: den Datastore eintragen.
+6. **Sicherungsjobs → Job anlegen** (z. B. täglich 21:00, alles außer der Appliance selbst).
+7. Optional **Wechselplatten** und **Benachrichtigungen** einrichten.
+
+### Vorhandenen PBS einbinden
+
+Auf dem PBS:
+
+```bash
+proxmox-backup-manager user generate-token root@pam pk95
+proxmox-backup-manager acl update / Admin --auth-id 'root@pam!pk95'
+```
+
+Für NFS/SMB-Freigaben auf diesem PBS braucht die Appliance zusätzlich SSH (Schlüssel steht unter
+Einstellungen und im Server-Dialog). Datastores, Wechselplatten, Kopierjobs und Aufgaben laufen allein über die API.
+
+## Wechselplatten
+
+Jede Platte eines Satzes ist ein **Wechsel-Datastore** (removable datastore, PBS ≥ 3.3) mit einem Kopierjob vom
+Quell-Datastore (auch von einem anderen PBS). Ablauf:
+
+1. Platte anstecken – PBS hängt sie ein; mit „beim Anstecken kopieren“ startet die Kopie sofort, sonst zur Uhrzeit.
+2. Nach der Kopie räumt die Appliance auf der Platte nach den Regeln des Satzes auf, gibt einmal pro Woche Speicher frei
+   und hängt die Platte aus.
+3. „Fertig – abziehen“ erscheint (auf Wunsch als Benachrichtigung). Platte abziehen und außer Haus bringen.
+4. Erinnerung, wenn die letzte Kopie älter als der Wechselrhythmus ist oder eine Platte lange nicht dran war.
+
+**USB an dieser VM:** Unter Wechselplatten → „USB an diese VM durchreichen“ wird der **Anschluss** des Proxmox-Hosts
+durchgereicht (nicht das Gerät). Jede Platte, die später in diesem Anschluss steckt, erscheint in der VM – so lässt
+sich wechseln, ohne die VM-Konfiguration anzufassen. Die Appliance findet ihre eigene VM über die SMBIOS-UUID.
+
+Eine neue Platte wird beim Hinzufügen **gelöscht** und formatiert (Bestätigung durch Eintippen des Plattennamens).
+
+## NFS und SMB
+
+Freigaben werden als systemd-Mount-Unit (`/etc/systemd/system/mnt-pk95-<kennung>.mount`) unter `/mnt/pk95/<kennung>`
+eingehängt, SMB-Zugangsdaten liegen in `/etc/pk95proxbackup/cifs-<kennung>.cred` (0600). Der leere Mountpunkt ist
+unveränderlich (`chattr +i`), damit PBS bei fehlender Freigabe nicht ins Systemdateisystem schreibt. PBS schreibt als
+`backup` (UID 34): bei NFS braucht das NAS `no_root_squash` bzw. eine passende Zuordnung, SMB wird mit `uid=34` eingehängt.
+„Verbindung testen“ hängt testweise ein und schreibt als `backup` eine Datei.
+
+## Sicherheit
+
+- HTTPS mit selbst erzeugtem Zertifikat (`/var/lib/pk95proxbackup/cert.pem`, `key.pem` – durch eigene ersetzbar).
+- Anmeldung mit bcrypt, Sitzungscookie `HttpOnly`/`Secure`/`SameSite=Strict`, Sperre nach 10 Fehlversuchen,
+  ändernde Anfragen brauchen einen eigenen Header (CSRF-Schutz).
+- PBS und PVE werden über den **SHA-256-Fingerabdruck** ihres Zertifikats gepinnt; ändert er sich, bricht die Verbindung ab.
+- API-Tokens und Passwörter liegen in der SQLite-Datenbank unter `/var/lib/pk95proxbackup` (nur root).
+- Port 443 nicht ins Internet freigeben; von außen per VPN.
+
+## Entwicklung
+
+```bash
+go test -race ./...          # PBS und PVE simuliert (internal/fake)
+PK95PB_DEMO=1 PK95PB_NO_TLS=1 PK95PB_LISTEN=127.0.0.1:18095 PK95PB_HTTP_REDIRECT= PK95PB_DATA_DIR=data/demo go run .
+```
+
+Der Demo-Modus startet simulierte PBS- und PVE-Server mit Beispieldaten (Gäste, Datastores, Wechselplatten), die
+Ersteinrichtung läuft wie echt (Code in `data/demo/setup-code`).
+
+Release: Tag `vX.Y.Z` pushen – der Workflow baut `pk95proxbackup-linux-amd64/arm64` und `SHA256SUMS`, die
+`install/appliance.sh` herunterlädt.
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `PK95PB_LISTEN` | `:443` | HTTPS |
+| `PK95PB_HTTP_REDIRECT` | `:80` | leitet auf HTTPS um (leer = aus) |
+| `PK95PB_DATA_DIR` | `/var/lib/pk95proxbackup` | Datenbank, Zertifikat, SSH-Schlüssel, Einrichtungscode |
+| `PK95PB_NO_TLS` | – | `1` = nur HTTP (Entwicklung) |
+| `PK95PB_DEMO` | – | `1` = simulierte Server |
+
+Eigene Einstellungen für den Dienst in `/etc/pk95proxbackup/env`.
