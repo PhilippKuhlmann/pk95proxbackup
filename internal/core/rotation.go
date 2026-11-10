@@ -803,6 +803,16 @@ func (c *Core) PrepareDisk(ctx context.Context, serverID, disk, store, fs string
 			return fmt.Errorf("auf %s ist %s eingehängt – diese Platte wird benutzt", disk, p.Name)
 		}
 	}
+	// A removable datastore that is not mounted right now still lives on the disk.
+	if cfgs, err := pbs.Datastores(ctx); err == nil {
+		for _, cfg := range cfgs {
+			for _, p := range found.Partitions {
+				if cfg.BackingDevice != "" && strings.EqualFold(cfg.BackingDevice, p.UUID) {
+					return fmt.Errorf("auf %s liegt der Wechsel-Datastore %s – diese Platte wird nicht gelöscht", disk, cfg.Name)
+				}
+			}
+		}
+	}
 	if found.Used != "unused" {
 		if err := pbs.WipeDisk(ctx, disk); err != nil {
 			return fmt.Errorf("Platte löschen: %w", err)

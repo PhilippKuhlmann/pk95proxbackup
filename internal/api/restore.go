@@ -41,6 +41,11 @@ func (s *Server) restoreSources(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if list, err := s.C.Archives(); err == nil {
+		for _, x := range list {
+			label[x.ServerID+"/"+x.Store] = "Archiv: " + x.Name
+		}
+	}
 	share := map[string]string{}
 	if sh, err := s.C.Shares(); err == nil {
 		for _, x := range sh {

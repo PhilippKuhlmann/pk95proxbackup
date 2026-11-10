@@ -1243,11 +1243,11 @@ const PHASE = { pruning: "räumt auf", gc: "gibt Speicher frei", unmounting: "h�
 PAGES["/wechselplatten"] = async (el, token) => {
   await loadConn();
   const draw = async () => {
-    const r = await GET("/api/rotations");
+    const [r, ar] = await Promise.all([GET("/api/rotations"), GET("/api/archives")]);
     if (token !== pageToken) return;
-    const rots = r.rotations;
+    const rots = r.rotations, archives = ar.archives;
     el.innerHTML = pageHead("Wechselplatten", "USB-Platten, die sich abwechseln: Eine steckt am Backup-Server und bekommt die Kopie, die andere liegt sicher außer Haus. Getauscht wird täglich oder wöchentlich.",
-      `<button class="btn gray" type="button" data-usb>${icon("usb")} USB an diese VM durchreichen</button><button class="btn" type="button" data-add>${icon("plus")} Satz anlegen</button>`) +
+      `<button class="btn gray" type="button" data-usb>${icon("usb")} USB an diese VM durchreichen</button><button class="btn gray" type="button" data-archive>${icon("archive")} Archiv-Sicherung</button><button class="btn" type="button" data-add>${icon("plus")} Satz anlegen</button>`) +
       (rots.length ? rots.map((x) => `
       <div class="panel">
         <div class="panel-head"><div><div class="panel-title">${esc(x.name)}</div>
@@ -1280,6 +1280,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
           empty("Noch keine Platte im Satz", "Platte anstecken und „Platte hinzufügen“ wählen. Für einen sinnvollen Wechsel mindestens zwei Platten.", `<button class="btn sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>`, "disk")}
       </div>`).join("") :
       empty("Noch kein Wechselplatten-Satz", "Ein Satz sind zwei oder mehr USB-Platten (z. B. „Montag“ bis „Freitag“ oder „Woche A“ und „Woche B“). Jede Platte wird ein eigener Wechsel-Datastore; die Appliance kopiert die Sicherungen darauf, räumt auf, hängt die Platte aus und meldet, wann gewechselt werden kann.", `<button class="btn" type="button" data-add2>${icon("plus")} Satz anlegen</button>`, "disk")) +
+      archivePanel(archives) +
       `<div class="grid"><div class="panel"><div class="panel-head"><div class="panel-title">So läuft ein Wechsel</div></div><ol class="steps">
         <li><span>Platte anstecken – am Backup-Server oder (über USB-Durchreichung) an dieser VM.</span></li>
         <li><span>Der Backup-Server hängt sie ein, die Appliance startet die Kopie (sofort oder zur eingestellten Uhrzeit).</span></li>
@@ -1290,6 +1291,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
     drawRunning();
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => rotationForm(null, draw));
     qsa("[data-usb], [data-usb2]", el).forEach((b) => b.onclick = passthroughDialog);
+    bindArchives(el, archives, draw);
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => rotationForm(rots.find((x) => x.id === b.dataset.edit), draw));
     qsa("[data-adddisk]", el).forEach((b) => b.onclick = () => addDiskForm(rots.find((x) => x.id === b.dataset.adddisk), draw));
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
@@ -1368,6 +1370,15 @@ function rotationForm(x, done) {
   });
 }
 
+// Disks that may be wiped: nothing mounted, not the system disk, no removable datastore on them.
+function freeDisks(disks, stores) {
+  const backing = new Set(stores.map((s) => (s["backing-device"] || "").toLowerCase()).filter(Boolean));
+  const rank = (k) => (k["disk-type"] === "usb" ? 0 : 2) + (k.used === "unused" ? 0 : 1);
+  return disks.filter((k) => k.name !== "sda" && !(k.partitions || []).some((p) => p.mounted || backing.has((p.uuid || "").toLowerCase())))
+    .sort((a, b) => rank(a) - rank(b));
+}
+const diskOption = (k) => `<option value="${esc(k.name)}">${esc(k.name)} – ${fmtBytes(k.size)} ${esc(k.vendor || "")} ${esc(k.model || "")} (${k["disk-type"] === "usb" ? "USB" : esc(k["disk-type"])}${k.used !== "unused" ? ", enthält Daten" : ", leer"})</option>`;
+
 function addDiskForm(x, done) {
   formDialog({
     title: `Platte zu „${x.name}“ hinzufügen`, ic: "disk",
@@ -1398,8 +1409,8 @@ function addDiskForm(x, done) {
         try {
           const [disks, stores] = await Promise.all([GET(`/api/pbs/${x.server_id}/disks`), storesOf(x.server_id)]);
           const usedStores = new Set(x.disks.map((y) => y.store));
-          const cand = disks.disks.filter((k) => !(k.partitions || []).some((p) => p.mounted) && k.name !== "sda");
-          qs('[name="disk"]', d).innerHTML = cand.length ? cand.map((k) => `<option value="${esc(k.name)}">${esc(k.name)} – ${fmtBytes(k.size)} ${esc(k.vendor || "")} ${esc(k.model || "")} (${k["disk-type"] === "usb" ? "USB" : esc(k["disk-type"])}${k.used !== "unused" ? ", enthält Daten" : ", leer"})</option>`).join("") : `<option value="">Keine passende Platte gefunden – anstecken und neu einlesen</option>`;
+          const cand = freeDisks(disks.disks, stores);
+          qs('[name="disk"]', d).innerHTML = cand.length ? cand.map(diskOption).join("") : `<option value="">Keine freie Platte gefunden – anstecken und neu einlesen</option>`;
           const rem = stores.filter((s) => s.removable && !usedStores.has(s.name));
           qs('[name="existing"]', d).innerHTML = rem.length ? rem.map((s) => `<option value="${esc(s.name)}">${esc(s.name)}${s.rotation ? " (in " + esc(s.rotation) + ")" : ""}</option>`).join("") : `<option value="">Kein freier Wechsel-Datastore</option>`;
         } catch (e) { toastErr(e); }
@@ -1414,6 +1425,174 @@ function addDiskForm(x, done) {
       else { body.store = v.existing; }
       await POST(`/api/rotations/${x.id}/disks`, body);
       toast("Platte hinzugefügt."); done();
+    },
+  });
+}
+
+// ---------- Archiv-Platten (einmalige Sicherung) ----------
+const ARCH_STATUS = { running: ["Läuft", "blue"], ok: ["Fertig", "green"], warning: ["Mit Hinweisen", "amber"], error: ["Fehlgeschlagen", "rose"] };
+const ARCH_PHASE = { preparing: "Platte wird vorbereitet", mounting: "wird eingehängt", copying: "Sicherungen werden kopiert", verifying: "Kopie wird geprüft", reading: "Inhalt wird gelesen", unmounting: "wird ausgehängt" };
+const guestKind = (t) => (t === "ct" ? "CT" : t === "vm" ? "VM" : "Host");
+
+function archivePanel(list) {
+  const card = (a) => {
+    const busy = a.busy || a.status === "running";
+    const pull = !busy && a.status === "ok" && a.present && !a.mounted;
+    const [l, t] = busy ? [ARCH_PHASE[a.phase] || "Läuft", "blue"] : pull ? ["Fertig – kann abgezogen werden", "green"] : ARCH_STATUS[a.status] || ARCH_STATUS.error;
+    const cls = busy ? "present" : a.status === "error" ? "error" : pull ? "ready" : a.present ? "present" : "";
+    const last = (a.checks || []).slice(-1)[0];
+    const age = a.end ? Math.floor((Date.now() / 1000 - a.end) / 86400) : 0;
+    const names = (a.contents || []).map((x) => `${guestKind(x.type)} ${x.id}${x.name ? " " + x.name : ""}`);
+    return `<div class="disk ${cls}"><div class="disk-head"><span class="disk-ic">${icon("archive")}</span><div class="grow"><div class="disk-name">${esc(a.name)}</div>
+        <div class="disk-meta mono">${esc(a.store)} · ${esc(a.server_name || a.server_id)}</div>
+        <div style="margin-top:6px" class="flex">${pill(l, t, true, busy)}${!busy && !pull && a.present ? pill(a.mounted ? "Eingehängt" : "Angesteckt", "blue") : ""}${a.missing ? pill("Datastore fehlt", "rose") : ""}</div></div></div>
+      ${a.total ? usageBar(a.used, a.total) : ""}
+      <table class="kv">
+        <tr><td>Erstellt</td><td>${a.end ? fmtTime(a.end, true) : busy ? "läuft seit " + fmtTime(a.start) : "—"}</td></tr>
+        <tr><td>Inhalt</td><td>${names.length ? `${names.length} Server${a.latest ? ", je die neueste Sicherung" : ""}<div class="t-sub">${esc(names.join(", "))}</div>` : '<span class="muted">—</span>'}</td></tr>
+        ${a.location ? `<tr><td>Aufbewahrt</td><td>${esc(a.location)}</td></tr>` : ""}
+        ${a.copy_secs ? `<tr><td>Dauer</td><td>Kopie ${fmtSecs(a.copy_secs)}${a.verify_secs ? `, Prüfung ${fmtSecs(a.verify_secs)}` : ""}</td></tr>` : ""}
+        <tr><td>Geprüft</td><td>${last ? `${fmtTime(last.at, true)} ${last.ok ? '<span class="ok">lesbar</span>' : '<span class="bad">' + esc(last.error || "Fehler") + "</span>"}` : a.verify && a.status === "ok" ? `beim Erstellen <span class="ok">lesbar</span>` : '<span class="muted">noch nie</span>'}</td></tr>
+        ${a.note ? `<tr><td>Notiz</td><td>${esc(a.note)}</td></tr>` : ""}
+        ${a.error ? `<tr><td>Fehler</td><td class="bad">${esc(a.error)}</td></tr>` : ""}
+        ${(a.problems || []).length && a.status !== "error" ? `<tr><td>Hinweise</td><td class="bad">${esc(a.problems.join(" · "))}</td></tr>` : ""}
+        ${!busy && a.status === "ok" && age >= 365 ? `<tr><td>Tipp</td><td>Älter als ein Jahr: Platte einmal anstecken und prüfen lassen.</td></tr>` : ""}</table>
+      <div class="disk-foot">
+        <button class="btn sm" type="button" data-acheck="${a.id}" ${a.present && !busy && !a.missing && a.status !== "error" ? "" : "disabled"} title="Einhängen, alle Sicherungen zurücklesen, aushängen">${icon("shield")} Prüfen</button>
+        <span class="grow"></span>
+        <a class="ib" href="/wiederherstellen" data-go title="Wiederherstellen" aria-label="Wiederherstellen">${icon("restore")}</a>
+        <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-aedit="${a.id}" ${busy ? "disabled" : ""}>${icon("pencil")}</button>
+        <button class="ib red" type="button" title="Aus der Liste entfernen" aria-label="Aus der Liste entfernen" data-adel="${a.id}" ${busy ? "disabled" : ""}>${icon("trash")}</button></div></div>`;
+  };
+  return `<div class="panel" id="archiv">
+    <div class="panel-head"><div><div class="panel-title">Archiv-Platten</div>
+      <div class="muted small">Einmalige Sicherung auf eine eigene USB-Platte – zum Mitnehmen oder zum Aufbewahren über Jahre. Die Platte wird danach nicht mehr beschrieben.</div></div>
+      <div class="actions"><button class="btn gray sm" type="button" data-archive>${icon("plus")} Archiv-Sicherung erstellen</button></div></div>
+    ${list.length ? `<div class="rot-disks">${list.map(card).join("")}</div>` :
+      empty("Noch keine Archiv-Platte", "Zum Beispiel ein Jahresabschluss für das Bankschließfach oder ein Stand vor einem großen Umbau. Die Appliance bereitet die Platte vor, kopiert die neueste Sicherung jedes Servers, prüft alles und hängt die Platte aus.", `<button class="btn sm" type="button" data-archive>${icon("plus")} Archiv-Sicherung erstellen</button>`, "archive")}
+  </div>`;
+}
+
+function bindArchives(el, list, draw) {
+  qsa("[data-archive]", el).forEach((b) => b.onclick = () => archiveForm(draw));
+  qsa("[data-acheck]", el).forEach((b) => b.onclick = async () => {
+    const a = list.find((x) => x.id === b.dataset.acheck);
+    if (await confirmDialog({ title: `Archiv „${a.name}“ prüfen?`, text: "Die Platte wird eingehängt, alle Sicherungen darauf werden vollständig gelesen und geprüft, danach wird sie wieder ausgehängt. Das kann je nach Größe Stunden dauern.", button: "Prüfen", tone: "", ic: "shield" }))
+      run(b, async () => { await POST(`/api/archives/${a.id}/check`); setTimeout(draw, 1000); }, "Prüfung gestartet.");
+  });
+  qsa("[data-aedit]", el).forEach((b) => b.onclick = () => {
+    const a = list.find((x) => x.id === b.dataset.aedit);
+    formDialog({
+      title: `Archiv „${a.name}“ bearbeiten`, ic: "archive",
+      fields: [
+        { name: "name", label: "Name", value: a.name, required: true, wide: true },
+        { name: "location", label: "Aufbewahrungsort", value: a.location, placeholder: "Bankschließfach, Tresor Büro …", wide: true },
+        { name: "note", label: "Notiz", type: "textarea", value: a.note, wide: true },
+      ],
+      submit: async (v) => { await PUT(`/api/archives/${a.id}`, v); toast("Gespeichert."); draw(); },
+    });
+  });
+  qsa("[data-adel]", el).forEach((b) => b.onclick = () => {
+    const a = list.find((x) => x.id === b.dataset.adel);
+    formDialog({
+      title: `Archiv „${a.name}“ aus der Liste entfernen?`, ic: "trash", tone: "red", button: "Entfernen", cls: "",
+      text: "Die Sicherungen auf der Platte bleiben erhalten. Nur der Eintrag hier verschwindet.",
+      fields: [{ name: "store", type: "checkbox", wide: true, label: `Auch den Wechsel-Datastore ${a.store} vom Backup-Server entfernen`,
+        hint: "Dann erkennt der Backup-Server die Platte beim Anstecken nicht mehr von selbst. Nur wählen, wenn die Platte nicht mehr gebraucht wird." }],
+      submit: async (v) => { await DEL(`/api/archives/${a.id}${v.store ? "?store=1" : ""}`); toast("Entfernt."); draw(); },
+    });
+  });
+}
+
+function archiveForm(done) {
+  const local = state.servers.find((s) => s.local)?.id || state.servers[0]?.id;
+  const year = new Date().getFullYear();
+  formDialog({
+    title: "Archiv-Sicherung erstellen", ic: "archive",
+    text: "Eine einmalige Kopie auf eine eigene USB-Platte. Sie wird nicht wie ein Wechselplatten-Satz wieder überschrieben, sondern mitgenommen oder eingelagert. Bleibt sie in PBS eingetragen, wird sie beim späteren Anstecken erkannt und kann zum Wiederherstellen gewählt werden.",
+    fields: [
+      { name: "name", label: "Name", required: true, placeholder: `Jahresarchiv ${year}`, wide: true, hint: "Steht in der Benachrichtigung und gehört außen auf die Platte." },
+      { type: "html", wide: true, html: `<div class="section-title">Platte</div>` },
+      { name: "server_id", label: "Platte steckt an", type: "select", value: local, options: state.servers.map((s) => [s.id, s.name]), wide: true },
+      { name: "mode", type: "radio", value: "new", options: [["new", "Neue Platte vorbereiten", "Wird gelöscht und formatiert"], ["existing", "Vorhandener Wechsel-Datastore", "Schon in PBS eingerichtet"]] },
+      { name: "disk", label: "Platte", type: "select", options: [["", "Lade …"]], wide: true },
+      { name: "store", label: "Datastore-Name", required: true, mono: true, placeholder: `archiv-${year}` },
+      { name: "fs", label: "Dateisystem", type: "select", value: "ext4", options: [["ext4", "ext4"], ["xfs", "XFS"]] },
+      { name: "confirm", label: "Zur Bestätigung den Plattennamen eintippen", mono: true, placeholder: "z. B. sdd", hint: "Alle Daten auf der Platte gehen verloren.", wide: true },
+      { name: "existing", label: "Wechsel-Datastore", type: "select", options: [["", "Lade …"]], wide: true },
+      { type: "html", wide: true, html: `<div class="section-title">Was kommt drauf?</div>` },
+      { name: "source_server", label: "Sicherungen kommen von", type: "select", value: local, options: state.servers.map((s) => [s.id, s.name]) },
+      { name: "source_store", label: "Datastore mit den Sicherungen", type: "select", options: [["", "Lade …"]] },
+      { name: "select", type: "radio", value: "all", options: [["all", "Alle Server", "Alles, was im Datastore gesichert ist"], ["some", "Nur ausgewählte", "Einzelne VMs und Container"]] },
+      { type: "html", name: "groups", wide: true, html: `<div class="pick-list" data-groups><span class="muted small">Lade …</span></div><span class="err" hidden></span>` },
+      { name: "latest", label: "Nur die neueste Sicherung je Server", type: "checkbox", value: true, wide: true, hint: "Sonst kommen alle vorhandenen Stände mit – das braucht deutlich mehr Platz und Zeit." },
+      { name: "verify", label: "Nach dem Kopieren alles zurücklesen und prüfen (empfohlen)", type: "checkbox", value: true, wide: true, hint: "Dauert etwa so lange wie die Kopie, stellt aber sicher, dass die Platte lesbar ist, bevor sie weggelegt wird." },
+      { type: "html", wide: true, html: `<div class="section-title">Aufbewahrung</div>` },
+      { name: "location", label: "Aufbewahrungsort", placeholder: "Bankschließfach, Tresor Büro …", wide: true },
+      { name: "note", label: "Notiz", type: "textarea", placeholder: "z. B. Stand vor der Umstellung auf das neue ERP", wide: true },
+    ],
+    button: "Sicherung starten",
+    extraButtons: `<button class="btn gray" type="button" data-reload>${icon("refresh")} Platten neu einlesen</button>`,
+    onMount: async (d) => {
+      const form = qs("form", d);
+      const show = () => {
+        const v = formValues(form);
+        ["disk", "store", "fs", "confirm"].forEach((n) => { qs(`[data-field="${n}"]`, d).hidden = v.mode !== "new"; });
+        qs('[data-field="existing"]', d).hidden = v.mode !== "existing";
+        qs('[data-field="groups"]', d).hidden = v.select !== "some";
+      };
+      qsa('[name="mode"], [name="select"]', d).forEach((r) => r.onchange = show);
+      show();
+      const nm = qs('[name="name"]', d), stn = qs('[name="store"]', d);
+      let touched = false;
+      stn.oninput = () => { touched = true; };
+      nm.oninput = () => { if (!touched) stn.value = ("archiv-" + nm.value.toLowerCase().replace(/[äöüß]/g, (c) => ({ ä: "ae", ö: "oe", ü: "ue", ß: "ss" })[c]).replace(/^jahresarchiv-?\s*/, "").replace(/[^a-z0-9]+/g, "-")).replace(/-+$/, "").slice(0, 32); };
+      const loadDisks = async () => {
+        const sid = qs('[name="server_id"]', d).value;
+        try {
+          const [disks, stores, rots, arch] = await Promise.all([GET(`/api/pbs/${sid}/disks`), storesOf(sid), GET("/api/rotations"), GET("/api/archives")]);
+          const taken = new Set([...rots.rotations.filter((r) => r.server_id === sid).flatMap((r) => r.disks.map((x) => x.store)), ...arch.archives.filter((a) => a.server_id === sid).map((a) => a.store)]);
+          const cand = freeDisks(disks.disks, stores);
+          qs('[name="disk"]', d).innerHTML = cand.length ? cand.map(diskOption).join("") : `<option value="">Keine freie Platte gefunden – anstecken und neu einlesen</option>`;
+          const rem = stores.filter((s) => s.removable && !taken.has(s.name));
+          qs('[name="existing"]', d).innerHTML = rem.length ? rem.map((s) => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join("") : `<option value="">Kein freier Wechsel-Datastore</option>`;
+        } catch (e) { toastErr(e); }
+      };
+      const box = qs("[data-groups]", d);
+      const loadGroups = async () => {
+        const pbs = qs('[name="source_server"]', d).value, st = qs('[name="source_store"]', d).value;
+        if (!st) { box.innerHTML = ""; return; }
+        box.innerHTML = `<span class="muted small">Lade …</span>`;
+        try {
+          const g = (await GET(`/api/restore/source?pbs=${enc(pbs)}&store=${enc(st)}`)).guests;
+          box.innerHTML = g.length ? g.map((x) => `<label class="check"><input type="checkbox" class="plain" value="${x.type === "lxc" ? "ct" : "vm"}/${x.vmid}"><span class="ct"><span><b>${x.vmid}</b> ${esc(x.name || "")}</span><small>${x.type === "lxc" ? "Container" : "VM"} · ${x.count} Sicherungen, neueste ${fmtTime(x.last_backup, true)}${x.exists ? "" : " · gibt es nicht mehr"}</small></span></label>`).join("") : `<span class="muted small">Keine Sicherungen in diesem Datastore.</span>`;
+        } catch (e) { box.innerHTML = `<span class="bad small">${esc(e.message)}</span>`; }
+      };
+      const ss = qs('[name="source_server"]', d), sst = qs('[name="source_store"]', d);
+      const fillStores = async () => {
+        sst.innerHTML = `<option value="">Lade …</option>`;
+        try { const list = (await storesOf(ss.value)).filter((s) => !s.removable); sst.innerHTML = list.map((s) => `<option>${esc(s.name)}</option>`).join("") || `<option value="">(kein Datastore)</option>`; }
+        catch (e) { sst.innerHTML = ""; toastErr(e); }
+        await loadGroups();
+      };
+      ss.onchange = fillStores;
+      sst.onchange = loadGroups;
+      qs('[name="server_id"]', d).onchange = loadDisks;
+      const rb = qs("[data-reload]", d);
+      rb.onclick = () => run(rb, loadDisks);
+      await Promise.all([loadDisks(), fillStores()]);
+    },
+    submit: async (v, d) => {
+      const body = { name: v.name, server_id: v.server_id, source_server: v.source_server, source_store: v.source_store, latest: v.latest, verify: v.verify, location: v.location, note: v.note, groups: [] };
+      if (v.select === "some") {
+        body.groups = qsa("[data-groups] input", d).filter((x) => x.checked).map((x) => x.value);
+        if (!body.groups.length) throw Object.assign(new Error("Bitte mindestens einen Server auswählen."), { fields: { groups: "Bitte mindestens einen Server auswählen." } });
+      }
+      if (v.mode === "new") Object.assign(body, { disk: v.disk, store: v.store, fs: v.fs, confirm: v.confirm });
+      else body.store = v.existing;
+      await POST("/api/archives", body);
+      toast("Archiv-Sicherung gestartet. Sie erhalten eine Nachricht, wenn die Platte abgezogen werden kann.");
+      done();
     },
   });
 }

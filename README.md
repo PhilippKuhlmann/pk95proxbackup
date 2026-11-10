@@ -14,6 +14,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 - **Wechselplatten (USB):** Sätze aus zwei oder mehr Platten, die täglich oder wöchentlich getauscht werden – am PBS
   oder per USB-Durchreichung an dieser VM. Kopieren beim Anstecken und/oder zur Uhrzeit, aufräumen, aushängen,
   Meldung „kann abgezogen werden“, Erinnerung, wenn eine Platte lange nicht dran war.
+- **Archiv-Platten (USB):** einmalige Sicherung auf eine eigene Platte zum Mitnehmen oder Einlagern über Jahre –
+  nur die neueste Sicherung je Server, auf Wunsch nur ausgewählte Server, danach vollständig geprüft und ausgehängt.
+  Später anstecken und „Prüfen“ liest alles erneut; zum Wiederherstellen erscheint die Platte als Quelle.
 - **Überwachung und Benachrichtigung** (E-Mail, ntfy, Gotify, Webhook): fehlgeschlagene Aufgaben, Server offline,
   Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig.
 
@@ -115,6 +118,21 @@ durchgereicht (nicht das Gerät). Jede Platte, die später in diesem Anschluss s
 sich wechseln, ohne die VM-Konfiguration anzufassen. Die Appliance findet ihre eigene VM über die SMBIOS-UUID.
 
 Eine neue Platte wird beim Hinzufügen **gelöscht** und formatiert (Bestätigung durch Eintippen des Plattennamens).
+Platten, auf denen schon ein Wechsel-Datastore liegt, werden nie gelöscht.
+
+### Archiv-Platten
+
+Für einen Stand, der **nicht wieder überschrieben** wird (Jahresabschluss, Bankschließfach, vor einem großen Umbau):
+Wechselplatten → „Archiv-Sicherung“. Die Appliance
+
+1. bereitet die Platte als Wechsel-Datastore vor (oder nimmt einen vorhandenen),
+2. kopiert einmalig per `POST /pull` – es bleibt kein Kopierjob auf dem Server zurück –, standardmäßig nur die
+   neueste Sicherung je VM/CT, auf Wunsch nur ausgewählte Server,
+3. liest alles zurück (Verify, empfohlen), merkt sich den Inhalt mit Namen und Zeitpunkten
+4. und hängt die Platte aus. Die Meldung sagt, dass sie abgezogen und beschriftet werden kann.
+
+Der Datastore bleibt im PBS eingetragen: Steckt die Platte Jahre später wieder, wird sie erkannt, „Prüfen“ liest sie
+erneut vollständig, und unter Wiederherstellen erscheint sie als „Archiv: <Name>“. Älter als ein Jahr: einmal prüfen.
 
 ## NFS und SMB
 

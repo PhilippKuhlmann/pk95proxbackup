@@ -12,6 +12,12 @@ import (
 	"pk95proxbackup/internal/prox"
 )
 
+// SyncDuration and VerifyDuration are how long simulated copies and checks run (tests shorten them).
+var (
+	SyncDuration   = 20 * time.Second
+	VerifyDuration = 15 * time.Second
+)
+
 type store struct {
 	cfg     prox.DatastoreConfig
 	total   int64
@@ -22,6 +28,7 @@ type store struct {
 type job struct {
 	kind   string
 	params map[string]string
+	groups []string // group-filter "group:vm/101" (one-off pulls)
 	upid   string
 	end    int64
 	state  string
@@ -147,7 +154,11 @@ func (p *PBS) runSync(j *job) string {
 	if remote == "" {
 		remote = `\x2d`
 	}
-	return p.tasks.start(p.node, "syncjob", remote+":"+j.params["remote-store"]+":"+target+"::"+j.params["id"], 20*time.Second,
+	typ := "syncjob"
+	if j.params["id"] == "" {
+		typ = "sync"
+	}
+	return p.tasks.start(p.node, typ, remote+":"+j.params["remote-store"]+":"+target+"::"+j.params["id"], SyncDuration,
 		[]string{"Starting datastore sync job '" + j.params["id"] + "'", "sync datastore '" + target + "' from '" + j.params["remote-store"] + "'"},
 		func() (string, []string) {
 			p.mu.Lock()
@@ -177,8 +188,15 @@ func (p *PBS) runSync(j *job) string {
 						}
 					}
 				}
+				only := map[string]bool{}
+				for _, g := range j.groups {
+					only[strings.TrimPrefix(g, "group:")] = true
+				}
 				for _, s := range src.snaps {
 					if len(keep) > 0 && !keep[s.Type+"/"+s.ID+strconv.FormatInt(s.Time, 10)] {
+						continue
+					}
+					if len(only) > 0 && !only[s.Type+"/"+s.ID] {
 						continue
 					}
 					if !have[s.Type+s.ID+strconv.FormatInt(s.Time, 10)] {
@@ -290,7 +308,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			data(w, p.tasks.start(p.node, "garbage_collection", seg[2], 12*time.Second, []string{"starting garbage collection on store " + seg[2], "Removed garbage: 1.2 GiB"}, nil))
 		case "verify":
-			data(w, p.tasks.start(p.node, "verify", seg[2], 15*time.Second, []string{"verify datastore " + seg[2]}, nil))
+			data(w, p.tasks.start(p.node, "verify", seg[2], VerifyDuration, []string{"verify datastore " + seg[2]}, nil))
 		case "prune-datastore":
 			// keep-last only (enough for the demo and the tests)
 			if n := atoi(f.Get("keep-last")); n > 0 && f.Get("keep-daily")+f.Get("keep-weekly")+f.Get("keep-monthly") == "" {
@@ -444,6 +462,18 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		data(w, nil)
+	case path == "/pull" && m == "POST":
+		// One-off sync without a job (PBS names the worker like a job without id).
+		params := map[string]string{}
+		for k := range f {
+			params[k] = f.Get(k)
+		}
+		if p.stores[params["store"]] == nil {
+			apiErr(w, 400, "no such datastore '"+params["store"]+"'")
+			return
+		}
+		j := &job{kind: "sync", params: params, groups: f["group-filter"]}
+		data(w, p.runSync(j))
 	case path == "/config/remote" && m == "GET":
 		out := []prox.Remote{}
 		for _, r := range p.remotes {

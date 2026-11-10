@@ -164,6 +164,11 @@ func (s *Server) routes() {
 	a("POST /api/rotations/{id}/disks", s.addRotationDisk)
 	a("DELETE /api/rotations/{id}/disks/{key}", s.removeRotationDisk)
 	a("POST /api/rotations/{id}/disks/{key}/{action}", s.rotationDiskAction)
+	a("GET /api/archives", s.listArchives)
+	a("POST /api/archives", s.createArchive)
+	a("PUT /api/archives/{id}", s.updateArchive)
+	a("DELETE /api/archives/{id}", s.deleteArchive)
+	a("POST /api/archives/{id}/check", s.checkArchive)
 	a("GET /api/passthrough", s.passthroughInfo)
 	a("POST /api/passthrough", s.passthrough)
 

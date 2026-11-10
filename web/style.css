@@ -297,6 +297,7 @@ tr.off td { color: var(--muted); }
 .panel .empty { margin: 0; }
 
 /* ---- rotation ---- */
+.pick-list { display: grid; gap: 8px; max-height: 260px; overflow-y: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
 .rot-disks { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
 .disk { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--panel); }
 .disk.present { border-color: var(--c300); box-shadow: 0 0 0 1px var(--c300); }

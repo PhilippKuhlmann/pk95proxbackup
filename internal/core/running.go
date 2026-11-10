@@ -45,6 +45,14 @@ func (c *Core) RunningTasks(ctx context.Context) []RunningTask {
 			diskOf[r.SyncJobID(d)] = "Wechselplatte " + d.Label
 		}
 	}
+	// PBS task of an archive copy or check → its label; steps without a task are shown below.
+	archives := c.busyArchives()
+	archiveTask := map[string]string{}
+	for _, a := range archives {
+		if a.UPID != "" {
+			archiveTask[a.UPID] = "Archiv „" + a.Name + "“: " + archivePhaseLabel[a.Phase]
+		}
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	out := []RunningTask{}
@@ -79,6 +87,9 @@ func (c *Core) RunningTasks(ctx context.Context) []RunningTask {
 								rt.Label = "Kopie auf " + l
 							}
 						}
+					}
+					if l, ok := archiveTask[t.UPID]; ok {
+						rt.Label = l
 					}
 					if lines, err := pbs.TailLog(ctx, t.UPID, 60); err == nil {
 						rt.Progress = prox.ParseProgress(lines)
@@ -131,6 +142,12 @@ func (c *Core) RunningTasks(ctx context.Context) []RunningTask {
 		}
 	}
 	c.mu.Unlock()
+	for _, a := range archives {
+		if a.UPID == "" {
+			out = append(out, RunningTask{Source: "app", Server: "Appliance", Type: "archive", Label: "Archiv „" + a.Name + "“",
+				StartTime: a.PhaseSince, Progress: prox.Progress{Percent: -1, Step: archivePhaseLabel[a.Phase]}})
+		}
+	}
 	if r := c.ActiveRestoreTest(); r != nil {
 		done, cur := 0, ""
 		for _, x := range r.Results {
