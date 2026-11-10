@@ -66,7 +66,10 @@ type RestoreTestResult struct {
 	Hostname   string `json:"hostname,omitempty"`
 	Screenshot string `json:"screenshot,omitempty"`
 	Info       string `json:"info,omitempty"`
-	Notes      string `json:"notes,omitempty"` // what was changed for isolation
+	Notes      string `json:"notes,omitempty"`   // what was changed for isolation
+	Started    int64  `json:"started,omitempty"` // restore began
+	RestoreEnd int64  `json:"restore_end,omitempty"`
+	Finished   int64  `json:"finished,omitempty"` // test guest removed again
 }
 
 // RestoreTestRun is one run of a plan.
@@ -79,6 +82,10 @@ type RestoreTestRun struct {
 	End      int64               `json:"end,omitempty"`
 	Status   string              `json:"status"` // running, ok, warning, error, cancelled
 	Error    string              `json:"error,omitempty"`
+	Cluster  string              `json:"cluster,omitempty"` // name of the Proxmox VE
+	Node     string              `json:"node,omitempty"`
+	Storage  string              `json:"storage,omitempty"`
+	Source   string              `json:"source,omitempty"` // backup server / datastore
 	Results  []RestoreTestResult `json:"results"`
 }
 
@@ -226,7 +233,14 @@ func (c *Core) StartRestoreTest(planID, by string) (string, error) {
 		return "", errors.New("es läuft schon ein Wiederherstellungstest")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &RestoreTestRun{ID: time.Now().Format("20060102-150405"), PlanID: plan.ID, PlanName: plan.Name, By: by, Start: time.Now().Unix(), Status: "running", Results: []RestoreTestResult{}}
+	run := &RestoreTestRun{ID: time.Now().Format("20060102-150405"), PlanID: plan.ID, PlanName: plan.Name, By: by, Start: time.Now().Unix(), Status: "running", Results: []RestoreTestResult{},
+		Node: plan.Node, Storage: plan.Storage, Source: plan.Store}
+	if cl, err := c.Cluster(plan.Cluster); err == nil {
+		run.Cluster = cl.Name
+	}
+	if srv, err := c.Server(plan.PBS); err == nil {
+		run.Source = srv.Name + " / " + plan.Store
+	}
 	rtCur = &rtActive{run: run, cancel: cancel}
 	rtMu.Unlock()
 	_ = c.St.Put(KindRTRun, run.ID, run)
@@ -347,6 +361,12 @@ func (c *Core) runRestoreTest(ctx context.Context, plan RestoreTestPlan, run *Re
 func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE, pbs *prox.PBS, storage string, bridges []string,
 	snap prox.Snapshot, run *RestoreTestRun, idx int) {
 	set := func(fn func(r *RestoreTestResult)) { c.rtUpdate(run, func() { fn(&run.Results[idx]) }) }
+	// runs last (after the cleanup): the time the guest was gone again
+	defer set(func(r *RestoreTestResult) {
+		if r.Started > 0 && r.Finished == 0 {
+			r.Finished = time.Now().Unix()
+		}
+	})
 	typ := "qemu"
 	file := "qemu-server.conf.blob"
 	if snap.Type == "ct" {
@@ -416,6 +436,7 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 
 	volume := fmt.Sprintf("%s:backup/%s/%s/%s", storage, snap.Type, snap.ID, time.Unix(snap.Time, 0).UTC().Format("2006-01-02T15:04:05Z"))
 	start := time.Now()
+	set(func(r *RestoreTestResult) { r.Started = start.Unix() })
 	upid, err := pve.Restore(ctx, plan.Node, typ, testID, volume, plan.Storage, prox.RestoreOptions{Unique: true})
 	if err != nil {
 		failed = true
@@ -446,7 +467,7 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 		return
 	}
 	set(func(r *RestoreTestResult) {
-		r.Restore, r.Phase = int64(time.Since(start).Seconds()), "trennt Netzwerk und Geräte"
+		r.Restore, r.Phase, r.RestoreEnd = int64(time.Since(start).Seconds()), "trennt Netzwerk und Geräte", time.Now().Unix()
 	})
 	// Mark it first, so a later sweep recognises it even if the rest fails.
 	mark := prox.Params{"tags": rtTag, "onboot": false}
@@ -800,7 +821,7 @@ func (c *Core) finishRun(plan RestoreTestPlan, cl PVECluster, run *RestoreTestRu
 			Duration: humanDuration(r.Restore + r.Boot), Size: fmtBytes(r.DiskBytes), Info: info})
 	}
 	total := len(run.Results)
-	d := &notify.Details{RowsTitle: "Getestete Server", Rows: rows, Link: "/restoretests",
+	d := &notify.Details{RowsTitle: "Getestete Server", Rows: rows, Link: "/api/restoretests/report?run=" + run.ID,
 		Facts: []notify.Fact{{Label: "System", Value: cl.Name}, {Label: "Getestet auf", Value: plan.Node + " / " + plan.Storage},
 			{Label: "Sicherungen aus", Value: plan.Store}, {Label: "Beginn", Value: fmtWhen(run.Start)}, {Label: "Dauer", Value: humanDuration(run.End - run.Start)}}}
 	sev, title, body := "info", "", ""

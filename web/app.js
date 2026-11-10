@@ -1790,7 +1790,7 @@ PAGES["/restoretests"] = async (el, token) => {
           const n = (st) => (x.results || []).filter((y) => y.status === st).length;
           return `<div class="row" style="cursor:pointer;align-items:center" data-show="${esc(x.id)}"><span class="when">${fmtTime(x.start, true)}</span>${rtPill(x.status)}
             <div class="grow"><div class="title"><b>${esc(x.plan_name)}</b> <span class="muted small">${x.end ? "Dauer " + fmtDur(x.start, x.end) : ""} · ${esc(x.by)}</span></div>
-            <div class="flex" style="margin-top:4px">${n("ok") ? pill(n("ok") + " erfolgreich", "green") : ""}${n("warning") ? pill(n("warning") + " Hinweis", "amber") : ""}${n("error") ? pill(n("error") + " Fehler", "rose") : ""}${n("skipped") ? pill(n("skipped") + " übersprungen", "amber") : ""}${x.error ? `<span class="small bad">${esc(x.error)}</span>` : ""}</div></div>${icon("chevron-down")}</div>`;
+            <div class="flex" style="margin-top:4px"><a class="btn gray sm" href="/api/restoretests/report?run=${enc(x.id)}" target="_blank" rel="noopener" data-noshow>${icon("list")} Bericht</a>${n("ok") ? pill(n("ok") + " erfolgreich", "green") : ""}${n("warning") ? pill(n("warning") + " Hinweis", "amber") : ""}${n("error") ? pill(n("error") + " Fehler", "rose") : ""}${n("skipped") ? pill(n("skipped") + " übersprungen", "amber") : ""}${x.error ? `<span class="small bad">${esc(x.error)}</span>` : ""}</div></div>${icon("chevron-down")}</div>`;
         }).join("")}</div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Testlauf", "", "", "list")}</div>`}</div>
       <div class="callout"><div class="ct"><div class="ch">So bleibt der Test vom Betrieb getrennt</div><div class="cb">Jeder Server wird unter einer freien Test-ID (ab 990000) mit neuen MAC-Adressen wiederhergestellt. Vor dem Start werden die Netzwerkkarten getrennt, durchgereichte PCI- und USB-Geräte, Bind-Mounts und eingelegte ISOs entfernt, CPU und RAM begrenzt und der Autostart abgeschaltet. Vorher prüft die Appliance, ob Platz und Arbeitsspeicher reichen – sonst wird der Server übersprungen. Nach dem Test wird alles gelöscht; Reste eines abgebrochenen Laufs räumt der nächste Lauf weg.</div></div></div>`;
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => rtPlanForm(null, draw));
@@ -1806,11 +1806,13 @@ PAGES["/restoretests"] = async (el, token) => {
     });
     const cb = qs("[data-cancel]", el);
     if (cb) cb.onclick = async () => { if (await confirmDialog({ title: "Test abbrechen?", text: "Der gerade getestete Server wird noch aufgeräumt.", button: "Abbrechen" })) run(cb, () => POST("/api/restoretests/cancel"), "Wird abgebrochen …"); };
+    qsa("[data-noshow]", el).forEach((a) => a.onclick = (e) => e.stopPropagation());
     qsa("[data-show]", el).forEach((row) => row.onclick = () => {
       const x = runs.find((y) => y.id === row.dataset.show);
-      openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("shield")}</span><div class="grow"><div class="dlg-title">${esc(x.plan_name)} · ${fmtTime(x.start, true)}</div><p class="dlg-text">${x.end ? "Dauer " + fmtDur(x.start, x.end) + " · " : ""}gestartet von ${esc(x.by)}</p></div>${rtPill(x.status)}</div>
+      const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("shield")}</span><div class="grow"><div class="dlg-title">${esc(x.plan_name)} · ${fmtTime(x.start, true)}</div><p class="dlg-text">${x.end ? "Dauer " + fmtDur(x.start, x.end) + " · " : ""}gestartet von ${esc(x.by)}</p></div>${rtPill(x.status)}</div>
         <div class="dlg-body">${x.error ? `<div class="form-error">${esc(x.error)}</div>` : ""}${rtTable(x, false)}</div>
-        <div class="dlg-foot"><button class="btn gray" type="button" onclick="this.closest('dialog').close()">Schließen</button></div>`, "xwide");
+        <div class="dlg-foot"><a class="btn gray" href="/api/restoretests/report?run=${enc(x.id)}&download=1">${icon("download")} Herunterladen</a><a class="btn" href="/api/restoretests/report?run=${enc(x.id)}" target="_blank" rel="noopener">${icon("list")} Bericht öffnen</a><span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button></div>`, "xwide");
+      qs("[data-close]", dlg).onclick = () => dlg.close();
     });
     if (act) kickRunning();
     return !!act;

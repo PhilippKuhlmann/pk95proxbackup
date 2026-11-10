@@ -136,6 +136,7 @@ func (s *Server) routes() {
 	a("POST /api/restoretests", s.saveRestoreTest)
 	a("POST /api/restoretests/cancel", s.cancelRestoreTest)
 	a("GET /api/restoretests/screenshot", s.restoreTestScreenshot)
+	a("GET /api/restoretests/report", s.restoreTestReport)
 	a("PUT /api/restoretests/{id}", s.saveRestoreTest)
 	a("DELETE /api/restoretests/{id}", s.deleteRestoreTest)
 	a("POST /api/restoretests/{id}/run", s.runRestoreTest)
