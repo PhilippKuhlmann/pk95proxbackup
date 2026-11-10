@@ -185,6 +185,84 @@ func (s *Server) restoreSourceGuests(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, sg)
 	}
+	s.nameFromBackups(ctx, pbs, q.Get("store"), out)
 	sort.Slice(out, func(i, j int) bool { return out[i].VMID < out[j].VMID })
 	writeJSON(w, http.StatusOK, map[string]any{"guests": out})
+}
+
+var (
+	backupNameMu sync.Mutex
+	backupNames  = map[string]string{} // store/type/id/time → name from the stored config
+)
+
+// nameFromBackups fills in the names of guests no connected Proxmox VE knows: from the notes
+// of the newest snapshot, or from the guest configuration stored in it.
+func (s *Server) nameFromBackups(ctx context.Context, pbs *prox.PBS, store string, guests []sourceGuest) {
+	missing := 0
+	for _, g := range guests {
+		if g.Name == "" || !g.Exists {
+			missing++
+		}
+	}
+	if missing == 0 {
+		return
+	}
+	snaps, err := pbs.Snapshots(ctx, store, "")
+	if err != nil {
+		return
+	}
+	newest := map[string]prox.Snapshot{}
+	for _, sn := range snaps {
+		k := sn.Type + "/" + sn.ID
+		if sn.Time > newest[k].Time {
+			newest[k] = sn
+		}
+	}
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i := range guests {
+		g := &guests[i]
+		if g.Exists && g.Name != "" {
+			continue
+		}
+		typ, file := "vm", "qemu-server.conf.blob"
+		if g.Type == "lxc" {
+			typ, file = "ct", "pct.conf.blob"
+		}
+		sn, ok := newest[typ+"/"+strconv.Itoa(g.VMID)]
+		if !ok {
+			continue
+		}
+		if c := strings.TrimSpace(strings.SplitN(sn.Comment, "\n", 2)[0]); c != "" && g.Name == "" {
+			g.Name = c
+		}
+		key := store + "/" + typ + "/" + sn.ID + "/" + strconv.FormatInt(sn.Time, 10)
+		backupNameMu.Lock()
+		name, cached := backupNames[key]
+		backupNameMu.Unlock()
+		if cached {
+			if name != "" {
+				g.Name = name
+			}
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			conf, err := pbs.SnapshotFile(ctx, store, "", typ, sn.ID, sn.Time, file)
+			if err != nil {
+				return
+			}
+			name := prox.GuestNameFromConfig(conf)
+			backupNameMu.Lock()
+			backupNames[key] = name
+			backupNameMu.Unlock()
+			if name != "" {
+				g.Name = name
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -230,6 +230,9 @@ func Setup(c *core.Core) (func(), error) {
 		}
 	}
 	local.usedExtra["backup"] = 0
+	// Guests that no connected Proxmox VE knows any more (deleted or another cluster).
+	local.AddSnapshot("backup", "vm", "250", now.AddDate(0, 0, -40).Unix(), 120*gib)
+	local.AddSnapshot("backup", "ct", "251", now.AddDate(0, 0, -35).Unix(), 6*gib)
 	for i := 1; i <= 6; i++ {
 		t := time.Date(now.Year(), now.Month(), now.Day()-i, 21, 0, 0, 0, now.Location())
 		pve.tasks.seed("pve1", "vzdump", "", "OK", t, 42*time.Minute)

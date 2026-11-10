@@ -1613,7 +1613,7 @@ async function restoreSourceList(el, token, x) {
     ${list.map((g) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name || "")}</div></td>
       <td data-l="Neueste Sicherung">${fmtTime(g.last_backup, true)}<div class="t-sub">${fmtAgo(g.last_backup)}</div></td>
       <td data-l="Stände" class="small">${g.count}</td>
-      <td data-l="In Proxmox" class="small">${g.exists ? `${esc(g.cluster_name)} · ${esc(g.node)}` : '<span class="bad">nicht mehr vorhanden</span>'}</td>
+      <td data-l="In Proxmox" class="small">${g.exists ? `${esc(g.cluster_name)} · ${esc(g.node)}` : '<span class="muted">in keinem verbundenen Proxmox VE</span>'}</td>
       <td class="act"><a class="btn sm" href="${srcHref(x)}&vmid=${g.vmid}&type=${g.type}" data-go>${icon("restore")} Auswählen</a></td></tr>`).join("")}
     </tbody></table></div></div>` : empty("Auf dieser Quelle liegen keine Sicherungen", "", "", "archive");
 }
@@ -1623,7 +1623,7 @@ async function restoreGuest(el, token, g, source) {
   const typ = g.type === "lxc" ? "ct" : "vm";
   const kind = typ === "ct" ? "Container" : "VM";
   let src = 0, snaps = [], sel = null;
-  const where = g.node ? `${kind} auf ${esc(g.node)} (${esc(g.cluster_name)})` : `${kind}, in Proxmox nicht mehr vorhanden – wird in ${esc(g.cluster_name)} wiederhergestellt`;
+  const where = g.node ? `${kind} auf ${esc(g.node)} (${esc(g.cluster_name)})` : `${kind}, in keinem verbundenen Proxmox VE – wird in ${esc(g.cluster_name)} wiederhergestellt`;
   el.innerHTML = pageHead(`${g.vmid} ${esc(g.name || "")} wiederherstellen`, where + (source ? ` · Quelle: ${esc(source.label)}` : ""), "",
     source ? [srcHref(source), "Zurück zu „" + source.label + "“"] : ["/wiederherstellen", "Anderen Server wählen"]) +
     `<div class="grid grid-restore">

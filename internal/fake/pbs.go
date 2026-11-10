@@ -326,6 +326,21 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data(w, s.snaps)
+		case "download-decoded":
+			// the guest configuration stored with a backup
+			name := map[string]string{"250": "alt-fileserver", "251": "alter-mailserver"}[f.Get("backup-id")]
+			if name == "" {
+				name = "gast-" + f.Get("backup-id")
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			switch f.Get("file-name") {
+			case "qemu-server.conf.blob":
+				_, _ = w.Write([]byte("boot: order=scsi0\ncores: 2\nmemory: 4096\nname: " + name + "\nscsi0: local-lvm:vm-" + f.Get("backup-id") + "-disk-0,size=32G\n\n[vor-update]\nname: alt\n"))
+			case "pct.conf.blob":
+				_, _ = w.Write([]byte("arch: amd64\ncores: 1\nhostname: " + name + "\nmemory: 512\n"))
+			default:
+				apiErr(w, 400, "no such file")
+			}
 		case "groups":
 			if !s.mounted {
 				apiErr(w, 400, "datastore '"+seg[2]+"' is not mounted")

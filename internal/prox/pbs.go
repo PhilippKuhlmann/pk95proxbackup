@@ -2,8 +2,10 @@ package prox
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -411,4 +413,34 @@ func boolNil(b bool) any {
 		return nil
 	}
 	return true
+}
+
+// SnapshotFile downloads a decoded file of a snapshot, e.g. "qemu-server.conf.blob" or
+// "pct.conf.blob" (the guest configuration stored with every backup).
+func (p *PBS) SnapshotFile(ctx context.Context, store, ns, typ, id string, t int64, file string) ([]byte, error) {
+	resp, err := p.Stream(ctx, "/admin/datastore/"+url.PathEscape(store)+"/download-decoded", Params{
+		"ns": emptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t, "file-name": file,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// GuestNameFromConfig reads the name of a VM ("name: …") or container ("hostname: …")
+// from a stored configuration (only the main section, not snapshots).
+func GuestNameFromConfig(conf []byte) string {
+	for _, line := range strings.Split(string(conf), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			break
+		}
+		for _, key := range []string{"name:", "hostname:"} {
+			if strings.HasPrefix(line, key) {
+				return strings.TrimSpace(strings.TrimPrefix(line, key))
+			}
+		}
+	}
+	return ""
 }

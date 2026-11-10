@@ -417,3 +417,22 @@ func TestRestoreSources(t *testing.T) {
 		t.Fatalf("existing storage must get read access: %v", roles)
 	}
 }
+
+func TestSourceNamesFromBackups(t *testing.T) {
+	cl := login(t)
+	_, out := cl.do("GET", "/api/restore/source?pbs=local&store=backup", nil, false)
+	got := map[float64]map[string]any{}
+	for _, x := range out["guests"].([]any) {
+		m := x.(map[string]any)
+		got[m["vmid"].(float64)] = m
+	}
+	if g := got[250]; g == nil || g["name"] != "alt-fileserver" || g["exists"] != false || g["type"] != "qemu" {
+		t.Fatalf("vm 250: %v", g)
+	}
+	if g := got[251]; g == nil || g["name"] != "alter-mailserver" || g["type"] != "lxc" {
+		t.Fatalf("ct 251: %v", g)
+	}
+	if g := got[100]; g["name"] != "dc01" || g["exists"] != true {
+		t.Fatalf("known guest keeps its Proxmox name: %v", g)
+	}
+}

@@ -32,3 +32,15 @@ func TestParseProgress(t *testing.T) {
 		}
 	}
 }
+
+func TestGuestNameFromConfig(t *testing.T) {
+	if n := GuestNameFromConfig([]byte("cores: 2\nname: web01\n\n[snap]\nname: old\n")); n != "web01" {
+		t.Errorf("vm: %q", n)
+	}
+	if n := GuestNameFromConfig([]byte("arch: amd64\nhostname: dns\n")); n != "dns" {
+		t.Errorf("ct: %q", n)
+	}
+	if n := GuestNameFromConfig([]byte("[snap]\nname: old\n")); n != "" {
+		t.Errorf("only main section: %q", n)
+	}
+}
