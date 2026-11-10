@@ -130,6 +130,8 @@ func (s *Server) routes() {
 	a("GET /api/guests/snapshots", s.guestSnapshots)
 	a("POST /api/restore", s.restore)
 	a("GET /api/restore/files", s.restoreFiles)
+	a("GET /api/restore/sources", s.restoreSources)
+	a("GET /api/restore/source", s.restoreSourceGuests)
 	a("GET /api/restore/download", s.restoreDownload)
 
 	// Shares

@@ -192,40 +192,80 @@ func (s *Server) addPVEStorage(w http.ResponseWriter, r *http.Request) {
 	if fieldErrs(w, errs) {
 		return
 	}
-	ctx := r.Context()
-	// A dedicated token per cluster that may only back up into (and restore from) this datastore.
-	user := "pk95-pve@pbs"
-	if err := pbs.EnsureUser(ctx, user, "PK95 ProxBackup: Zugang für Proxmox VE"); err != nil {
-		fail(w, fmt.Errorf("Benutzer auf dem Backup-Server anlegen: %w", err))
-		return
-	}
-	tokenID, secret, err := pbs.NewToken(ctx, user, "pve-"+cl.ID, "PK95 ProxBackup: "+cl.Name)
-	if err != nil {
-		fail(w, fmt.Errorf("Token anlegen: %w", err))
-		return
-	}
-	for _, path := range []string{"/datastore/" + req.Store} {
-		if err := pbs.SetACL(ctx, path, "DatastorePowerUser", tokenID); err != nil {
-			fail(w, fmt.Errorf("Rechte setzen: %w", err))
-			return
-		}
-	}
-	// The user needs the same rights: a token never has more than its user.
-	if err := pbs.SetACL(ctx, "/datastore/"+req.Store, "DatastorePowerUser", user); err != nil {
-		fail(w, fmt.Errorf("Rechte setzen: %w", err))
-		return
-	}
-	port := srv.Port
-	if port == 0 {
-		port = 8007
-	}
-	if err := pve.AddPBSStorage(ctx, req.Name, srv.Address(), port, req.Store, tokenID, secret, srv.Fingerprint, req.Namespace); err != nil {
-		fail(w, fmt.Errorf("Speicher in Proxmox VE eintragen: %w", err))
+	if err := s.registerPBSStorage(r.Context(), pve, cl, pbs, srv, req.Store, req.Name, req.Namespace); err != nil {
+		fail(w, err)
 		return
 	}
 	s.C.Event("info", cl.Name, "Backup-Speicher "+req.Name+" eingetragen", srv.Name+" / "+req.Store)
 	s.C.RequestRefresh()
 	ok(w)
+}
+
+var tokenNameRe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+
+// registerPBSStorage adds a datastore of a Backup Server as storage to a cluster. Each
+// cluster/datastore pair gets its own PBS token that may only use this datastore (one token
+// per pair: re-creating a shared one would break the storages that use its old secret).
+func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, pbs *prox.PBS, srv core.PBSServer, store, name, ns string) error {
+	if srv.Address() == "" {
+		return fmt.Errorf("für %s ist keine Adresse für Proxmox VE hinterlegt (Verbindungen → Server bearbeiten)", srv.Name)
+	}
+	user := "pk95-pve@pbs"
+	if err := pbs.EnsureUser(ctx, user, "PK95 ProxBackup: Zugang für Proxmox VE"); err != nil {
+		return fmt.Errorf("Benutzer auf dem Backup-Server anlegen: %w", err)
+	}
+	tname := tokenNameRe.ReplaceAllString("pve-"+cl.ID+"-"+store, "-")
+	if len(tname) > 60 {
+		tname = tname[:60]
+	}
+	tokenID, secret, err := pbs.NewToken(ctx, user, tname, "PK95 ProxBackup: "+cl.Name+" / "+store)
+	if err != nil {
+		return fmt.Errorf("Token anlegen: %w", err)
+	}
+	// The user needs the rights as well: a token never has more than its user.
+	for _, id := range []string{tokenID, user} {
+		if err := pbs.SetACL(ctx, "/datastore/"+store, "DatastorePowerUser", id); err != nil {
+			return fmt.Errorf("Rechte setzen: %w", err)
+		}
+	}
+	port := srv.Port
+	if port == 0 {
+		port = 8007
+	}
+	if err := pve.AddPBSStorage(ctx, name, srv.Address(), port, store, tokenID, secret, srv.Fingerprint, ns); err != nil {
+		return fmt.Errorf("Speicher in Proxmox VE eintragen: %w", err)
+	}
+	return nil
+}
+
+// ensurePVEStorage returns the storage of a cluster for a datastore and adds one when there
+// is none (for restoring from a USB disk or another Backup Server).
+func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store string) (string, error) {
+	name, err := s.pveStorageFor(ctx, pve, srv, store)
+	if err != nil || name != "" {
+		return name, err
+	}
+	pbs := s.C.PBSClient(srv)
+	existing := map[string]bool{}
+	if list, err := pve.Storages(ctx); err == nil {
+		for _, st := range list {
+			existing[st.Storage] = true
+		}
+	}
+	base := "pk95-" + strings.Trim(tokenNameRe.ReplaceAllString(store, "-"), "-.")
+	if len(base) > 36 {
+		base = base[:36]
+	}
+	name = base
+	for i := 2; existing[name]; i++ {
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+	if err := s.registerPBSStorage(ctx, pve, cl, pbs, srv, store, name, ""); err != nil {
+		return "", err
+	}
+	s.C.Event("info", cl.Name, "Speicher "+name+" für die Wiederherstellung eingetragen",
+		"Damit Proxmox VE aus "+srv.Name+" / "+store+" wiederherstellen kann, ist der Datastore jetzt als Speicher „"+name+"“ eingetragen.")
+	return name, nil
 }
 
 func (s *Server) deletePVEStorage(w http.ResponseWriter, r *http.Request) {
@@ -723,13 +763,9 @@ func (s *Server) resolveVolume(w http.ResponseWriter, r *http.Request) (*backupV
 		writeErr(w, http.StatusBadRequest, "Sicherung nicht angegeben.")
 		return nil, false
 	}
-	storage, err := s.pveStorageFor(r.Context(), pve, srv, q.Get("store"))
+	storage, err := s.ensurePVEStorage(r.Context(), pve, cl, srv, q.Get("store"))
 	if err != nil {
-		fail(w, err)
-		return nil, false
-	}
-	if storage == "" {
-		writeErr(w, http.StatusConflict, "Der Datastore "+q.Get("store")+" ist in „"+cl.Name+"“ nicht als Speicher eingetragen. Unter Verbindungen → Backup-Speicher eintragen und dann wiederherstellen.")
+		fail(w, fmt.Errorf("Der Datastore %s ist in „%s“ nicht als Speicher eingetragen, und das Eintragen hat nicht geklappt: %w", q.Get("store"), cl.Name, err))
 		return nil, false
 	}
 	node := q.Get("node")
@@ -916,13 +952,9 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	pveStore, err := s.pveStorageFor(ctx, pve, srv, req.Store)
+	pveStore, err := s.ensurePVEStorage(ctx, pve, cl, srv, req.Store)
 	if err != nil {
-		fail(w, err)
-		return
-	}
-	if pveStore == "" {
-		writeErr(w, http.StatusConflict, "Der Datastore "+req.Store+" ist in „"+cl.Name+"“ nicht als Speicher eingetragen. Unter Verbindungen → Backup-Speicher eintragen und dann wiederherstellen.")
+		fail(w, fmt.Errorf("Der Datastore %s ist in „%s“ nicht als Speicher eingetragen, und das Eintragen hat nicht geklappt: %w", req.Store, cl.Name, err))
 		return
 	}
 	archive := fmt.Sprintf("%s:backup/%s/%s/%s", pveStore, req.Type, req.ID, time.Unix(req.Time, 0).UTC().Format("2006-01-02T15:04:05Z"))

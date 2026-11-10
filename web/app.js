@@ -1504,40 +1504,128 @@ const unb64 = (str) => { try { return new TextDecoder().decode(Uint8Array.from(a
 PAGES["/wiederherstellen"] = async (el, token) => {
   await loadConn();
   const q = new URLSearchParams(location.search);
+  const srcKey = q.get("src");
   el.innerHTML = pageHead("Wiederherstellen", "Lade …");
-  const data = await GET("/api/guests");
+  if (srcKey) {
+    const [server, store] = srcKey.split("|");
+    const sources = (await GET("/api/restore/sources")).sources;
+    const src = sources.find((x) => x.server === server && x.store === store);
+    if (token !== pageToken) return;
+    if (!src) { el.innerHTML = pageHead("Wiederherstellen", "", "", ["/wiederherstellen", "Quelle wählen"]) + callout("red", "Quelle nicht gefunden", esc(store)); return; }
+    if (q.get("vmid") && src.mounted) {
+      const list = (await GET(`/api/restore/source?pbs=${enc(server)}&store=${enc(store)}`)).guests;
+      const sg = list.find((x) => String(x.vmid) === q.get("vmid") && (!q.get("type") || x.type === q.get("type")));
+      if (sg && token === pageToken) {
+        return restoreGuest(el, token, { ...sg, backups: [{ server, server_name: src.server_name, store, count: sg.count, last: sg.last_backup }] }, src);
+      }
+    }
+    return restoreSourceList(el, token, src);
+  }
+  const [data, srcs] = await Promise.all([GET("/api/guests"), GET("/api/restore/sources")]);
   if (token !== pageToken) return;
   const guests = data.guests.filter((g) => g.backups.length);
   const g = guests.find((x) => x.cluster === q.get("cluster") && String(x.vmid) === q.get("vmid"));
-  if (!g) return restorePick(el, data, guests);
-  restoreGuest(el, token, g);
+  if (g) return restoreGuest(el, token, g);
+  restoreStart(el, data, guests, srcs);
 };
 
-// Step 1: which server?
-function restorePick(el, data, guests) {
-  el.innerHTML = pageHead("Wiederherstellen", "Einzelne Dateien und Ordner aus einer Sicherung holen oder eine ganze VM bzw. einen Container zurückspielen. Zuerst den Server wählen.",
-    `<input type="search" data-q placeholder="Suchen: Name, ID …" style="width:240px">`) +
-    (data.errors || []).map((e) => callout("red", "Nicht alles erreichbar", esc(e))).join("") + `<div data-list></div>`;
+const SRC_ICON = { datastore: "database", share: "folder", usb: "disk" };
+const SRC_KIND = { datastore: "Datastore", share: "NAS-Freigabe", usb: "USB-Platte" };
+const srcHref = (x) => `/wiederherstellen?src=${enc(x.server + "|" + x.store)}`;
+function srcState(x) {
+  if (x.mounted) return pill("Bereit", "green", true);
+  if (x.kind === "usb" && x.present) return pill("Angesteckt, nicht eingehängt", "amber");
+  if (x.kind === "usb") return pill("Nicht angesteckt");
+  return pill("Nicht verfügbar", "rose");
+}
+
+async function mountSource(btn, x, done) {
+  await run(btn, async () => {
+    const r = await POST(`/api/pbs/${x.server}/datastores/${enc(x.store)}/mount`);
+    if (r.upid) {
+      for (let i = 0; i < 60; i++) {
+        await new Promise((res) => setTimeout(res, 1000));
+        const st = await GET(`/api/tasks/log?source=${enc("pbs:" + x.server)}&upid=${enc(r.upid)}`).catch(() => null);
+        if (st && st.status && st.status.status === "stopped") {
+          if (st.status.exitstatus !== "OK") throw new Error("Einhängen fehlgeschlagen: " + st.status.exitstatus);
+          break;
+        }
+      }
+    }
+  }, `„${x.label}“ ist eingehängt.`);
+  done();
+}
+
+// Step 1: where from? All backups, or one datastore / NAS share / USB disk.
+function restoreStart(el, data, guests, srcs) {
+  const sources = srcs.sources || [];
+  el.innerHTML = pageHead("Wiederherstellen", "Einzelne Dateien und Ordner aus einer Sicherung holen oder eine ganze VM bzw. einen Container zurückspielen.") +
+    (data.errors || []).concat(srcs.errors || []).map((e) => callout("red", "Nicht alles erreichbar", esc(e))).join("") +
+    `<div class="panel"><div class="panel-head"><div class="panel-title">1. Quelle wählen</div></div>
+      <div class="src-cards">
+        <div class="src-card on"><div class="flex" style="flex-wrap:nowrap">${icon("archive")}<div class="grow"><b>Alle Sicherungen</b><div class="t-sub">alle eingehängten Datastores</div></div></div>${pill("Ausgewählt", "blue")}</div>
+        ${sources.map((x, i) => `<div class="src-card ${x.kind === "usb" && !x.present ? "off" : ""}">
+          <div class="flex" style="flex-wrap:nowrap">${icon(SRC_ICON[x.kind])}<div class="grow"><b>${esc(x.label)}</b><div class="t-sub">${SRC_KIND[x.kind]} · ${esc(x.server_name)}${x.label !== x.store ? " · " + esc(x.store) : ""}</div></div></div>
+          <div class="flex">${srcState(x)}</div>
+          ${x.total ? usageBar(x.used, x.total) : ""}
+          <div class="flex">${x.mounted ? `<a class="btn sm" href="${srcHref(x)}" data-go>Sicherungen ansehen</a>` : x.kind === "usb" && x.present ? `<button class="btn sm" type="button" data-mount="${i}">${icon("download")} Einhängen</button>` : x.kind === "usb" ? `<span class="small muted">Platte anstecken, dann neu laden</span>` : `<span class="small bad">${esc(x.error || "")}</span>`}</div>
+        </div>`).join("")}
+      </div></div><div data-list></div>`;
+  qsa("[data-mount]", el).forEach((b) => b.onclick = () => { const x = sources[+b.dataset.mount]; mountSource(b, x, () => go(srcHref(x))); });
+  const list = qs("[data-list]", el);
+  list.innerHTML = `<div class="panel flush"><div class="panel-head"><div class="panel-title">2. Server wählen</div><input type="search" data-q placeholder="Suchen: Name, ID …" style="width:240px"></div><div data-rows></div></div>`;
   const draw = (f) => {
-    const list = guests.filter((x) => !f || `${x.vmid} ${x.name} ${x.node} ${x.cluster_name}`.toLowerCase().includes(f));
-    qs("[data-list]", el).innerHTML = list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>System</th><th>Letzte Sicherung</th><th>Stände</th><th></th></tr></thead><tbody>
-      ${list.map((x) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${x.type === "lxc" ? "CT" : "VM"}</span> ${x.vmid} ${esc(x.name)}</div><div class="t-sub">${x.status === "running" ? '<span class="dot green"></span> läuft' : esc(x.status)}</div></td>
+    const rows = guests.filter((x) => !f || `${x.vmid} ${x.name} ${x.node} ${x.cluster_name}`.toLowerCase().includes(f));
+    qs("[data-rows]", list).innerHTML = rows.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>System</th><th>Letzte Sicherung</th><th>Gesichert auf</th><th></th></tr></thead><tbody>
+      ${rows.map((x) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${x.type === "lxc" ? "CT" : "VM"}</span> ${x.vmid} ${esc(x.name)}</div><div class="t-sub">${x.status === "running" ? '<span class="dot green"></span> läuft' : esc(x.status)}</div></td>
         <td data-l="System" class="small">${esc(x.cluster_name)}<div class="t-sub">${esc(x.node)}</div></td>
         <td data-l="Letzte Sicherung">${fmtTime(x.last_backup, true)}<div class="t-sub">${fmtAgo(x.last_backup)}</div></td>
-        <td data-l="Stände" class="small">${x.backups.reduce((a, b) => a + b.count, 0)}</td>
+        <td data-l="Gesichert auf" class="small">${x.backups.map((b) => esc(b.store)).join(", ")}</td>
         <td class="act"><a class="btn sm" href="/wiederherstellen?cluster=${enc(x.cluster)}&vmid=${x.vmid}" data-go>${icon("restore")} Auswählen</a></td></tr>`).join("")}
-      </tbody></table></div></div>` : empty("Keine Sicherungen gefunden", guests.length ? "Nichts passt zur Suche." : "Sobald eine VM oder ein Container gesichert wurde, erscheint er hier.", "", "archive");
+      </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Keine Sicherungen gefunden", guests.length ? "Nichts passt zur Suche." : "Sobald eine VM oder ein Container gesichert wurde, erscheint er hier.", "", "archive")}</div>`;
   };
-  qs("[data-q]", el).oninput = (e) => draw(e.target.value.trim().toLowerCase());
+  qs("[data-q]", list).oninput = (e) => draw(e.target.value.trim().toLowerCase());
   draw("");
 }
 
+// Step 2 for one source: the servers backed up on it.
+async function restoreSourceList(el, token, x) {
+  const head = pageHead(`Sicherungen auf „${esc(x.label)}“`, `${SRC_KIND[x.kind]} · ${esc(x.server_name)} · Datastore ${esc(x.store)}`,
+    x.kind === "usb" && x.mounted ? `<button class="btn gray" type="button" data-eject>${icon("eject")} Platte aushängen</button>` : "", ["/wiederherstellen", "Andere Quelle wählen"]);
+  if (!x.mounted) {
+    el.innerHTML = head + (x.kind === "usb" && x.present
+      ? callout("yellow", "Die Platte steckt, ist aber nicht eingehängt", "Zum Wiederherstellen muss sie eingehängt sein.", `<button class="btn sm" type="button" data-mount>${icon("download")} Einhängen</button>`)
+      : callout("yellow", x.kind === "usb" ? "Die Platte ist nicht angesteckt" : "Die Quelle ist nicht verfügbar", x.kind === "usb" ? "Bitte die USB-Platte anstecken und die Seite neu laden." : esc(x.error || ""), `<button class="btn gray sm" type="button" data-reload>${icon("refresh")} Neu laden</button>`));
+    const m = qs("[data-mount]", el);
+    if (m) m.onclick = () => mountSource(m, x, render);
+    const rl = qs("[data-reload]", el);
+    if (rl) rl.onclick = render;
+    return;
+  }
+  el.innerHTML = head + `<div data-list><div class="panel flex"><span class="spinner"></span> Lade …</div></div>`;
+  const ej = qs("[data-eject]", el);
+  if (ej) ej.onclick = () => run(ej, async () => { await POST(`/api/pbs/${x.server}/datastores/${enc(x.store)}/unmount`); await new Promise((r) => setTimeout(r, 2500)); go("/wiederherstellen"); }, `„${x.label}“ wird ausgehängt und kann danach abgezogen werden.`);
+  let list;
+  try { list = (await GET(`/api/restore/source?pbs=${enc(x.server)}&store=${enc(x.store)}`)).guests; }
+  catch (e) { qs("[data-list]", el).innerHTML = callout("red", "Inhalt nicht lesbar", esc(e.message)); return; }
+  if (token !== pageToken) return;
+  qs("[data-list]", el).innerHTML = list.length ? `<div class="panel flush"><div class="panel-head"><div class="panel-title">Server wählen</div></div><div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>Neueste Sicherung hier</th><th>Stände</th><th>In Proxmox</th><th></th></tr></thead><tbody>
+    ${list.map((g) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name || "")}</div></td>
+      <td data-l="Neueste Sicherung">${fmtTime(g.last_backup, true)}<div class="t-sub">${fmtAgo(g.last_backup)}</div></td>
+      <td data-l="Stände" class="small">${g.count}</td>
+      <td data-l="In Proxmox" class="small">${g.exists ? `${esc(g.cluster_name)} · ${esc(g.node)}` : '<span class="bad">nicht mehr vorhanden</span>'}</td>
+      <td class="act"><a class="btn sm" href="${srcHref(x)}&vmid=${g.vmid}&type=${g.type}" data-go>${icon("restore")} Auswählen</a></td></tr>`).join("")}
+    </tbody></table></div></div>` : empty("Auf dieser Quelle liegen keine Sicherungen", "", "", "archive");
+}
+
 // Step 2 and 3: which backup, then files or the whole guest.
-async function restoreGuest(el, token, g) {
+async function restoreGuest(el, token, g, source) {
   const typ = g.type === "lxc" ? "ct" : "vm";
   const kind = typ === "ct" ? "Container" : "VM";
   let src = 0, snaps = [], sel = null;
-  el.innerHTML = pageHead(`${g.vmid} ${esc(g.name)} wiederherstellen`, `${kind} auf ${esc(g.node)} (${esc(g.cluster_name)})`, "", ["/wiederherstellen", "Anderen Server wählen"]) +
+  const where = g.node ? `${kind} auf ${esc(g.node)} (${esc(g.cluster_name)})` : `${kind}, in Proxmox nicht mehr vorhanden – wird in ${esc(g.cluster_name)} wiederhergestellt`;
+  el.innerHTML = pageHead(`${g.vmid} ${esc(g.name || "")} wiederherstellen`, where + (source ? ` · Quelle: ${esc(source.label)}` : ""), "",
+    source ? [srcHref(source), "Zurück zu „" + source.label + "“"] : ["/wiederherstellen", "Anderen Server wählen"]) +
     `<div class="grid grid-restore">
       <div class="panel flush"><div class="panel-head"><div class="panel-title">1. Stand wählen</div></div>
         ${g.backups.length > 1 ? `<div style="padding:0 16px 12px">${field({ name: "src", label: "Sicherungen auf", type: "select", options: g.backups.map((b, i) => [i, `${b.server_name} / ${b.store} (${b.count})`]) })}</div>` : `<p class="panel-intro">${esc(g.backups[0].server_name)} / ${esc(g.backups[0].store)}</p>`}
@@ -1622,6 +1710,7 @@ async function restoreWhole(g, typ, b, time) {
   } catch (e) { /* keep defaults */ }
   let next = 900 + (g.vmid % 100);
   while (ids.has(next)) next++;
+  const homeNode = g.node || nodes[0];
   formDialog({
     title: `${g.vmid} ${g.name} wiederherstellen`, ic: "restore", button: "Wiederherstellen",
     text: `Stand vom <b>${fmtTime(time, true)}</b> aus ${esc(b.server_name)} / ${esc(b.store)}.`,
@@ -1630,7 +1719,7 @@ async function restoreWhole(g, typ, b, time) {
         ["new", `Als neue${typ === "ct" ? "r Container" : " VM"}`, "Das Original bleibt unberührt – zum Prüfen oder Vergleichen."],
         ["replace", "Original ersetzen", `${g.vmid} ${g.name} wird mit dem Stand der Sicherung überschrieben.`]] },
       { name: "vmid", label: "Neue ID", type: "number", value: next },
-      { name: "node", label: "Ziel-Knoten", type: "select", value: g.node, options: nodes.map((n) => [n, n]) },
+      { name: "node", label: "Ziel-Knoten", type: "select", value: homeNode, options: nodes.map((n) => [n, n]) },
       { name: "storage", label: "Speicher für die Disks", type: "select", options: [["", "Lade …"]] },
       { name: "confirm", label: `Zur Bestätigung ${g.vmid} eintippen`, mono: true, hint: `Alles, was seit dem ${fmtTime(time, true)} in ${g.vmid} ${g.name} geändert wurde, geht verloren. ${kind} vorher in Proxmox herunterfahren.` },
       ...(typ === "vm" ? [{ name: "live", label: "Live-Restore: VM sofort starten, Daten im Hintergrund nachladen", type: "checkbox", wide: true, hint: "Die VM ist nach Sekunden da, ist aber langsam, bis alles zurückgeladen ist." }] : []),
@@ -1642,7 +1731,7 @@ async function restoreWhole(g, typ, b, time) {
         const v = formValues(form);
         qs('[data-field="vmid"]', d).hidden = v.mode !== "new";
         qs('[data-field="confirm"]', d).hidden = v.mode !== "replace";
-        if (v.mode === "replace") qs('[name="node"]', d).value = g.node;
+        if (v.mode === "replace") qs('[name="node"]', d).value = homeNode;
         qs('[name="node"]', d).disabled = v.mode === "replace";
       };
       qsa('[name="mode"]', d).forEach((r) => r.onchange = show);
@@ -1659,7 +1748,7 @@ async function restoreWhole(g, typ, b, time) {
     submit: async (v) => {
       const replace = v.mode === "replace";
       if (replace && !(await confirmDialog({ title: `${g.vmid} ${g.name} wirklich ersetzen?`, text: `Der aktuelle Stand wird durch die Sicherung vom ${fmtTime(time, true)} ersetzt. Das lässt sich nicht rückgängig machen.`, button: "Ersetzen" }))) return false;
-      const r = await POST("/api/restore", { cluster: g.cluster, node: replace ? g.node : v.node, pbs: b.server, store: b.store, type: typ, bid: String(g.vmid), time,
+      const r = await POST("/api/restore", { cluster: g.cluster, node: replace ? homeNode : v.node, pbs: b.server, store: b.store, type: typ, bid: String(g.vmid), time,
         vmid: Number(v.vmid), storage: v.storage, start: v.start, live: !!v.live, replace, confirm: v.confirm });
       showTask(r.source, r.upid, replace ? `${g.vmid} wird ersetzt` : `Wiederherstellung als ${v.vmid}`);
     },

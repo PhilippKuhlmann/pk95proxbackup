@@ -464,3 +464,10 @@ details.ev-details[open] .ev-open { transform: rotate(180deg); }
 .radio-card .icon { color: var(--c600); flex: none; }
 button.radio-card:hover { border-color: var(--c300); background: var(--c50); }
 @media (max-width: 900px) { .grid-restore { grid-template-columns: minmax(0, 1fr); } }
+.src-cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+.src-card { display: grid; gap: 10px; align-content: start; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--panel); }
+.src-card .icon { color: var(--c600); }
+.src-card.on { border-color: var(--c500); box-shadow: 0 0 0 1px var(--c500); background: var(--c50); }
+:root[data-theme="dark"] .src-card.on { background: #1b4176; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .src-card.on { background: #1b4176; } }
+.src-card.off { opacity: 0.6; }

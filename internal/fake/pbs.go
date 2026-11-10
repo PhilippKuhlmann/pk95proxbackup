@@ -315,6 +315,10 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			data(w, s.snaps)
 		case "groups":
+			if !s.mounted {
+				apiErr(w, 400, "datastore '"+seg[2]+"' is not mounted")
+				return
+			}
 			groups := map[string]*prox.Group{}
 			for _, sn := range s.snaps {
 				k := sn.Type + "/" + sn.ID

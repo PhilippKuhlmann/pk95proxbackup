@@ -134,7 +134,7 @@ func TestAddPBSStorageToPVE(t *testing.T) {
 		m := s.(map[string]any)
 		if m["storage"] == "pbs-nas" {
 			found = true
-			if m["server"] != "192.168.10.20" || m["datastore"] != "nas-backup" || m["username"] != "pk95-pve@pbs!pve-cluster" {
+			if m["server"] != "192.168.10.20" || m["datastore"] != "nas-backup" || m["username"] != "pk95-pve@pbs!pve-cluster-nas-backup" {
 				t.Fatalf("storage %v", m)
 			}
 			if m["pbs_server"] != "local" {
@@ -152,10 +152,21 @@ func TestAddPBSStorageToPVE(t *testing.T) {
 
 func TestRestoreNeedsStorage(t *testing.T) {
 	cl := login(t)
-	// offsite (external PBS) is not a storage of the cluster: clear error.
+	// offsite (external PBS) is no storage of the cluster yet: it is added for the restore.
 	code, out := cl.do("POST", "/api/restore", map[string]any{"cluster": "cluster", "node": "pve1", "pbs": "buero", "store": "offsite", "type": "vm", "bid": "100", "time": 1700000000, "vmid": 950, "storage": "local-lvm"}, true)
-	if code != 409 {
-		t.Fatalf("restore without storage: %d %v", code, out)
+	if code != 200 {
+		t.Fatalf("restore from a datastore without storage: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/pve/cluster/storages", nil, false)
+	added := false
+	for _, st := range out["storages"].([]any) {
+		m := st.(map[string]any)
+		if m["storage"] == "pk95-offsite" && m["datastore"] == "offsite" && m["server"] == "10.20.0.5" {
+			added = true
+		}
+	}
+	if !added {
+		t.Fatalf("storage pk95-offsite not added: %v", out["storages"])
 	}
 	code, out = cl.do("POST", "/api/restore", map[string]any{"cluster": "cluster", "node": "pve1", "pbs": "local", "store": "backup", "type": "vm", "bid": "100", "time": 1700000000, "vmid": 950, "storage": "local-lvm"}, true)
 	if code != 200 || out["upid"] == "" {
@@ -304,9 +315,9 @@ func TestFileRestore(t *testing.T) {
 	if e := out["entries"].([]any)[0].(map[string]any); e["text"] != "root.pxar.didx" {
 		t.Fatalf("ct root: %v", out)
 	}
-	// a backup on a datastore that is no storage of the cluster: clear message
+	// a backup on a datastore that is no storage of the cluster: it is added on the fly
 	code, out = cl.do("GET", "/api/restore/files?cluster=cluster&pbs=buero&store=offsite&type=vm&bid=100&time=1794168000", nil, false)
-	if code != 409 || !strings.Contains(out["error"].(string), "nicht als Speicher eingetragen") {
+	if code != 200 || !strings.HasPrefix(out["volume"].(string), "pk95-offsite:backup/vm/100/") {
 		t.Fatalf("no storage: %d %v", code, out)
 	}
 }
@@ -336,5 +347,60 @@ func TestRestoreReplace(t *testing.T) {
 	// a new guest must not take a used id
 	if code, out := cl.do("POST", "/api/restore", with("bid", "100", "replace", false, "vmid", 101), true); code != 422 {
 		t.Fatalf("used id: %d %v", code, out)
+	}
+}
+
+func TestRestoreSources(t *testing.T) {
+	cl := login(t)
+	code, out := cl.do("GET", "/api/restore/sources", nil, false)
+	if code != 200 {
+		t.Fatalf("sources: %d %v", code, out)
+	}
+	by := map[string]map[string]any{}
+	for _, x := range out["sources"].([]any) {
+		m := x.(map[string]any)
+		by[m["server"].(string)+"/"+m["store"].(string)] = m
+	}
+	a, b := by["local/usb-a"], by["local/usb-b"]
+	if a["kind"] != "usb" || a["label"] != "Platte A (gerade Tage)" || a["mounted"] != true || a["present"] != true {
+		t.Fatalf("usb-a: %v", a)
+	}
+	if b["kind"] != "usb" || b["present"] != false || b["mounted"] != false {
+		t.Fatalf("usb-b (not plugged in): %v", b)
+	}
+	if by["local/nas-backup"]["kind"] != "share" || by["local/backup"]["kind"] != "datastore" {
+		t.Fatalf("kinds: %v %v", by["local/nas-backup"], by["local/backup"])
+	}
+	// what is on the USB disk
+	code, out = cl.do("GET", "/api/restore/source?pbs=local&store=usb-a", nil, false)
+	if code != 200 {
+		t.Fatalf("source guests: %d %v", code, out)
+	}
+	names := map[float64]string{}
+	for _, x := range out["guests"].([]any) {
+		m := x.(map[string]any)
+		names[m["vmid"].(float64)] = m["name"].(string)
+		if m["exists"] != true || m["cluster"] != "cluster" {
+			t.Fatalf("guest %v", m)
+		}
+	}
+	if names[101] != "fileserver" || names[110] != "pihole" {
+		t.Fatalf("names %v", names)
+	}
+	// not plugged in: a clear error instead of a list
+	if code, _ := cl.do("GET", "/api/restore/source?pbs=local&store=usb-b", nil, false); code == 200 {
+		t.Fatal("an unmounted disk must not list guests")
+	}
+	// restoring files from the disk adds it as storage with its own token
+	code, out = cl.do("GET", "/api/restore/files?cluster=cluster&pbs=local&store=usb-a&type=ct&bid=110&time=1794081600", nil, false)
+	if code != 200 || !strings.HasPrefix(out["volume"].(string), "pk95-usb-a:backup/ct/110/") {
+		t.Fatalf("files from usb: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/pve/cluster/storages", nil, false)
+	for _, st := range out["storages"].([]any) {
+		m := st.(map[string]any)
+		if m["storage"] == "pk95-usb-a" && m["username"] != "pk95-pve@pbs!pve-cluster-usb-a" {
+			t.Fatalf("usb storage must use its own token: %v", m)
+		}
 	}
 }
