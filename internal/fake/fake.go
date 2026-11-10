@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"pk95proxbackup/internal/core"
+	"pk95proxbackup/internal/notify"
 	"pk95proxbackup/internal/prox"
 	"pk95proxbackup/internal/shares"
 )
@@ -256,6 +257,8 @@ func Setup(c *core.Core) (func(), error) {
 	pve.tasks.seed("pve2", "vzdump", "112", "ERROR: VM 112 - unable to find configuration file", now.Add(-20*time.Hour), time.Minute)
 	local.tasks.seed("pbs-appliance", "syncjob", "pk95r-demo-a1:backup:usb-a", "OK", now.Add(-26*time.Hour), 18*time.Minute)
 
+	tg := Telegram()
+	notify.TelegramAPI = tg.URL
 	ls, lfp := startTLS(local)
 	os_, ofp := startTLS(offsite)
 	ps, pfp := startTLS(pve)
@@ -310,7 +313,7 @@ func Setup(c *core.Core) (func(), error) {
 	local.updateDatastore("backup", url.Values{"gc-schedule": {"daily"}, "comment": {"Hauptspeicher (2 TB virtuelle Disk)"}})
 	local.updateDatastore("nas-backup", url.Values{"gc-schedule": {"sun 06:00"}, "comment": {"Synology per NFS"}})
 
-	return func() { ls.Close(); os_.Close(); ps.Close() }, nil
+	return func() { ls.Close(); os_.Close(); ps.Close(); tg.Close() }, nil
 }
 
 // ---- runner ----

@@ -1,4 +1,4 @@
-// Package notify sends notifications by e-mail (SMTP) and to a webhook (ntfy, Gotify, generic JSON).
+// Package notify sends notifications by e-mail (SMTP), Telegram and to a webhook (ntfy, Gotify, generic JSON).
 package notify
 
 import (
@@ -38,11 +38,16 @@ type Settings struct {
 	HookKind    string `json:"hook_kind"` // ntfy, gotify, json
 	HookURL     string `json:"hook_url"`
 	HookToken   string `json:"hook_token,omitempty"`
+
+	TelegramEnabled bool   `json:"telegram_enabled"`
+	TelegramToken   string `json:"telegram_token,omitempty"`
+	TelegramChat    string `json:"telegram_chat"`
+	TelegramFiles   bool   `json:"telegram_files"` // screenshots and reports as photos/files
 }
 
 // Defaults are the settings on first start.
 func Defaults() Settings {
-	return Settings{MinSeverity: "warning", SMTPPort: 587, SMTPSec: "starttls", HookKind: "ntfy"}
+	return Settings{MinSeverity: "warning", SMTPPort: 587, SMTPSec: "starttls", HookKind: "ntfy", TelegramFiles: true}
 }
 
 // Message is one notification.
@@ -84,6 +89,11 @@ func Send(ctx context.Context, s Settings, m Message) error {
 	if s.HookEnabled {
 		if err := sendHook(ctx, s, m); err != nil {
 			errs = append(errs, fmt.Errorf("Webhook: %w", err))
+		}
+	}
+	if s.TelegramEnabled {
+		if err := sendTelegram(ctx, s, m); err != nil {
+			errs = append(errs, fmt.Errorf("Telegram: %w", err))
 		}
 	}
 	return errors.Join(errs...)

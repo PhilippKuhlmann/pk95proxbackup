@@ -2305,6 +2305,13 @@ PAGES["/einstellungen"] = async (el) => {
           ${field({ name: "hook_url", label: "URL", value: n.hook_url, mono: true, placeholder: "https://ntfy.sh/mein-thema", wide: true })}
           ${field({ name: "hook_token", label: "Token (optional)", type: "password", placeholder: set.has_hook_token ? "unverändert" : "" })}
         </div></div>
+        <div class="section"><div class="form-grid">
+          ${field({ name: "telegram_enabled", label: "Per Telegram", type: "checkbox", value: n.telegram_enabled, wide: true, hint: "Bot bei @BotFather anlegen (/newbot), dem Bot eine Nachricht schreiben oder ihn in die Gruppe aufnehmen – dann „Chat-ID ermitteln“." })}
+          ${field({ name: "telegram_token", label: "Bot-Token", type: "password", mono: true, placeholder: set.has_telegram_token ? "unverändert" : "123456789:AA…", wide: true })}
+          ${field({ name: "telegram_chat", label: "Chat-ID", value: n.telegram_chat, mono: true, placeholder: "z. B. 123456789 oder -100…", button: "Chat-ID ermitteln", wide: true, hint: "Person, Gruppe oder Kanal (@kanalname). Gruppen-IDs beginnen mit einem Minus." })}
+          ${field({ type: "html", name: "telegram_found", wide: true, html: `<div data-tg-chats></div>` })}
+          ${field({ name: "telegram_files", label: "Screenshots und Berichte mitschicken", type: "checkbox", value: n.telegram_files, wide: true, hint: "Bei Restore-Tests: die Bildschirmfotos als Bilder und den Bericht als Datei." })}
+        </div></div>
         <div class="section"><div class="section-title">So sieht die Mail aus</div>
           <div class="hint">Grün bei Erfolg, Gelb bei Warnungen (z. B. einzelne VMs nicht gesichert), Rot bei Fehlern – jeweils mit der Liste der gesicherten VMs und Container.</div>
           <div class="flex"><span class="small muted">Vorschau:</span>
@@ -2347,6 +2354,23 @@ PAGES["/einstellungen"] = async (el) => {
   const nf = qs("[data-notify]", el);
   const nv = () => { const v = formValues(nf); v.smtp_port = Number(v.smtp_port) || 587; return { notify: v }; };
   nf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(nf, null); await PUT("/api/settings", nv()); toast("Gespeichert."); } catch (err) { showErrors(nf, err); } };
+  const tgBtn = qs('[data-fbtn="telegram_chat"]', el), tgBox = qs("[data-tg-chats]", el);
+  tgBtn.onclick = () => run(tgBtn, async () => {
+    showErrors(nf, null);
+    tgBox.innerHTML = "";
+    let r;
+    try { r = await POST("/api/settings/telegram/chats", { token: qs('[name="telegram_token"]', nf).value }); }
+    catch (err) { showErrors(nf, err); return; }
+    const set1 = (c) => { qs('[name="telegram_chat"]', nf).value = String(c.id); qs('[name="telegram_enabled"]', nf).checked = true; tgBox.innerHTML = ""; toast(`Chat „${c.title || c.id}“ übernommen – jetzt speichern.`); };
+    if (!r.chats.length) {
+      tgBox.innerHTML = callout("yellow", "Noch keine Nachricht an den Bot", "Schreib dem Bot in Telegram etwas (z. B. /start). Für eine Gruppe: Bot hinzufügen und dort eine Nachricht schreiben. Dann noch einmal „Chat-ID ermitteln“.");
+      return;
+    }
+    if (r.chats.length === 1) { set1(r.chats[0]); return; }
+    const kind = { private: "Person", group: "Gruppe", supergroup: "Gruppe", channel: "Kanal" };
+    tgBox.innerHTML = `<div class="fl">Welcher Chat?</div><div class="radio-cards">${r.chats.map((c, i) => `<label class="radio-card"><input type="radio" name="tg_pick" value="${i}"><span><b>${esc(c.title || String(c.id))}</b><small>${esc(kind[c.type] || c.type)} · <span class="mono">${c.id}</span></small></span></label>`).join("")}</div>`;
+    qsa('[name="tg_pick"]', tgBox).forEach((x) => x.onchange = () => set1(r.chats[+x.value]));
+  });
   qs("[data-test]", el).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test?status=" + qs("[data-test-status]", el).value, nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
   const af = qs("[data-access]", el);
   const av = () => { const v = formValues(af); return { public_url: v.public_url.trim(), trusted_proxies: v.trusted_proxies.split(/[\s,]+/).filter(Boolean) }; };

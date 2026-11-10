@@ -61,9 +61,9 @@ func (s *Server) system(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	ns := s.C.NotifySettings()
-	hasPass, hasToken := ns.SMTPPass != "", ns.HookToken != ""
-	ns.SMTPPass, ns.HookToken = "", ""
-	writeJSON(w, http.StatusOK, map[string]any{"notify": ns, "has_smtp_password": hasPass, "has_hook_token": hasToken,
+	hasPass, hasToken, hasTG := ns.SMTPPass != "", ns.HookToken != "", ns.TelegramToken != ""
+	ns.SMTPPass, ns.HookToken, ns.TelegramToken = "", "", ""
+	writeJSON(w, http.StatusOK, map[string]any{"notify": ns, "has_smtp_password": hasPass, "has_hook_token": hasToken, "has_telegram_token": hasTG,
 		"access": s.C.Access(), "seen_proxy": s.C.SeenProxy(), "public_url": s.C.PublicURL(), "client_ip": s.clientIP(r), "remote_ip": remoteIP(r)})
 }
 
@@ -119,6 +119,10 @@ func (s *Server) readNotify(w http.ResponseWriter, r *http.Request) (notify.Sett
 	if n.HookToken == "" {
 		n.HookToken = cur.HookToken
 	}
+	n.TelegramToken, n.TelegramChat = strings.TrimSpace(n.TelegramToken), strings.TrimSpace(n.TelegramChat)
+	if n.TelegramToken == "" {
+		n.TelegramToken = cur.TelegramToken
+	}
 	errs := map[string]string{}
 	if n.MinSeverity != "info" && n.MinSeverity != "warning" && n.MinSeverity != "critical" {
 		n.MinSeverity = "warning"
@@ -140,10 +144,44 @@ func (s *Server) readNotify(w http.ResponseWriter, r *http.Request) (notify.Sett
 	if n.HookEnabled && !strings.HasPrefix(n.HookURL, "http://") && !strings.HasPrefix(n.HookURL, "https://") {
 		errs["hook_url"] = "URL mit http:// oder https:// angeben."
 	}
+	if n.TelegramEnabled {
+		if !notify.ValidTelegramToken(n.TelegramToken) {
+			errs["telegram_token"] = "Bot-Token von @BotFather angeben, z. B. 123456789:AA…"
+		}
+		if !notify.ValidTelegramChat(n.TelegramChat) {
+			errs["telegram_chat"] = "Chat-ID angeben oder mit „Chat-ID ermitteln“ auslesen."
+		}
+	}
 	if fieldErrs(w, errs) {
 		return n, false
 	}
 	return n, true
+}
+
+// telegramChats reads the chats that wrote to the bot, to pick the chat id.
+func (s *Server) telegramChats(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		token = s.C.NotifySettings().TelegramToken
+	}
+	if !notify.ValidTelegramToken(token) {
+		fieldErrs(w, map[string]string{"telegram_token": "Zuerst den Bot-Token von @BotFather eintragen."})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	chats, err := notify.TelegramChats(ctx, token)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chats": chats})
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +201,7 @@ func (s *Server) testNotify(w http.ResponseWriter, r *http.Request) {
 	if !good {
 		return
 	}
-	if !n.MailEnabled && !n.HookEnabled {
+	if !n.MailEnabled && !n.HookEnabled && !n.TelegramEnabled {
 		writeErr(w, http.StatusBadRequest, "Keinen Weg eingeschaltet.")
 		return
 	}

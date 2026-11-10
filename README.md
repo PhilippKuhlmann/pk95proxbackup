@@ -19,8 +19,10 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Später anstecken und „Prüfen“ liest alles erneut; zum Wiederherstellen erscheint die Platte als Quelle.
 - **Fremde Platten einlesen:** USB-Platte mit dem Datastore eines anderen Backup-Servers (Kundenplatte, altes Archiv)
   einbinden, ohne etwas zu löschen – danach wiederherstellen und automatisch per Restore-Test prüfen.
-- **Überwachung und Benachrichtigung** (E-Mail, ntfy, Gotify, Webhook): fehlgeschlagene Aufgaben, Server offline,
-  Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig.
+- **Überwachung und Benachrichtigung** (E-Mail, Telegram, ntfy, Gotify, Webhook): fehlgeschlagene Aufgaben, Server offline,
+  Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig. Telegram: Bot bei @BotFather anlegen,
+  ihm schreiben (oder in die Gruppe aufnehmen), „Chat-ID ermitteln“ liest die Chat-ID aus; Screenshots und Berichte
+  der Restore-Tests kommen als Bilder und Datei mit.
 
 ```
 Proxmox-VE-Host
