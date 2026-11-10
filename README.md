@@ -17,6 +17,8 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 - **Archiv-Platten (USB):** einmalige Sicherung auf eine eigene Platte zum Mitnehmen oder Einlagern über Jahre –
   nur die neueste Sicherung je Server, auf Wunsch nur ausgewählte Server, danach vollständig geprüft und ausgehängt.
   Später anstecken und „Prüfen“ liest alles erneut; zum Wiederherstellen erscheint die Platte als Quelle.
+- **Fremde Platten einlesen:** USB-Platte mit dem Datastore eines anderen Backup-Servers (Kundenplatte, altes Archiv)
+  einbinden, ohne etwas zu löschen – danach wiederherstellen und automatisch per Restore-Test prüfen.
 - **Überwachung und Benachrichtigung** (E-Mail, ntfy, Gotify, Webhook): fehlgeschlagene Aufgaben, Server offline,
   Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig.
 
@@ -133,6 +135,19 @@ Wechselplatten → „Archiv-Sicherung“. Die Appliance
 
 Der Datastore bleibt im PBS eingetragen: Steckt die Platte Jahre später wieder, wird sie erkannt, „Prüfen“ liest sie
 erneut vollständig, und unter Wiederherstellen erscheint sie als „Archiv: <Name>“. Älter als ein Jahr: einmal prüfen.
+
+### Fremde Platte einlesen
+
+Archiv-Platten → „Fremde Platte einlesen“ bindet den Datastore einer Platte ein, die ein anderer Backup-Server
+beschrieben hat (`reuse-datastore`, nichts wird gelöscht oder formatiert). Angeboten werden Partitionen (ext4/XFS),
+die kein Datastore dieses Servers benutzt. Mit Kommandozeilen-Zugang (lokaler PBS oder SSH) hängt die Appliance die
+Partition kurz **nur lesend** ein und sucht die Datastore-Ordner (`.chunks`); sonst wird der Ordner von Hand
+angegeben – bei Wechselplatten heißt er wie der Datastore auf dem alten Server. Danach:
+
+- **Wiederherstellen:** die Platte erscheint als Quelle „Archiv: <Name>“ (Dateien oder ganze VMs/CTs).
+- **Restore-Tests:** das Kalender-Symbol auf der Karte legt einen Plan für diesen Datastore an. Restore-Tests hängen
+  USB-Datastores selbst ein und danach wieder aus.
+- Verschlüsselte Sicherungen brauchen zum Wiederherstellen den Schlüssel des alten Systems.
 
 ## NFS und SMB
 

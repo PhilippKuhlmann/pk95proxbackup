@@ -291,6 +291,19 @@ func (c *Core) runRestoreTest(ctx context.Context, plan RestoreTestPlan, run *Re
 		return
 	}
 	pbs := c.PBSClient(srv)
+	// A USB disk (rotation, archive, read-in foreign disk) is mounted for the test and
+	// unmounted again afterwards, unless it was mounted already.
+	if mounted, removable := c.storeMounted(ctx, pbs, plan.Store); removable && !mounted {
+		if err := c.mountStore(ctx, pbs, plan.Store); err != nil {
+			fail(fmt.Errorf("USB-Platte %s einhängen: %w", plan.Store, err))
+			return
+		}
+		defer func() {
+			if upid, err := pbs.Unmount(context.WithoutCancel(ctx), plan.Store); err == nil {
+				_, _ = pbs.WaitTask(context.WithoutCancel(ctx), upid, 10*time.Minute)
+			}
+		}()
+	}
 	if c.EnsureStorage == nil {
 		fail(errors.New("intern: keine Speicherzuordnung"))
 		return

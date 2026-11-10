@@ -148,3 +148,75 @@ func (s *Server) deleteArchive(w http.ResponseWriter, r *http.Request) {
 	s.C.Event("info", "Archiv-Sicherung", "Archiv „"+a.Name+"“ aus der Liste entfernt", body)
 	ok(w)
 }
+
+func (s *Server) foreignPartitions(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	parts, err := s.C.ForeignPartitions(ctx, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	srv, _ := s.C.Server(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, map[string]any{"partitions": parts, "can_scan": srv.Local || srv.SSHEnabled})
+}
+
+func (s *Server) scanForeign(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	found, err := s.C.ScanPartition(ctx, r.PathValue("id"), r.URL.Query().Get("uuid"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stores": found})
+}
+
+func (s *Server) importArchive(w http.ResponseWriter, r *http.Request) {
+	var req core.ImportRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.Store = strings.TrimSpace(req.Store)
+	errs := req.Validate()
+	if !storeRe.MatchString(req.Store) {
+		errs["store"] = "Datastore-Name: 3–32 Zeichen, Buchstaben, Ziffern, - und _."
+	}
+	if _, err := s.C.Server(req.ServerID); err != nil {
+		errs["server_id"] = "Backup-Server wählen."
+	}
+	if fieldErrs(w, errs) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
+	pbs, _, err := s.C.PBS(req.ServerID)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if cfgs, err := pbs.Datastores(ctx); err == nil {
+		for _, c := range cfgs {
+			if c.Name == req.Store {
+				fieldErrs(w, map[string]string{"store": "Einen Datastore mit diesem Namen gibt es schon."})
+				return
+			}
+		}
+	}
+	a, err := s.C.ImportDisk(ctx, req)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "count": len(a.Contents)})
+}
+
+func (s *Server) ejectArchive(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 11*time.Minute)
+	defer cancel()
+	if err := s.C.EjectArchive(ctx, r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	ok(w)
+}

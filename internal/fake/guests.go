@@ -19,7 +19,7 @@ func backupConfig(archive, kind string, id int) map[string]string {
 	if m := archiveRe.FindStringSubmatch(archive); m != nil {
 		orig = atoi(m[2])
 	}
-	name := map[int]string{100: "dc01", 101: "fileserver", 102: "nextcloud", 110: "pihole", 111: "homeassistant", 112: "test-win11", 250: "alt-fileserver"}[orig]
+	name := map[int]string{100: "dc01", 101: "fileserver", 102: "nextcloud", 110: "pihole", 111: "homeassistant", 112: "test-win11", 250: "alt-fileserver", 200: "erp", 201: "mailserver", 210: "webshop"}[orig]
 	if name == "" {
 		name = "gast-" + strconv.Itoa(orig)
 	}

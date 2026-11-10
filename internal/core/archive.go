@@ -36,6 +36,7 @@ type Archive struct {
 	Location     string   `json:"location,omitempty"`
 	Note         string   `json:"note,omitempty"`
 	Created      int64    `json:"created"`
+	Imported     bool     `json:"imported,omitempty"` // read in from another Backup Server
 
 	// Disk to prepare on the first run ("" = Store is an existing removable datastore).
 	Disk string `json:"disk,omitempty"`
@@ -431,6 +432,20 @@ func (c *Core) mountStore(ctx context.Context, pbs *prox.PBS, name string) error
 	}
 	_, err = pbs.WaitTask(ctx, upid, 5*time.Minute)
 	return err
+}
+
+// storeMounted tells whether a datastore is removable and whether it is mounted.
+func (c *Core) storeMounted(ctx context.Context, pbs *prox.PBS, name string) (mounted, removable bool) {
+	usage, err := pbs.Usage(ctx)
+	if err != nil {
+		return false, false
+	}
+	for _, u := range usage {
+		if u.Store == name {
+			return u.MountStatus == "mounted", u.MountStatus == "mounted" || u.MountStatus == "notmounted"
+		}
+	}
+	return false, false
 }
 
 func (c *Core) archiveContents(ctx context.Context, pbs *prox.PBS, st string) ([]ArchiveItem, error) {

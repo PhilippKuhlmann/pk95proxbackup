@@ -169,6 +169,10 @@ func (s *Server) routes() {
 	a("PUT /api/archives/{id}", s.updateArchive)
 	a("DELETE /api/archives/{id}", s.deleteArchive)
 	a("POST /api/archives/{id}/check", s.checkArchive)
+	a("POST /api/archives/{id}/eject", s.ejectArchive)
+	a("POST /api/archives/import", s.importArchive)
+	a("GET /api/pbs/{id}/foreign", s.foreignPartitions)
+	a("GET /api/pbs/{id}/foreign/scan", s.scanForeign)
 	a("GET /api/passthrough", s.passthroughInfo)
 	a("POST /api/passthrough", s.passthrough)
 

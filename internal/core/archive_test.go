@@ -8,6 +8,7 @@ import (
 
 	"pk95proxbackup/internal/core"
 	"pk95proxbackup/internal/fake"
+	"pk95proxbackup/internal/prox"
 )
 
 // A one-off archive prepares the empty disk, copies only the newest backup of the chosen
@@ -105,5 +106,85 @@ func TestArchiveCopy(t *testing.T) {
 		if d.Name == "archiv-2026" {
 			t.Fatal("datastore still configured after forget")
 		}
+	}
+}
+
+// A disk from another Backup Server is found, scanned and read in; its backups can then be
+// tested automatically: the test mounts the unplugged-but-present disk and unmounts it again.
+func TestImportForeignDisk(t *testing.T) {
+	fake.RestoreDuration = time.Second
+	t.Cleanup(func() { fake.RestoreDuration = 20 * time.Second })
+	c := newCore(t)
+	ctx := context.Background()
+	parts, err := c.ForeignPartitions(ctx, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uuid := ""
+	for _, p := range parts {
+		if p.Disk == "sdc" {
+			t.Fatal("the rotation disk must not be offered as foreign")
+		}
+		if p.Disk == "sde" {
+			uuid = p.UUID
+		}
+	}
+	if uuid == "" {
+		t.Fatalf("foreign disk not offered: %+v", parts)
+	}
+	found, err := c.ScanPartition(ctx, "local", uuid)
+	if err != nil || len(found) != 1 || found[0].Path != "usb-montag" || found[0].VMs != 2 {
+		t.Fatalf("scan: %+v %v", found, err)
+	}
+	// Wrong folder: nothing is left configured.
+	req := core.ImportRequest{ServerID: "local", UUID: uuid, Path: "falsch", Store: "kunde-mueller", Name: "Platte Müller GmbH"}
+	if _, err := c.ImportDisk(ctx, req); err == nil {
+		t.Fatal("import of a wrong folder must fail")
+	}
+	srv, _ := c.Server("local")
+	pbs := c.PBSClient(srv)
+	cfgs, _ := pbs.Datastores(ctx)
+	for _, d := range cfgs {
+		if d.Name == "kunde-mueller" {
+			t.Fatal("failed import left a datastore behind")
+		}
+	}
+	req.Path = "usb-montag"
+	if errs := req.Validate(); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	a, err := c.ImportDisk(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Imported || len(a.Contents) != 3 || a.Contents[0].Name != "erp" || a.Contents[0].Count != 3 {
+		t.Fatalf("imported contents: %+v", a.Contents)
+	}
+	if err := c.EjectArchive(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Automatic test of the read-in disk.
+	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store string) (string, error) {
+		return "pbs-appliance", nil
+	}
+	plan := core.RestoreTestPlan{ID: "pf", Name: "Fremde Platte", Cluster: "cluster", Node: "pve1", Storage: "local-lvm",
+		PBS: "local", Store: "kunde-mueller", Select: "include", VMIDs: "210", BootWait: 6, Limit: 5, IDBase: 990000}
+	_ = c.St.Put(core.KindRTPlan, plan.ID, plan)
+	if _, err := c.StartRestoreTest(plan.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for c.ActiveRestoreTest() != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("restore test did not finish")
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	run := c.RestoreTestRuns()[0]
+	if run.Status != "ok" || len(run.Results) != 1 || run.Results[0].Name != "webshop" {
+		t.Fatalf("restore test of the foreign disk: %s %s %+v", run.Status, run.Error, run.Results)
+	}
+	if st := c.ArchiveStates(ctx); len(st) != 1 || st[0].Mounted || !st[0].Present {
+		t.Fatalf("disk must be unmounted again after the test: %+v", st)
 	}
 }

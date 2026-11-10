@@ -58,11 +58,18 @@ type PBS struct {
 	tasks     tasks
 	usedExtra map[string]int64
 	users     map[string]bool
+	// foreign holds datastores on disks of other servers: "<uuid>/<path>" → snapshots.
+	foreign map[string][]prox.Snapshot
+}
+
+// AddForeign puts a datastore of another server onto a partition (read in with reuse-datastore).
+func (p *PBS) AddForeign(uuid, path string, snaps []prox.Snapshot) {
+	p.foreign[strings.ToLower(uuid)+"/"+path] = snaps
 }
 
 // NewPBS creates an empty server.
 func NewPBS(node string, root int64) *PBS {
-	return &PBS{node: node, root: root, stores: map[string]*store{}, jobs: map[string]*job{}, remotes: map[string]prox.Remote{}, usedExtra: map[string]int64{}, users: map[string]bool{}}
+	return &PBS{node: node, root: root, stores: map[string]*store{}, jobs: map[string]*job{}, remotes: map[string]prox.Remote{}, usedExtra: map[string]int64{}, users: map[string]bool{}, foreign: map[string][]prox.Snapshot{}}
 }
 
 // AddStore adds a datastore (removable when uuid is set).
@@ -238,7 +245,16 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			apiErr(w, 400, "datastore '"+name+"' already exists.")
 			return
 		}
-		p.stores[name] = &store{cfg: prox.DatastoreConfig{Name: name, Path: f.Get("path"), Comment: f.Get("comment"), GCSchedule: f.Get("gc-schedule")}, total: 4000 * gib, mounted: true}
+		st := &store{cfg: prox.DatastoreConfig{Name: name, Path: f.Get("path"), Comment: f.Get("comment"), GCSchedule: f.Get("gc-schedule"), BackingDevice: f.Get("backing-device")}, total: 4000 * gib, mounted: f.Get("backing-device") == ""}
+		if boolv(f.Get("reuse-datastore")) {
+			snaps, ok := p.foreign[strings.ToLower(f.Get("backing-device"))+"/"+f.Get("path")]
+			if !ok {
+				apiErr(w, 400, "datastore path '"+f.Get("path")+"' is not a valid datastore (missing .chunks)")
+				return
+			}
+			st.snaps, st.total = append([]prox.Snapshot(nil), snaps...), 932*gib
+		}
+		p.stores[name] = st
 		data(w, nil)
 	case len(seg) == 3 && seg[0] == "config" && seg[1] == "datastore":
 		if p.stores[seg[2]] == nil {
@@ -346,7 +362,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			data(w, s.snaps)
 		case "download-decoded":
 			// the guest configuration stored with a backup
-			name := map[string]string{"250": "alt-fileserver", "251": "alter-mailserver"}[f.Get("backup-id")]
+			name := map[string]string{"250": "alt-fileserver", "251": "alter-mailserver", "200": "erp", "201": "mailserver", "210": "webshop"}[f.Get("backup-id")]
 			if name == "" {
 				name = "gast-" + f.Get("backup-id")
 			}

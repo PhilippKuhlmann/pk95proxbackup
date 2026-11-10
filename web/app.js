@@ -1438,7 +1438,8 @@ function archivePanel(list) {
   const card = (a) => {
     const busy = a.busy || a.status === "running";
     const pull = !busy && a.status === "ok" && a.present && !a.mounted;
-    const [l, t] = busy ? [ARCH_PHASE[a.phase] || "Läuft", "blue"] : pull ? ["Fertig – kann abgezogen werden", "green"] : ARCH_STATUS[a.status] || ARCH_STATUS.error;
+    const [l, t] = busy ? [ARCH_PHASE[a.phase] || "Läuft", "blue"] : pull ? [a.imported ? "Kann abgezogen werden" : "Fertig – kann abgezogen werden", "green"]
+      : a.imported && a.status === "ok" ? ["Eingelesen", "green"] : ARCH_STATUS[a.status] || ARCH_STATUS.error;
     const cls = busy ? "present" : a.status === "error" ? "error" : pull ? "ready" : a.present ? "present" : "";
     const last = (a.checks || []).slice(-1)[0];
     const age = a.end ? Math.floor((Date.now() / 1000 - a.end) / 86400) : 0;
@@ -1448,8 +1449,8 @@ function archivePanel(list) {
         <div style="margin-top:6px" class="flex">${pill(l, t, true, busy)}${!busy && !pull && a.present ? pill(a.mounted ? "Eingehängt" : "Angesteckt", "blue") : ""}${a.missing ? pill("Datastore fehlt", "rose") : ""}</div></div></div>
       ${a.total ? usageBar(a.used, a.total) : ""}
       <table class="kv">
-        <tr><td>Erstellt</td><td>${a.end ? fmtTime(a.end, true) : busy ? "läuft seit " + fmtTime(a.start) : "—"}</td></tr>
-        <tr><td>Inhalt</td><td>${names.length ? `${names.length} Server${a.latest ? ", je die neueste Sicherung" : ""}<div class="t-sub">${esc(names.join(", "))}</div>` : '<span class="muted">—</span>'}</td></tr>
+        <tr><td>${a.imported ? "Eingelesen" : "Erstellt"}</td><td>${a.end ? fmtTime(a.end, true) : busy ? "läuft seit " + fmtTime(a.start) : "—"}</td></tr>
+        <tr><td>Inhalt</td><td>${names.length ? `${names.length} Server${a.latest ? ", je die neueste Sicherung" : a.imported ? `, neueste vom ${fmtTime(Math.max(...a.contents.map((x) => x.time)), true)}` : ""}<div class="t-sub">${esc(names.join(", "))}</div>` : '<span class="muted">—</span>'}</td></tr>
         ${a.location ? `<tr><td>Aufbewahrt</td><td>${esc(a.location)}</td></tr>` : ""}
         ${a.copy_secs ? `<tr><td>Dauer</td><td>Kopie ${fmtSecs(a.copy_secs)}${a.verify_secs ? `, Prüfung ${fmtSecs(a.verify_secs)}` : ""}</td></tr>` : ""}
         <tr><td>Geprüft</td><td>${last ? `${fmtTime(last.at, true)} ${last.ok ? '<span class="ok">lesbar</span>' : '<span class="bad">' + esc(last.error || "Fehler") + "</span>"}` : a.verify && a.status === "ok" ? `beim Erstellen <span class="ok">lesbar</span>` : '<span class="muted">noch nie</span>'}</td></tr>
@@ -1459,22 +1460,32 @@ function archivePanel(list) {
         ${!busy && a.status === "ok" && age >= 365 ? `<tr><td>Tipp</td><td>Älter als ein Jahr: Platte einmal anstecken und prüfen lassen.</td></tr>` : ""}</table>
       <div class="disk-foot">
         <button class="btn sm" type="button" data-acheck="${a.id}" ${a.present && !busy && !a.missing && a.status !== "error" ? "" : "disabled"} title="Einhängen, alle Sicherungen zurücklesen, aushängen">${icon("shield")} Prüfen</button>
-        <span class="grow"></span>
+        ${!busy && a.mounted ? `<button class="btn gray sm" type="button" data-aeject="${a.id}">${icon("eject")} Aushängen</button>` : ""}
+        <span class="flex" style="margin-left:auto;gap:6px">
         <a class="ib" href="/wiederherstellen" data-go title="Wiederherstellen" aria-label="Wiederherstellen">${icon("restore")}</a>
+        <button class="ib" type="button" title="Automatischen Restore-Test planen" aria-label="Automatischen Restore-Test planen" data-artest="${a.id}">${icon("calendar")}</button>
         <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-aedit="${a.id}" ${busy ? "disabled" : ""}>${icon("pencil")}</button>
-        <button class="ib red" type="button" title="Aus der Liste entfernen" aria-label="Aus der Liste entfernen" data-adel="${a.id}" ${busy ? "disabled" : ""}>${icon("trash")}</button></div></div>`;
+        <button class="ib red" type="button" title="Aus der Liste entfernen" aria-label="Aus der Liste entfernen" data-adel="${a.id}" ${busy ? "disabled" : ""}>${icon("trash")}</button></span></div></div>`;
   };
   return `<div class="panel" id="archiv">
     <div class="panel-head"><div><div class="panel-title">Archiv-Platten</div>
       <div class="muted small">Einmalige Sicherung auf eine eigene USB-Platte – zum Mitnehmen oder zum Aufbewahren über Jahre. Die Platte wird danach nicht mehr beschrieben.</div></div>
-      <div class="actions"><button class="btn gray sm" type="button" data-archive>${icon("plus")} Archiv-Sicherung erstellen</button></div></div>
+      <div class="actions"><button class="btn gray sm" type="button" data-import>${icon("download")} Fremde Platte einlesen</button><button class="btn gray sm" type="button" data-archive>${icon("plus")} Archiv-Sicherung erstellen</button></div></div>
     ${list.length ? `<div class="rot-disks">${list.map(card).join("")}</div>` :
-      empty("Noch keine Archiv-Platte", "Zum Beispiel ein Jahresabschluss für das Bankschließfach oder ein Stand vor einem großen Umbau. Die Appliance bereitet die Platte vor, kopiert die neueste Sicherung jedes Servers, prüft alles und hängt die Platte aus.", `<button class="btn sm" type="button" data-archive>${icon("plus")} Archiv-Sicherung erstellen</button>`, "archive")}
+      empty("Noch keine Archiv-Platte", "Zum Beispiel ein Jahresabschluss für das Bankschließfach oder ein Stand vor einem großen Umbau. Die Appliance bereitet die Platte vor, kopiert die neueste Sicherung jedes Servers, prüft alles und hängt die Platte aus. Eine Platte von einem anderen Backup-Server lässt sich hier auch einlesen.", `<div class="flex"><button class="btn sm" type="button" data-archive>${icon("plus")} Archiv-Sicherung erstellen</button><button class="btn gray sm" type="button" data-import>${icon("download")} Fremde Platte einlesen</button></div>`, "archive")}
   </div>`;
 }
 
 function bindArchives(el, list, draw) {
   qsa("[data-archive]", el).forEach((b) => b.onclick = () => archiveForm(draw));
+  qsa("[data-import]", el).forEach((b) => b.onclick = () => importForm(draw));
+  qsa("[data-aeject]", el).forEach((b) => b.onclick = () => run(b, async () => { await POST(`/api/archives/${b.dataset.aeject}/eject`); await draw(); }, "Ausgehängt – die Platte kann abgezogen werden."));
+  qsa("[data-artest]", el).forEach((b) => b.onclick = async () => {
+    const a = list.find((x) => x.id === b.dataset.artest);
+    await loadConn();
+    if (!state.clusters.length) { toast("Für Restore-Tests zuerst Proxmox VE unter Verbindungen eintragen.", "error"); return; }
+    rtPlanForm(null, () => go("/restoretests"), { name: "Test " + a.name, pbs: a.server_id, store: a.store, weekdays: [], enabled: false });
+  });
   qsa("[data-acheck]", el).forEach((b) => b.onclick = async () => {
     const a = list.find((x) => x.id === b.dataset.acheck);
     if (await confirmDialog({ title: `Archiv „${a.name}“ prüfen?`, text: "Die Platte wird eingehängt, alle Sicherungen darauf werden vollständig gelesen und geprüft, danach wird sie wieder ausgehängt. Das kann je nach Größe Stunden dauern.", button: "Prüfen", tone: "", ic: "shield" }))
@@ -1501,6 +1512,65 @@ function bindArchives(el, list, draw) {
         hint: "Dann erkennt der Backup-Server die Platte beim Anstecken nicht mehr von selbst. Nur wählen, wenn die Platte nicht mehr gebraucht wird." }],
       submit: async (v) => { await DEL(`/api/archives/${a.id}${v.store ? "?store=1" : ""}`); toast("Entfernt."); draw(); },
     });
+  });
+}
+
+function importForm(done) {
+  const local = state.servers.find((s) => s.local)?.id || state.servers[0]?.id;
+  formDialog({
+    title: "Fremde Platte einlesen", ic: "download",
+    text: "Eine USB-Platte mit Sicherungen eines anderen Backup-Servers – z. B. die Wechselplatte eines Kunden oder ein altes Archiv. Sie wird nur eingebunden, nichts darauf wird gelöscht. Danach kann von ihr wiederhergestellt und automatisch getestet werden.",
+    fields: [
+      { name: "server_id", label: "Platte steckt an", type: "select", value: local, options: state.servers.map((s) => [s.id, s.name]), wide: true },
+      { name: "uuid", label: "Platte", type: "select", options: [["", "Lade …"]], wide: true },
+      { type: "html", name: "found", wide: true, html: `<div data-found></div>` },
+      { name: "path", label: "Ordner des Datastores auf der Platte", mono: true, required: true, placeholder: "usb-montag", wide: true,
+        hint: "Bei Platten, die ein Backup-Server eingerichtet hat, heißt der Ordner wie der Datastore dort (z. B. usb-montag)." },
+      { name: "name", label: "Name", required: true, placeholder: "Platte von Müller GmbH", wide: true, hint: "Unter diesem Namen erscheint die Platte hier und beim Wiederherstellen." },
+      { name: "store", label: "Datastore-Name hier", required: true, mono: true, placeholder: "import-mueller" },
+      { name: "location", label: "Aufbewahrungsort", placeholder: "optional" },
+      { name: "note", label: "Notiz", type: "textarea", wide: true },
+    ],
+    button: "Einlesen",
+    extraButtons: `<button class="btn gray" type="button" data-reload>${icon("refresh")} Platten neu einlesen</button>`,
+    onMount: async (d) => {
+      const nm = qs('[name="name"]', d), stn = qs('[name="store"]', d), path = qs('[name="path"]', d), box = qs("[data-found]", d), sel = qs('[name="uuid"]', d);
+      let touched = false, canScan = false;
+      stn.oninput = () => { touched = true; };
+      nm.oninput = () => { if (!touched) stn.value = ("import-" + nm.value.toLowerCase().replace(/[äöüß]/g, (c) => ({ ä: "ae", ö: "oe", ü: "ue", ß: "ss" })[c]).replace(/^platte (von )?/, "").replace(/[^a-z0-9]+/g, "-")).replace(/-+$/, "").slice(0, 32); };
+      const scan = async () => {
+        box.innerHTML = "";
+        if (!sel.value) return;
+        if (!canScan) { box.innerHTML = callout("", "Ordner von Hand angeben", "Für die automatische Suche braucht die Appliance SSH-Zugang zu diesem Backup-Server (unter Verbindungen). Ohne ihn bitte den Ordner unten eintragen."); return; }
+        box.innerHTML = `<span class="muted small"><span class="spinner"></span> Platte wird durchsucht (nur lesend) …</span>`;
+        try {
+          const r = await GET(`/api/pbs/${qs('[name="server_id"]', d).value}/foreign/scan?uuid=${enc(sel.value)}`);
+          if (!r.stores.length) { box.innerHTML = callout("yellow", "Kein Datastore gefunden", "Auf dieser Platte liegt kein Datastore eines Backup-Servers (kein Ordner mit .chunks)."); return; }
+          box.innerHTML = `<div class="fl">Gefunden</div><div class="radio-cards">${r.stores.map((x, i) => `<label class="radio-card"><input type="radio" name="pick" value="${esc(x.path)}" ${i === 0 ? "checked" : ""}><span><b class="mono">${esc(x.path)}</b><small>${x.vms} VMs, ${x.cts} Container</small></span></label>`).join("")}</div>`;
+          const pick = () => { path.value = (qs('[name="pick"]:checked', d) || {}).value || ""; if (!nm.value) { nm.value = "Platte " + path.value.split("/").pop(); nm.oninput(); } };
+          qsa('[name="pick"]', d).forEach((r) => r.onchange = pick);
+          pick();
+        } catch (e) { box.innerHTML = callout("red", "Platte konnte nicht gelesen werden", esc(e.message)); }
+      };
+      const load = async () => {
+        try {
+          const r = await GET(`/api/pbs/${qs('[name="server_id"]', d).value}/foreign`);
+          canScan = r.can_scan;
+          sel.innerHTML = r.partitions.length ? r.partitions.map((p) => `<option value="${esc(p.uuid)}">${esc(p.partition)} – ${fmtBytes(p.size)} ${esc(p.vendor)} ${esc(p.model)} (${p.usb ? "USB, " : ""}${esc(p.fs)})</option>`).join("") : `<option value="">Keine fremde Platte gefunden – anstecken und neu einlesen</option>`;
+        } catch (e) { sel.innerHTML = ""; toastErr(e); }
+        await scan();
+      };
+      sel.onchange = scan;
+      qs('[name="server_id"]', d).onchange = load;
+      const rb = qs("[data-reload]", d);
+      rb.onclick = () => run(rb, load);
+      await load();
+    },
+    submit: async (v) => {
+      const r = await POST("/api/archives/import", { server_id: v.server_id, uuid: v.uuid, path: v.path, store: v.store, name: v.name, location: v.location, note: v.note });
+      toast(`Eingelesen: ${r.count} Server. Die Platte ist eingehängt – jetzt wiederherstellen oder testen.`);
+      done();
+    },
   });
 }
 
@@ -2013,16 +2083,16 @@ function rtTable(x, live) {
   </tbody></table></div>`;
 }
 
-function rtPlanForm(p, done) {
+function rtPlanForm(p, done, preset = {}) {
   const edit = !!p;
-  p = p || { enabled: true, select: "all", weekdays: [6], time: "02:00", max_cores: 4, max_memory: 8192, boot_wait: 180, time_limit: 240, id_base: 990000, cluster: state.clusters[0]?.id, pbs: state.servers[0]?.id };
+  p = p || { ...{ enabled: true, select: "all", weekdays: [6], time: "02:00", max_cores: 4, max_memory: 8192, boot_wait: 180, time_limit: 240, id_base: 990000, cluster: state.clusters[0]?.id, pbs: state.servers[0]?.id }, ...preset };
   formDialog({
     title: edit ? `Plan „${p.name}“ bearbeiten` : "Restore-Test-Plan anlegen", ic: "shield",
     fields: [
       { name: "name", label: "Name", value: p.name, required: true, placeholder: "Wöchentlicher Test", wide: true },
       { type: "html", wide: true, html: `<div class="section-title">Was wird getestet?</div>` },
       { name: "pbs", label: "Backup-Server", type: "select", value: p.pbs, options: state.servers.map((x) => [x.id, x.name]) },
-      { name: "store", label: "Datastore", type: "select", options: [["", "Lade …"]] },
+      { name: "store", label: "Datastore", type: "select", options: [["", "Lade …"]], hint: "Auch USB-Platten: Sie werden für den Test eingehängt und danach wieder ausgehängt." },
       { name: "select", type: "radio", label: "Server", value: p.select, options: [["all", "Alle", "Jeweils die neueste Sicherung"], ["include", "Nur …", "Nur diese IDs"], ["exclude", "Alle außer …", "Diese IDs auslassen"]] },
       { name: "vmids", label: "IDs", value: p.vmids, mono: true, placeholder: "100,101,110", wide: true },
       { type: "html", wide: true, html: `<div class="section-title">Wo wird getestet?</div><div class="hint">Am besten ein Knoten und Speicher mit genug freiem Platz, nicht der Speicher der Produktiv-VMs, wenn er knapp ist.</div>` },

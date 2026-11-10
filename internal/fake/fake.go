@@ -184,6 +184,21 @@ func Setup(c *core.Core) (func(), error) {
 	local.AddDisk("sdc", "WD", "Elements 2620", "usb", 1863*gib, "filesystem", "3f1c2a9e-0d5b-4f7e-9a61-2c8d1e5b7a10")
 	local.AddDisk("sdd", "Seagate", "Expansion HDD", "usb", 3726*gib, "unused", "")
 	local.SetMounted("usb-a", true)
+	// A disk from another customer's appliance (to be read in).
+	local.AddDisk("sde", "Intenso", "External USB 3.0", "usb", 932*gib, "filesystem", "5d2a7c14-91e3-4b8f-a6d0-7e3c2b1f9a44")
+	{
+		var snaps []prox.Snapshot
+		for d := 1; d <= 3; d++ {
+			t := time.Now().AddDate(0, 0, -30*d).Unix()
+			for _, g := range []struct {
+				typ, id string
+				gb      int64
+			}{{"vm", "200", 90}, {"vm", "201", 45}, {"ct", "210", 6}} {
+				snaps = append(snaps, prox.Snapshot{Type: g.typ, ID: g.id, Time: t + int64(len(g.id)), Size: g.gb * gib})
+			}
+		}
+		local.AddForeign("5d2a7c14-91e3-4b8f-a6d0-7e3c2b1f9a44", "usb-montag", snaps)
+	}
 
 	offsite := NewPBS("pbs-buero", 64*gib)
 	offsite.AddStore("offsite", "/mnt/datastore/offsite", "", 8000*gib, 0)
@@ -246,7 +261,9 @@ func Setup(c *core.Core) (func(), error) {
 	ps, pfp := startTLS(pve)
 	pve.storageFingerprints = map[string]string{"local": lfp}
 
-	c.LocalRunner = NewRunner()
+	runner := NewRunner()
+	runner.scans["/dev/sde1"] = "STORE\tusb-montag\t2\t1\n"
+	c.LocalRunner = runner
 	c.SelfUUID = func() string { return "6b0f6f6e-3c55-4e2b-9d0e-3a7c95b0f120" }
 
 	host := func(s *httptest.Server) (string, int) {
@@ -303,11 +320,12 @@ type Runner struct {
 	mu      sync.Mutex
 	mounted map[string]bool
 	files   map[string]string
+	scans   map[string]string // device → output of the datastore scan
 }
 
 // NewRunner returns a runner where the demo share is mounted.
 func NewRunner() *Runner {
-	return &Runner{mounted: map[string]bool{shares.Root + "/nas": true}, files: map[string]string{}}
+	return &Runner{mounted: map[string]bool{shares.Root + "/nas": true}, files: map[string]string{}, scans: map[string]string{}}
 }
 
 // Run implements hostexec.Runner.
@@ -337,6 +355,15 @@ func (r *Runner) Run(_ context.Context, name string, args ...string) (string, er
 			}
 		}
 		return "", nil
+	case "sh":
+		// datastore scan of a partition: sh -c <script> sh <device>
+		if len(args) == 4 && strings.Contains(args[1], ".chunks") {
+			out, ok := r.scans[args[3]]
+			if !ok {
+				return "mount: wrong fs type", fmt.Errorf("sh: exit status 2")
+			}
+			return out, nil
+		}
 	case "proxmox-backup-manager":
 		return "proxmox-backup-server 4.0.18-1 running version: 4.0.18", nil
 	}
