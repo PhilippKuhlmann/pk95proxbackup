@@ -443,7 +443,7 @@ func TestRestoreTestReport(t *testing.T) {
 		t.Fatal("setup")
 	}
 	run := core.RestoreTestRun{ID: "20261110-065109", PlanName: "Wöchentlich", By: "admin", Start: 1794289869, End: 1794290064, Status: "ok",
-		Cluster: "PVE02", Node: "srv-pve02", Storage: "local-zfs", Source: "PBS01 / local",
+		Cluster: "PVE-Cluster", Node: "pve1", Storage: "local-zfs", Source: "PBS-Haupt / local",
 		Results: []core.RestoreTestResult{{Type: "vm", VMID: "5000", Name: "opnsense", Status: "ok", TestID: 990000, BackupTime: 1794200000,
 			Started: 1794289870, RestoreEnd: 1794289930, Finished: 1794290060, Restore: 60, Boot: 95, DiskBytes: 32 << 30,
 			OS: "FreeBSD 14", Hostname: "opnsense", Info: "Betriebssystem antwortet", Notes: "Netzwerk getrennt; hostpci0 entfernt", Screenshot: "vm-5000.png"}}}
@@ -461,7 +461,7 @@ func TestRestoreTestReport(t *testing.T) {
 	resp.Body.Close()
 	h := string(body)
 	for _, want := range []string{"Der Server lässt sich aus der Sicherung starten", "opnsense", "990000", "1:00 min", "1:35 min", "3:10 min",
-		"32,0 GiB", "FreeBSD 14", "hostpci0 entfernt", "PVE02", "srv-pve02 / local-zfs", "PBS01 / local", "data:image/png;base64,", "Drucken / als PDF"} {
+		"32,0 GiB", "FreeBSD 14", "hostpci0 entfernt", "PVE-Cluster", "pve1 / local-zfs", "PBS-Haupt / local", "data:image/png;base64,", "Drucken / als PDF"} {
 		if !strings.Contains(h, want) {
 			t.Errorf("report misses %q", want)
 		}

@@ -8,7 +8,7 @@
 # Afterwards the script shows the address and the setup code of the web interface.
 #
 # Asks step by step (Enter keeps the suggestion). Environment variables become the suggestions,
-# e.g. VMID=260 IP=10.10.250.60/24 GW=10.10.250.1 DATA_DISK=500; without a terminal the script
+# e.g. VMID=260 IP=192.168.1.60/24 GW=192.168.1.1 DATA_DISK=500; without a terminal the script
 # runs unattended with them.
 set -euo pipefail
 

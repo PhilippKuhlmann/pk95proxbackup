@@ -2082,7 +2082,7 @@ PAGES["/einstellungen"] = async (el) => {
             <div class="flex"><button class="btn gray sm" type="button" data-adopt>Übernehmen</button></div></div>` : ""}
           <div class="form-grid">
             ${field({ name: "public_url", label: "Adresse der Oberfläche", value: set.access.public_url, placeholder: set.public_url, mono: true, wide: true, hint: "Für die Links in Mails und Push-Nachrichten. Leer = automatisch (jetzt: " + set.public_url + ")." })}
-            ${field({ name: "trusted_proxies", label: "IP des Reverse Proxys", value: (set.access.trusted_proxies || []).join(", "), mono: true, wide: true, placeholder: "z. B. 10.10.250.95", hint: "Dann gilt die Login-Sperre für die echte Adresse des Aufrufers statt für den Proxy. Du kommst gerade von " + set.client_ip + (set.client_ip !== set.remote_ip ? " (über " + set.remote_ip + ")" : "") + "." })}
+            ${field({ name: "trusted_proxies", label: "IP des Reverse Proxys", value: (set.access.trusted_proxies || []).join(", "), mono: true, wide: true, placeholder: "z. B. 192.168.1.2", hint: "Dann gilt die Login-Sperre für die echte Adresse des Aufrufers statt für den Proxy. Du kommst gerade von " + set.client_ip + (set.client_ip !== set.remote_ip ? " (über " + set.remote_ip + ")" : "") + "." })}
           </div>
           <div class="hint">Proxy-Ziel: <code>https://${esc((sys.ips || [])[0] || "IP")}:443</code> (Zertifikatsprüfung aus, selbst signiert) oder <code>http://${esc((sys.ips || [])[0] || "IP")}:80</code>; der Proxy muss dann <code>X-Forwarded-Proto: https</code> mitschicken. Websockets sind nicht nötig.</div>
           <div><button class="btn" type="submit">Speichern</button></div></form></div>
