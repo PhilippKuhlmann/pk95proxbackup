@@ -114,6 +114,15 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	seg := strings.Split(strings.Trim(path, "/"), "/")
 	f := form(r)
 	m := r.Method
+	if len(seg) == 6 && seg[0] == "nodes" && seg[2] == "storage" && seg[4] == "file-restore" {
+		switch seg[5] {
+		case "list":
+			p.fileList(w, f.Get("volume"), f.Get("filepath"))
+		case "download":
+			p.fileDownload(w, f.Get("filepath"))
+		}
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.NoPrivs {
@@ -277,9 +286,15 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data(w, p.tasks.start(seg[1], "vzdump", f.Get("vmid"), VzdumpDuration, head, func() (string, []string) { return status, rest }))
 	case len(seg) == 3 && seg[0] == "nodes" && (seg[2] == "qemu" || seg[2] == "lxc") && m == "POST":
 		id := atoi(f.Get("vmid"))
-		if p.guest(id) != nil {
-			apiErr(w, 500, "VM "+strconv.Itoa(id)+" already exists")
-			return
+		if g := p.guest(id); g != nil {
+			if !boolv(f.Get("force")) {
+				apiErr(w, 500, "VM "+strconv.Itoa(id)+" already exists")
+				return
+			}
+			if g.Status == "running" {
+				apiErr(w, 500, "VM "+strconv.Itoa(id)+" is running - destroy failed")
+				return
+			}
 		}
 		typ := "qmrestore"
 		if seg[2] == "lxc" {
@@ -289,7 +304,9 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upid := p.tasks.start(node, typ, f.Get("vmid"), 20*time.Second, []string{"restore " + f.Get("archive") + f.Get("ostemplate")}, func() (string, []string) {
 			p.mu.Lock()
 			defer p.mu.Unlock()
-			p.guests = append(p.guests, prox.Guest{VMID: id, Name: "restored-" + strconv.Itoa(id), Node: node, Type: seg[2], Status: "stopped"})
+			if g := p.guest(id); g == nil {
+				p.guests = append(p.guests, prox.Guest{VMID: id, Name: "restored-" + strconv.Itoa(id), Node: node, Type: seg[2], Status: "stopped"})
+			}
 			return "OK", []string{"restore done"}
 		})
 		data(w, upid)

@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -672,6 +675,174 @@ func (s *Server) guestSnapshots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"snapshots": out})
 }
 
+// pveStorageFor finds the storage of a cluster that points to a datastore of a Backup Server.
+func (s *Server) pveStorageFor(ctx context.Context, pve *prox.PVE, srv core.PBSServer, store string) (string, error) {
+	storages, err := pve.Storages(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, st := range storages {
+		if st.Type != "pbs" || st.Datastore != store {
+			continue
+		}
+		if m, ok := s.matchServer(st); ok && m.ID == srv.ID {
+			return st.Storage, nil
+		}
+	}
+	return "", nil
+}
+
+// backupVolume identifies one backup as Proxmox VE volume (storage:backup/vm/100/<time>).
+type backupVolume struct {
+	pve     *prox.PVE
+	cluster core.PVECluster
+	node    string
+	storage string
+	volume  string
+	typ     string // vm, ct
+	id      string
+	time    int64
+}
+
+// resolveVolume reads cluster, pbs, store, type, bid, time (and optionally node) from the query.
+func (s *Server) resolveVolume(w http.ResponseWriter, r *http.Request) (*backupVolume, bool) {
+	q := r.URL.Query()
+	pve, cl, err := s.C.PVE(q.Get("cluster"))
+	if err != nil {
+		fail(w, err)
+		return nil, false
+	}
+	srv, err := s.C.Server(q.Get("pbs"))
+	if err != nil {
+		fail(w, err)
+		return nil, false
+	}
+	t, _ := strconv.ParseInt(q.Get("time"), 10, 64)
+	typ, id := q.Get("type"), q.Get("bid")
+	if (typ != "vm" && typ != "ct") || id == "" || t == 0 {
+		writeErr(w, http.StatusBadRequest, "Sicherung nicht angegeben.")
+		return nil, false
+	}
+	storage, err := s.pveStorageFor(r.Context(), pve, srv, q.Get("store"))
+	if err != nil {
+		fail(w, err)
+		return nil, false
+	}
+	if storage == "" {
+		writeErr(w, http.StatusConflict, "Der Datastore "+q.Get("store")+" ist in „"+cl.Name+"“ nicht als Speicher eingetragen. Unter Verbindungen → Backup-Speicher eintragen und dann wiederherstellen.")
+		return nil, false
+	}
+	node := q.Get("node")
+	if node == "" {
+		nodes, err := pve.Nodes(r.Context())
+		if err != nil {
+			fail(w, err)
+			return nil, false
+		}
+		for _, n := range nodes {
+			if n.Status == "online" || n.Status == "" {
+				node = n.Node
+				break
+			}
+		}
+		if node == "" {
+			writeErr(w, http.StatusBadGateway, "Kein Knoten von „"+cl.Name+"“ ist online.")
+			return nil, false
+		}
+	}
+	return &backupVolume{pve: pve, cluster: cl, node: node, storage: storage, typ: typ, id: id, time: t,
+		volume: fmt.Sprintf("%s:backup/%s/%s/%s", storage, typ, id, time.Unix(t, 0).UTC().Format("2006-01-02T15:04:05Z"))}, true
+}
+
+var b64PathRe = regexp.MustCompile(`^[A-Za-z0-9+/=_-]*$`)
+
+// restoreFiles lists a directory inside a backup.
+func (s *Server) restoreFiles(w http.ResponseWriter, r *http.Request) {
+	v, good := s.resolveVolume(w, r)
+	if !good {
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		path = base64.StdEncoding.EncodeToString([]byte("/"))
+	}
+	if !b64PathRe.MatchString(path) {
+		writeErr(w, http.StatusBadRequest, "Ungültiger Pfad.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	entries, err := v.pve.FileRestoreList(ctx, v.node, v.storage, v.volume, path)
+	if err != nil {
+		fail(w, fmt.Errorf("Dateien der Sicherung nicht lesbar: %w", err))
+		return
+	}
+	if entries == nil {
+		entries = []prox.FileEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "node": v.node, "storage": v.storage, "volume": v.volume})
+}
+
+// restoreDownload streams a file (or a folder as zip) out of a backup to the browser.
+func (s *Server) restoreDownload(w http.ResponseWriter, r *http.Request) {
+	v, good := s.resolveVolume(w, r)
+	if !good {
+		return
+	}
+	q := r.URL.Query()
+	path := q.Get("path")
+	if path == "" || !b64PathRe.MatchString(path) {
+		writeErr(w, http.StatusBadRequest, "Ungültiger Pfad.")
+		return
+	}
+	isDir := q.Get("dir") == "1"
+	resp, err := v.pve.FileRestoreDownload(r.Context(), v.node, v.storage, v.volume, path, false)
+	if err != nil {
+		fail(w, fmt.Errorf("Download aus der Sicherung fehlgeschlagen: %w", err))
+		return
+	}
+	defer resp.Body.Close()
+	name := strings.Map(func(r rune) rune {
+		if r < 32 || strings.ContainsRune(`/\"`, r) {
+			return '_'
+		}
+		return r
+	}, q.Get("name"))
+	if name == "" {
+		name = "wiederherstellung"
+	}
+	ctype := resp.Header.Get("Content-Type")
+	if isDir {
+		name += ".zip"
+		ctype = "application/zip"
+	}
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(name))
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	n, _ := io.Copy(w, resp.Body)
+	raw, _ := base64.StdEncoding.DecodeString(path)
+	s.C.Event("info", v.cluster.Name, "Dateien wiederhergestellt: "+name,
+		fmt.Sprintf("%s %s, Sicherung vom %s: %s (%s) heruntergeladen von %s.", strings.ToUpper(v.typ), v.id,
+			time.Unix(v.time, 0).Format("02.01.2006 15:04"), string(raw), humanBytes(n), currentUser(r).Username))
+}
+
+func humanBytes(n int64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	f := float64(n)
+	i := 0
+	for f >= 1024 && i < len(units)-1 {
+		f /= 1024
+		i++
+	}
+	return strings.Replace(fmt.Sprintf("%.1f %s", f, units[i]), ".", ",", 1)
+}
+
 func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cluster string `json:"cluster"`
@@ -684,6 +855,9 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		VMID    int    `json:"vmid"`
 		Storage string `json:"storage"`
 		Start   bool   `json:"start"`
+		Replace bool   `json:"replace"` // overwrite the original guest
+		Confirm string `json:"confirm"` // its ID typed again
+		Live    bool   `json:"live"`    // VMs: start at once, restore in the background
 	}
 	if !decode(w, r, &req) {
 		return
@@ -706,30 +880,49 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	if req.Storage == "" {
 		errs["storage"] = "Ziel-Speicher für die Disks wählen."
 	}
-	if req.VMID < 100 {
+	if req.Replace {
+		req.VMID, _ = strconv.Atoi(req.ID)
+		if req.Confirm != req.ID {
+			errs["confirm"] = "Zur Bestätigung die ID " + req.ID + " eintippen."
+		}
+	} else if req.VMID < 100 {
 		errs["vmid"] = "Neue ID ab 100."
+	}
+	if req.Live && req.Type != "vm" {
+		req.Live = false
 	}
 	if fieldErrs(w, errs) {
 		return
 	}
-	// The backup must be reachable through a PBS storage of this cluster.
-	storages, err := pve.Storages(ctx)
+	guests, err := pve.Guests(ctx)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	pveStore := ""
-	for _, st := range storages {
-		if st.Type != "pbs" || st.Datastore != req.Store {
+	for _, g := range guests {
+		if g.VMID != req.VMID {
 			continue
 		}
-		if m, ok := s.matchServer(st); ok && m.ID == srv.ID {
-			pveStore = st.Storage
-			break
+		if !req.Replace {
+			fieldErrs(w, map[string]string{"vmid": fmt.Sprintf("Die ID %d ist schon vergeben (%s).", g.VMID, g.Name)})
+			return
+		}
+		if g.Status == "running" {
+			writeErr(w, http.StatusConflict, fmt.Sprintf("%d %s läuft noch. Zum Ersetzen bitte zuerst in Proxmox herunterfahren.", g.VMID, g.Name))
+			return
+		}
+		if g.Node != req.Node {
+			writeErr(w, http.StatusConflict, fmt.Sprintf("%d %s liegt auf Knoten %s – zum Ersetzen diesen Knoten als Ziel wählen.", g.VMID, g.Name, g.Node))
+			return
 		}
 	}
+	pveStore, err := s.pveStorageFor(ctx, pve, srv, req.Store)
+	if err != nil {
+		fail(w, err)
+		return
+	}
 	if pveStore == "" {
-		writeErr(w, http.StatusConflict, "Der Datastore "+req.Store+" ist in „"+cl.Name+"“ nicht als Speicher eingetragen. Unter Proxmox VE → Backup-Speicher eintragen und dann wiederherstellen.")
+		writeErr(w, http.StatusConflict, "Der Datastore "+req.Store+" ist in „"+cl.Name+"“ nicht als Speicher eingetragen. Unter Verbindungen → Backup-Speicher eintragen und dann wiederherstellen.")
 		return
 	}
 	archive := fmt.Sprintf("%s:backup/%s/%s/%s", pveStore, req.Type, req.ID, time.Unix(req.Time, 0).UTC().Format("2006-01-02T15:04:05Z"))
@@ -737,12 +930,17 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	if req.Type == "ct" {
 		typ = "lxc"
 	}
-	upid, err := pve.Restore(ctx, req.Node, typ, req.VMID, archive, req.Storage, req.Start)
+	upid, err := pve.Restore(ctx, req.Node, typ, req.VMID, archive, req.Storage, prox.RestoreOptions{Start: req.Start, Force: req.Replace, Live: req.Live})
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	s.C.Event("info", cl.Name, fmt.Sprintf("Wiederherstellung als %d gestartet", req.VMID), archive)
+	what := fmt.Sprintf("Wiederherstellung als %d gestartet", req.VMID)
+	sev := "info"
+	if req.Replace {
+		what, sev = fmt.Sprintf("%d wird aus der Sicherung ersetzt", req.VMID), "warning"
+	}
+	s.C.Event(sev, cl.Name, what, archive+" (von "+currentUser(r).Username+")")
 	s.C.RequestRefresh()
 	writeJSON(w, http.StatusOK, map[string]any{"upid": upid, "source": "pve:" + cl.ID})
 }

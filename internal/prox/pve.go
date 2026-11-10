@@ -197,20 +197,54 @@ func (p *PVE) NextID(ctx context.Context) (int, error) {
 	return strconv.Atoi(s)
 }
 
-// Restore restores a backup volume (storage:backup/vm/100/<time>) as a new guest.
-func (p *PVE) Restore(ctx context.Context, node, typ string, vmid int, archive, storage string, start bool) (string, error) {
+// RestoreOptions control a restore.
+type RestoreOptions struct {
+	Start bool // start the guest afterwards
+	Force bool // overwrite an existing guest with the same VMID
+	Live  bool // VMs from PBS: start at once and restore in the background
+}
+
+// Restore restores a backup volume (storage:backup/vm/100/<time>) as a guest.
+func (p *PVE) Restore(ctx context.Context, node, typ string, vmid int, archive, storage string, o RestoreOptions) (string, error) {
 	var upid string
 	var err error
 	if typ == "lxc" || typ == "ct" {
 		err = p.Do(ctx, http.MethodPost, "/nodes/"+url.PathEscape(node)+"/lxc", Params{
-			"vmid": vmid, "ostemplate": archive, "restore": true, "storage": storage, "start": boolNil(start),
+			"vmid": vmid, "ostemplate": archive, "restore": true, "storage": storage,
+			"start": boolNil(o.Start), "force": boolNil(o.Force),
 		}, &upid)
 	} else {
-		err = p.Do(ctx, http.MethodPost, "/nodes/"+url.PathEscape(node)+"/qemu", Params{
-			"vmid": vmid, "archive": archive, "storage": storage, "unique": true, "start": boolNil(start),
-		}, &upid)
+		params := Params{"vmid": vmid, "archive": archive, "storage": storage, "start": boolNil(o.Start || o.Live), "force": boolNil(o.Force), "live-restore": boolNil(o.Live)}
+		if !o.Force {
+			params["unique"] = true // new MAC addresses for a copy next to the original
+		}
+		err = p.Do(ctx, http.MethodPost, "/nodes/"+url.PathEscape(node)+"/qemu", params, &upid)
 	}
 	return upid, err
+}
+
+// FileEntry is an entry of a file-restore listing. Filepath is base64 encoded.
+type FileEntry struct {
+	Filepath string `json:"filepath"`
+	Text     string `json:"text"`
+	Type     string `json:"type"` // d dir, f file, l link, v virtual (disk, partition, archive), h hardlink
+	Size     int64  `json:"size"`
+	Mtime    int64  `json:"mtime"`
+}
+
+// FileRestoreList lists a directory inside a backup (volume = storage:backup/…).
+// For VM backups Proxmox VE starts a small helper VM first, so this can take a minute.
+func (p *PVE) FileRestoreList(ctx context.Context, node, storage, volume, filepathB64 string) ([]FileEntry, error) {
+	var out []FileEntry
+	err := p.DoSlow(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/storage/"+url.PathEscape(storage)+"/file-restore/list",
+		Params{"volume": volume, "filepath": filepathB64}, &out)
+	return out, err
+}
+
+// FileRestoreDownload streams a file, or a directory as zip (tar = false) or tar.zst.
+func (p *PVE) FileRestoreDownload(ctx context.Context, node, storage, volume, filepathB64 string, tar bool) (*http.Response, error) {
+	return p.Stream(ctx, "/nodes/"+url.PathEscape(node)+"/storage/"+url.PathEscape(storage)+"/file-restore/download",
+		Params{"volume": volume, "filepath": filepathB64, "tar": boolNil(tar)})
 }
 
 // PVETask is an entry of /cluster/tasks.

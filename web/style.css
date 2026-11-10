@@ -458,3 +458,9 @@ details.ev-details[open] .ev-open { transform: rotate(180deg); }
 .ev-table td, .ev-table th { padding: 8px 12px; }
 .ev-body .log { max-height: 260px; }
 @media (max-width: 720px) { .ev-body { margin-left: 0; } }
+
+/* ---- restore ---- */
+.grid-restore { grid-template-columns: minmax(320px, 440px) minmax(0, 1fr); }
+.radio-card .icon { color: var(--c600); flex: none; }
+button.radio-card:hover { border-color: var(--c300); background: var(--c50); }
+@media (max-width: 900px) { .grid-restore { grid-template-columns: minmax(0, 1fr); } }

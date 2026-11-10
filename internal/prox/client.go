@@ -26,6 +26,7 @@ type Client struct {
 	base   string // https://host:port/api2/json
 	auth   string // value of the Authorization header
 	http   *http.Client
+	slow   *http.Client // no overall timeout: downloads and slow calls, bounded by the context
 	Host   string
 	Port   int
 	Finger string
@@ -109,10 +110,12 @@ func pinnedTransport(fingerprint string) *http.Transport {
 }
 
 func newClient(host string, port int, fingerprint, auth string) *Client {
+	tr := pinnedTransport(fingerprint)
 	return &Client{
 		base:   "https://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/api2/json",
 		auth:   auth,
-		http:   &http.Client{Transport: pinnedTransport(fingerprint), Timeout: 60 * time.Second},
+		http:   &http.Client{Transport: tr, Timeout: 60 * time.Second},
+		slow:   &http.Client{Transport: tr},
 		Host:   host,
 		Port:   port,
 		Finger: fingerprint,
@@ -153,6 +156,39 @@ func (c *Client) Do(ctx context.Context, method, path string, params Params, out
 
 // DoTotal is Do and also returns the "total" member (task logs and lists report it).
 func (c *Client) DoTotal(ctx context.Context, method, path string, params Params, out any) (int, error) {
+	return c.do(ctx, c.http, method, path, params, out)
+}
+
+// DoSlow is Do without the 60 s limit (the context bounds it), for calls that may take minutes.
+func (c *Client) DoSlow(ctx context.Context, method, path string, params Params, out any) error {
+	_, err := c.do(ctx, c.slow, method, path, params, out)
+	return err
+}
+
+// Stream sends a GET and returns the response for streaming (2xx only; the caller closes it).
+func (c *Client) Stream(ctx context.Context, path string, params Params) (*http.Response, error) {
+	u := c.base + path
+	if vals := params.encode(); len(vals) > 0 {
+		u += "?" + vals.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", c.auth)
+	resp, err := c.slow.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s nicht erreichbar: %w", c.Host, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, &APIError{Status: resp.StatusCode, Message: apiMessage(resp, raw)}
+	}
+	return resp, nil
+}
+
+func (c *Client) do(ctx context.Context, client *http.Client, method, path string, params Params, out any) (int, error) {
 	u := c.base + path
 	var body io.Reader
 	vals := params.encode()
@@ -171,7 +207,7 @@ func (c *Client) DoTotal(ctx context.Context, method, path string, params Params
 	if body != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {

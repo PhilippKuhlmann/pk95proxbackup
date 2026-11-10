@@ -129,6 +129,8 @@ func (s *Server) routes() {
 	a("POST /api/guests/backup", s.backupGuest)
 	a("GET /api/guests/snapshots", s.guestSnapshots)
 	a("POST /api/restore", s.restore)
+	a("GET /api/restore/files", s.restoreFiles)
+	a("GET /api/restore/download", s.restoreDownload)
 
 	// Shares
 	a("GET /api/shares", s.listShares)

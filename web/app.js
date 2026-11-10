@@ -311,6 +311,7 @@ const NAV = [
   { path: "/", label: "Übersicht", icon: "home" },
   { head: "Sichern" },
   { path: "/sicherungen", label: "VMs & Container", icon: "archive" },
+  { path: "/wiederherstellen", label: "Wiederherstellen", icon: "restore" },
   { path: "/jobs", label: "Sicherungsjobs", icon: "calendar" },
   { path: "/aufgaben", label: "Aufgaben", icon: "list" },
   { head: "Speicher" },
@@ -1467,7 +1468,7 @@ PAGES["/sicherungen"] = async (el, token) => {
     bindCopy(el);
     const find = (v) => { const [c, id] = v.split("|"); return data.guests.find((g) => g.cluster === c && String(g.vmid) === id); };
     qsa("[data-backup]", el).forEach((b) => b.onclick = () => backupNow(find(b.dataset.backup)));
-    qsa("[data-restore]", el).forEach((b) => b.onclick = () => restoreDialog(find(b.dataset.restore)));
+    qsa("[data-restore]", el).forEach((b) => b.onclick = () => { const g = find(b.dataset.restore); go(`/wiederherstellen?cluster=${enc(g.cluster)}&vmid=${g.vmid}`); });
   };
   el.innerHTML = pageHead("VMs & Container", "Alle Gäste der verbundenen Proxmox-VE-Systeme mit ihren Sicherungen auf den Backup-Servern.",
     `<input type="search" data-q placeholder="Suchen: Name, ID, Knoten …" style="width:240px"><label class="check"><input type="checkbox" data-issues><span>nur Problemfälle</span></label>`) + `<div data-list><div class="panel flex"><span class="spinner"></span> Lade …</div></div>`;
@@ -1496,60 +1497,173 @@ async function backupNow(g) {
   });
 }
 
-async function restoreDialog(g) {
+// ---------- Wiederherstellen ----------
+const b64 = (str) => btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+const unb64 = (str) => { try { return new TextDecoder().decode(Uint8Array.from(atob(str), (c) => c.charCodeAt(0))); } catch (e) { return str; } };
+
+PAGES["/wiederherstellen"] = async (el, token) => {
+  await loadConn();
+  const q = new URLSearchParams(location.search);
+  el.innerHTML = pageHead("Wiederherstellen", "Lade …");
+  const data = await GET("/api/guests");
+  if (token !== pageToken) return;
+  const guests = data.guests.filter((g) => g.backups.length);
+  const g = guests.find((x) => x.cluster === q.get("cluster") && String(x.vmid) === q.get("vmid"));
+  if (!g) return restorePick(el, data, guests);
+  restoreGuest(el, token, g);
+};
+
+// Step 1: which server?
+function restorePick(el, data, guests) {
+  el.innerHTML = pageHead("Wiederherstellen", "Einzelne Dateien und Ordner aus einer Sicherung holen oder eine ganze VM bzw. einen Container zurückspielen. Zuerst den Server wählen.",
+    `<input type="search" data-q placeholder="Suchen: Name, ID …" style="width:240px">`) +
+    (data.errors || []).map((e) => callout("red", "Nicht alles erreichbar", esc(e))).join("") + `<div data-list></div>`;
+  const draw = (f) => {
+    const list = guests.filter((x) => !f || `${x.vmid} ${x.name} ${x.node} ${x.cluster_name}`.toLowerCase().includes(f));
+    qs("[data-list]", el).innerHTML = list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>System</th><th>Letzte Sicherung</th><th>Stände</th><th></th></tr></thead><tbody>
+      ${list.map((x) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${x.type === "lxc" ? "CT" : "VM"}</span> ${x.vmid} ${esc(x.name)}</div><div class="t-sub">${x.status === "running" ? '<span class="dot green"></span> läuft' : esc(x.status)}</div></td>
+        <td data-l="System" class="small">${esc(x.cluster_name)}<div class="t-sub">${esc(x.node)}</div></td>
+        <td data-l="Letzte Sicherung">${fmtTime(x.last_backup, true)}<div class="t-sub">${fmtAgo(x.last_backup)}</div></td>
+        <td data-l="Stände" class="small">${x.backups.reduce((a, b) => a + b.count, 0)}</td>
+        <td class="act"><a class="btn sm" href="/wiederherstellen?cluster=${enc(x.cluster)}&vmid=${x.vmid}" data-go>${icon("restore")} Auswählen</a></td></tr>`).join("")}
+      </tbody></table></div></div>` : empty("Keine Sicherungen gefunden", guests.length ? "Nichts passt zur Suche." : "Sobald eine VM oder ein Container gesichert wurde, erscheint er hier.", "", "archive");
+  };
+  qs("[data-q]", el).oninput = (e) => draw(e.target.value.trim().toLowerCase());
+  draw("");
+}
+
+// Step 2 and 3: which backup, then files or the whole guest.
+async function restoreGuest(el, token, g) {
   const typ = g.type === "lxc" ? "ct" : "vm";
-  const d = openDialog(`<form novalidate><div class="dlg-head"><span class="dlg-ic">${icon("restore")}</span><div class="grow"><div class="dlg-title">${g.vmid} ${esc(g.name)} wiederherstellen</div>
-    <p class="dlg-text">Die Sicherung wird als <b>neuer Gast</b> mit eigener ID angelegt – das Original bleibt unberührt. Danach prüfen und ggf. das Original ersetzen.</p></div></div>
-    <div class="dlg-body"><div class="form-error" hidden></div><div class="form-grid">
-      ${field({ name: "src", label: "Sicherung liegt auf", type: "select", options: g.backups.map((b, i) => [i, `${b.server_name} / ${b.store} (${b.count} Stände)`]) })}
-      ${field({ name: "time", label: "Stand", type: "select", options: [["", "Lade …"]] })}
-      ${field({ name: "node", label: "Ziel-Knoten", type: "select", value: g.node, options: [[g.node, g.node]] })}
-      ${field({ name: "storage", label: "Ziel-Speicher für Disks", type: "select", options: [["", "Lade …"]] })}
-      ${field({ name: "vmid", label: "Neue ID", type: "number", value: "" })}
-      ${field({ name: "start", label: "Nach dem Wiederherstellen starten", type: "checkbox", value: false, hint: "Vorsicht: gleiche IP/Hostname wie das Original." })}
-    </div></div>
-    <div class="dlg-foot"><button class="btn gray" type="button" data-cancel>Abbrechen</button><button class="btn" type="submit">Wiederherstellen</button></div></form>`, "wide");
-  qs("[data-cancel]", d).onclick = () => d.close();
-  const form = qs("form", d);
+  const kind = typ === "ct" ? "Container" : "VM";
+  let src = 0, snaps = [], sel = null;
+  el.innerHTML = pageHead(`${g.vmid} ${esc(g.name)} wiederherstellen`, `${kind} auf ${esc(g.node)} (${esc(g.cluster_name)})`, "", ["/wiederherstellen", "Anderen Server wählen"]) +
+    `<div class="grid grid-restore">
+      <div class="panel flush"><div class="panel-head"><div class="panel-title">1. Stand wählen</div></div>
+        ${g.backups.length > 1 ? `<div style="padding:0 16px 12px">${field({ name: "src", label: "Sicherungen auf", type: "select", options: g.backups.map((b, i) => [i, `${b.server_name} / ${b.store} (${b.count})`]) })}</div>` : `<p class="panel-intro">${esc(g.backups[0].server_name)} / ${esc(g.backups[0].store)}</p>`}
+        <div data-snaps><div class="row flex"><span class="spinner"></span> Lade …</div></div></div>
+      <div data-right></div></div>`;
+  const srcSel = qs('[name="src"]', el);
+  if (srcSel) srcSel.onchange = () => { src = +srcSel.value; loadSnaps(); };
+  const query = () => { const b = g.backups[src]; return `cluster=${enc(g.cluster)}&pbs=${enc(b.server)}&store=${enc(b.store)}&type=${typ}&bid=${g.vmid}&time=${sel}`; };
+
+  const drawRight = () => {
+    const right = qs("[data-right]", el);
+    if (!sel) { right.innerHTML = `<div class="panel">${empty("Links einen Stand wählen", "", "", "calendar")}</div>`; return; }
+    right.innerHTML = `<div class="panel"><div class="panel-head"><div><div class="panel-title">2. Was wiederherstellen?</div><div class="muted small">Stand vom ${fmtTime(sel, true)}</div></div></div>
+        <div class="radio-cards">
+          <button type="button" class="radio-card" data-files style="text-align:left;font:inherit;color:inherit">${icon("folder")}<span><b>Dateien und Ordner</b><small>Einzelne Dateien aus der Sicherung herunterladen. Der ${kind} läuft dabei normal weiter.</small></span></button>
+          <button type="button" class="radio-card" data-whole style="text-align:left;font:inherit;color:inherit">${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>
+        </div></div><div data-browser></div>`;
+    qs("[data-files]", right).onclick = () => fileBrowser(qs("[data-browser]", right), query(), g, typ);
+    qs("[data-whole]", right).onclick = () => restoreWhole(g, typ, g.backups[src], sel);
+  };
+
   const loadSnaps = async () => {
-    const b = g.backups[+qs('[name="src"]', d).value];
-    const sel = qs('[name="time"]', d);
-    sel.innerHTML = `<option value="">Lade …</option>`;
+    const b = g.backups[src];
+    const box = qs("[data-snaps]", el);
+    box.innerHTML = `<div class="row flex"><span class="spinner"></span> Lade …</div>`;
     try {
-      const r = await GET(`/api/guests/snapshots?pbs=${enc(b.server)}&store=${enc(b.store)}&type=${typ}&bid=${g.vmid}`);
-      sel.innerHTML = r.snapshots.map((s) => `<option value="${s["backup-time"]}">${fmtTime(s["backup-time"], true)} · ${fmtBytes(s.size)}${s.comment ? " · " + esc(s.comment) : ""}</option>`).join("");
-    } catch (e) { sel.innerHTML = ""; showErrors(d, e); }
+      snaps = (await GET(`/api/guests/snapshots?pbs=${enc(b.server)}&store=${enc(b.store)}&type=${typ}&bid=${g.vmid}`)).snapshots;
+    } catch (e) { box.innerHTML = `<div class="row"><div class="form-error grow">${esc(e.message)}</div></div>`; return; }
+    if (token !== pageToken) return;
+    sel = snaps[0]?.["backup-time"] || null;
+    box.innerHTML = `<div class="rows" style="max-height:62vh;overflow:auto">${snaps.map((sn, i) => `
+      <label class="row" style="cursor:pointer;align-items:center"><input type="radio" name="snap" value="${sn["backup-time"]}" ${i === 0 ? "checked" : ""} style="accent-color:var(--c600)">
+        <div class="grow"><div class="title"><b>${fmtTime(sn["backup-time"], true)}</b> ${i === 0 ? pill("neueste", "blue") : ""}</div>
+        <div class="t-sub">${fmtAgo(sn["backup-time"])} · ${fmtBytes(sn.size)}${sn.comment ? " · " + esc(sn.comment) : ""}</div></div>
+        ${sn.verification ? (sn.verification.state === "ok" ? pill("geprüft", "green") : pill("defekt", "rose")) : ""}</label>`).join("") || `<div class="row muted">Keine Stände.</div>`}</div>`;
+    qsa('[name="snap"]', box).forEach((r) => r.onchange = () => { sel = +r.value; drawRight(); });
+    drawRight();
   };
-  qs('[name="src"]', d).onchange = loadSnaps;
-  const loadNode = async () => {
-    try {
-      const r = await GET(`/api/pve/${g.cluster}/nodes/${enc(qs('[name="node"]', d).value)}/storages?content=${typ === "ct" ? "rootdir" : "images"}`);
-      qs('[name="storage"]', d).innerHTML = r.storages.map((s) => `<option value="${esc(s.storage)}">${esc(s.storage)} (${fmtBytes(s.avail)} frei)</option>`).join("");
-    } catch (e) { showErrors(d, e); }
+  await loadSnaps();
+}
+
+// File browser inside a backup: folders open on click, files download, folders download as zip.
+function fileBrowser(box, query, g, typ) {
+  const stack = [{ name: typ === "ct" ? "Container" : "VM", path: "" }];
+  const typeIcon = { d: "folder", v: "disk", f: "copy", l: "link", h: "link" };
+  const show = async () => {
+    const cur = stack[stack.length - 1];
+    box.innerHTML = `<div class="panel flush"><div class="panel-head"><div class="panel-title">3. Dateien auswählen</div></div>
+      <div style="padding:0 16px 12px" class="flex small">${stack.map((s2, i) => i < stack.length - 1 ? `<a href="#" data-crumb="${i}">${esc(s2.name)}</a> /` : `<b>${esc(s2.name)}</b>`).join(" ")}</div>
+      <div class="rows" data-entries><div class="row flex"><span class="spinner"></span> Sicherung wird geöffnet …${typ === "vm" && stack.length === 1 ? " Bei VMs startet Proxmox dafür kurz eine Hilfs-VM, das dauert bis zu einer Minute." : ""}</div></div></div>`;
+    qsa("[data-crumb]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); stack.length = +a.dataset.crumb + 1; show(); });
+    let r;
+    try { r = await GET(`/api/restore/files?${query}${cur.path ? "&path=" + enc(cur.path) : ""}`); }
+    catch (e) { qs("[data-entries]", box).innerHTML = `<div class="row"><div class="form-error grow">${esc(e.message)}</div></div>`; return; }
+    const list = r.entries.slice().sort((a, b) => (a.type === "f") - (b.type === "f") || a.text.localeCompare(b.text, "de"));
+    const dl = (e) => `/api/restore/download?${query}&path=${enc(e.filepath)}&name=${enc(e.text)}${e.type === "f" ? "" : "&dir=1"}`;
+    qs("[data-entries]", box).innerHTML = (stack.length > 1 ? `<div class="row" style="cursor:pointer" data-up>${icon("back")} <span class="grow">Eine Ebene zurück</span></div>` : "") +
+      (list.map((e, i) => {
+        const folder = e.type !== "f" && e.type !== "l" && e.type !== "h";
+        const label = e.type === "v" ? (e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.text.replace(/\.pxar\.didx$/, "")) : e.text;
+        return `<div class="row" style="align-items:center">${icon(typeIcon[e.type] || "copy")}
+          <div class="grow">${folder ? `<a href="#" data-open="${i}"><b>${esc(label)}</b></a>` : `<span>${esc(label)}</span>`}
+            <div class="t-sub">${e.type === "f" ? fmtBytes(e.size) + " · " : ""}${e.mtime ? fmtTime(e.mtime, true) : ""}</div></div>
+          ${e.type === "v" ? "" : `<a class="btn gray sm" href="${dl(e)}" download>${icon("download")} ${folder ? "Ordner (ZIP)" : "Herunterladen"}</a>`}</div>`;
+      }).join("") || `<div class="row muted">Dieser Ordner ist leer.</div>`);
+    const up = qs("[data-up]", box);
+    if (up) up.onclick = () => { stack.pop(); show(); };
+    qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.text.replace(/\.pxar\.didx$/, ""), path: e.filepath }); show(); });
   };
-  qs('[name="node"]', d).onchange = loadNode;
-  try {
-    const st = await GET(`/api/pve/${g.cluster}/storages`);
-    qs('[name="node"]', d).innerHTML = (st.nodes || []).map((n) => `<option ${n.node === g.node ? "selected" : ""}>${esc(n.node)}</option>`).join("") || `<option>${esc(g.node)}</option>`;
-  } catch (e) { /* keep the guest's node */ }
-  await Promise.all([loadSnaps(), loadNode()]);
+  show();
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function restoreWhole(g, typ, b, time) {
+  const kind = typ === "ct" ? "Container" : "VM";
   const ids = new Set();
-  try { (await GET("/api/guests")).guests.filter((x) => x.cluster === g.cluster).forEach((x) => ids.add(x.vmid)); } catch (e) { /* ignore */ }
-  // Suggest 9xx so the copy stands out next to the original (100 → 900).
+  let nodes = [g.node];
+  try {
+    const [gs, st] = await Promise.all([GET("/api/guests"), GET(`/api/pve/${g.cluster}/storages`)]);
+    gs.guests.filter((x) => x.cluster === g.cluster).forEach((x) => ids.add(x.vmid));
+    nodes = (st.nodes || []).map((n) => n.node);
+  } catch (e) { /* keep defaults */ }
   let next = 900 + (g.vmid % 100);
   while (ids.has(next)) next++;
-  qs('[name="vmid"]', d).value = next;
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const v = formValues(form);
-    const b = g.backups[+v.src];
-    try {
-      showErrors(d, null);
-      const r = await POST("/api/restore", { cluster: g.cluster, node: v.node, pbs: b.server, store: b.store, type: typ, bid: String(g.vmid), time: Number(v.time), vmid: Number(v.vmid), storage: v.storage, start: v.start });
-      d.close();
-      showTask(r.source, r.upid, `Wiederherstellung als ${v.vmid}`);
-    } catch (err) { showErrors(d, err); }
-  };
+  formDialog({
+    title: `${g.vmid} ${g.name} wiederherstellen`, ic: "restore", button: "Wiederherstellen",
+    text: `Stand vom <b>${fmtTime(time, true)}</b> aus ${esc(b.server_name)} / ${esc(b.store)}.`,
+    fields: [
+      { name: "mode", type: "radio", label: "Wie?", value: "new", options: [
+        ["new", `Als neue${typ === "ct" ? "r Container" : " VM"}`, "Das Original bleibt unberührt – zum Prüfen oder Vergleichen."],
+        ["replace", "Original ersetzen", `${g.vmid} ${g.name} wird mit dem Stand der Sicherung überschrieben.`]] },
+      { name: "vmid", label: "Neue ID", type: "number", value: next },
+      { name: "node", label: "Ziel-Knoten", type: "select", value: g.node, options: nodes.map((n) => [n, n]) },
+      { name: "storage", label: "Speicher für die Disks", type: "select", options: [["", "Lade …"]] },
+      { name: "confirm", label: `Zur Bestätigung ${g.vmid} eintippen`, mono: true, hint: `Alles, was seit dem ${fmtTime(time, true)} in ${g.vmid} ${g.name} geändert wurde, geht verloren. ${kind} vorher in Proxmox herunterfahren.` },
+      ...(typ === "vm" ? [{ name: "live", label: "Live-Restore: VM sofort starten, Daten im Hintergrund nachladen", type: "checkbox", wide: true, hint: "Die VM ist nach Sekunden da, ist aber langsam, bis alles zurückgeladen ist." }] : []),
+      { name: "start", label: "Danach starten", type: "checkbox", value: false, wide: true, hint: "Bei einer Kopie neben dem Original: Vorsicht wegen gleicher IP und gleichem Namen." },
+    ],
+    onMount: async (d) => {
+      const form = qs("form", d);
+      const show = () => {
+        const v = formValues(form);
+        qs('[data-field="vmid"]', d).hidden = v.mode !== "new";
+        qs('[data-field="confirm"]', d).hidden = v.mode !== "replace";
+        if (v.mode === "replace") qs('[name="node"]', d).value = g.node;
+        qs('[name="node"]', d).disabled = v.mode === "replace";
+      };
+      qsa('[name="mode"]', d).forEach((r) => r.onchange = show);
+      show();
+      const loadSt = async () => {
+        try {
+          const r = await GET(`/api/pve/${g.cluster}/nodes/${enc(qs('[name="node"]', d).value)}/storages?content=${typ === "ct" ? "rootdir" : "images"}`);
+          qs('[name="storage"]', d).innerHTML = r.storages.map((s2) => `<option value="${esc(s2.storage)}">${esc(s2.storage)} (${fmtBytes(s2.avail)} frei)</option>`).join("");
+        } catch (e) { showErrors(d, e); }
+      };
+      qs('[name="node"]', d).onchange = loadSt;
+      await loadSt();
+    },
+    submit: async (v) => {
+      const replace = v.mode === "replace";
+      if (replace && !(await confirmDialog({ title: `${g.vmid} ${g.name} wirklich ersetzen?`, text: `Der aktuelle Stand wird durch die Sicherung vom ${fmtTime(time, true)} ersetzt. Das lässt sich nicht rückgängig machen.`, button: "Ersetzen" }))) return false;
+      const r = await POST("/api/restore", { cluster: g.cluster, node: replace ? g.node : v.node, pbs: b.server, store: b.store, type: typ, bid: String(g.vmid), time,
+        vmid: Number(v.vmid), storage: v.storage, start: v.start, live: !!v.live, replace, confirm: v.confirm });
+      showTask(r.source, r.upid, replace ? `${g.vmid} wird ersetzt` : `Wiederherstellung als ${v.vmid}`);
+    },
+  });
 }
 
 // ---------- Sicherungsjobs ----------

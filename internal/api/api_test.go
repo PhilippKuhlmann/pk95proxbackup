@@ -2,10 +2,13 @@ package api_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,5 +244,97 @@ func TestPVEWithoutPrivileges(t *testing.T) {
 	code, out = cl.do("PUT", "/api/pve/cluster", map[string]any{"name": "Cluster", "host": "127.0.0.1", "port": 1, "token_id": "root@pam!pk95", "fingerprint": "aa"}, true)
 	if code != 422 && code != 200 {
 		t.Fatalf("save: %d %v", code, out)
+	}
+}
+
+func TestFileRestore(t *testing.T) {
+	cl := login(t)
+	q := "/api/restore/files?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1794168000"
+	code, out := cl.do("GET", q, nil, false)
+	if code != 200 {
+		t.Fatalf("root: %d %v", code, out)
+	}
+	entries := out["entries"].([]any)
+	disk := entries[0].(map[string]any)
+	if disk["type"] != "v" || disk["text"] != "drive-scsi0.img.fidx" {
+		t.Fatalf("vm root: %v", entries)
+	}
+	if !strings.Contains(out["volume"].(string), "pbs-appliance:backup/vm/100/") {
+		t.Fatalf("volume %v", out["volume"])
+	}
+	// walk to the documents of anna
+	path := base64.StdEncoding.EncodeToString([]byte("/drive-scsi0.img.fidx/part/2/home/anna/Dokumente"))
+	code, out = cl.do("GET", q+"&path="+url.QueryEscape(path), nil, false)
+	if code != 200 {
+		t.Fatalf("docs: %d %v", code, out)
+	}
+	names := map[string]string{}
+	var pdf string
+	for _, e := range out["entries"].([]any) {
+		m := e.(map[string]any)
+		names[m["text"].(string)] = m["type"].(string)
+		if m["text"] == "Rechnung-2026-10.pdf" {
+			pdf = m["filepath"].(string)
+		}
+	}
+	if names["Rechnung-2026-10.pdf"] != "f" || names["Projekte"] != "d" {
+		t.Fatalf("entries %v", names)
+	}
+	resp, err := cl.http.Get(cl.base + "/api/restore/download?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1794168000&path=" + url.QueryEscape(pdf) + "&name=Rechnung-2026-10.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Disposition"), "Rechnung-2026-10.pdf") || !strings.Contains(string(body), "Rechnung-2026-10.pdf") {
+		t.Fatalf("download: %d %q %q", resp.StatusCode, resp.Header.Get("Content-Disposition"), body)
+	}
+	// a folder comes as zip
+	resp, err = cl.http.Get(cl.base + "/api/restore/download?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1794168000&dir=1&name=Dokumente&path=" + url.QueryEscape(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.Header.Get("Content-Type") != "application/zip" || !strings.HasPrefix(string(body), "PK") || !strings.Contains(resp.Header.Get("Content-Disposition"), "Dokumente.zip") {
+		t.Fatalf("zip: %s %q", resp.Header.Get("Content-Type"), resp.Header.Get("Content-Disposition"))
+	}
+	// a container starts with its archive
+	_, out = cl.do("GET", "/api/restore/files?cluster=cluster&pbs=local&store=backup&type=ct&bid=110&time=1794168000", nil, false)
+	if e := out["entries"].([]any)[0].(map[string]any); e["text"] != "root.pxar.didx" {
+		t.Fatalf("ct root: %v", out)
+	}
+	// a backup on a datastore that is no storage of the cluster: clear message
+	code, out = cl.do("GET", "/api/restore/files?cluster=cluster&pbs=buero&store=offsite&type=vm&bid=100&time=1794168000", nil, false)
+	if code != 409 || !strings.Contains(out["error"].(string), "nicht als Speicher eingetragen") {
+		t.Fatalf("no storage: %d %v", code, out)
+	}
+}
+
+func TestRestoreReplace(t *testing.T) {
+	cl := login(t)
+	base := map[string]any{"cluster": "cluster", "node": "pve1", "pbs": "local", "store": "backup", "type": "vm", "time": 1794168000, "storage": "local-lvm", "replace": true}
+	with := func(kv ...any) map[string]any {
+		m := map[string]any{}
+		for k, v := range base {
+			m[k] = v
+		}
+		for i := 0; i < len(kv); i += 2 {
+			m[kv[i].(string)] = kv[i+1]
+		}
+		return m
+	}
+	if code, out := cl.do("POST", "/api/restore", with("bid", "100", "confirm", ""), true); code != 422 {
+		t.Fatalf("replace without confirmation: %d %v", code, out)
+	}
+	if code, out := cl.do("POST", "/api/restore", with("bid", "100", "confirm", "100"), true); code != 409 || !strings.Contains(out["error"].(string), "läuft noch") {
+		t.Fatalf("replace a running vm: %d %v", code, out)
+	}
+	if code, out := cl.do("POST", "/api/restore", with("bid", "112", "node", "pve2", "confirm", "112"), true); code != 200 {
+		t.Fatalf("replace a stopped vm: %d %v", code, out)
+	}
+	// a new guest must not take a used id
+	if code, out := cl.do("POST", "/api/restore", with("bid", "100", "replace", false, "vmid", 101), true); code != 422 {
+		t.Fatalf("used id: %d %v", code, out)
 	}
 }
