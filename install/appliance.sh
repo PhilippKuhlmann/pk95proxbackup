@@ -11,7 +11,7 @@
 set -euo pipefail
 
 REPO="${PK95PB_REPO:-PhilippKuhlmann/pk95proxbackup}"
-VERSION="${PK95PB_VERSION:-latest}"
+RELEASE="${PK95PB_VERSION:-latest}"
 DATA_DIR=/var/lib/pk95proxbackup
 KEYRING_URL=https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
 KEYRING_SHA256=136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45
@@ -24,8 +24,10 @@ fail() {
 }
 
 [[ $(id -u) -eq 0 ]] || fail "Bitte als root ausführen."
-. /etc/os-release
-[[ "${VERSION_CODENAME:-}" == trixie ]] || fail "Benötigt Debian 13 (trixie), gefunden: ${PRETTY_NAME:-unbekannt}."
+# Read os-release in a subshell: it defines VERSION, NAME, … and would overwrite ours.
+CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+PRETTY="$(. /etc/os-release && echo "${PRETTY_NAME:-unbekannt}")"
+[[ "$CODENAME" == trixie ]] || fail "Benötigt Debian 13 (trixie), gefunden: ${PRETTY}."
 case "$(dpkg --print-architecture)" in
   amd64) ARCH=amd64 ;;
   arm64) ARCH=arm64; [[ "${INSTALL_PBS:-1}" == 0 ]] || command -v proxmox-backup-manager >/dev/null || fail "Proxmox Backup Server gibt es nur für amd64. Mit INSTALL_PBS=0 nur die Oberfläche installieren." ;;
@@ -59,11 +61,11 @@ EOF
   apt-get update -q >/dev/null || true
 fi
 
-blue "Lade PK95 ProxBackup (${VERSION})"
+blue "Lade PK95 ProxBackup (${RELEASE})"
 if [[ -n "${PK95PB_BINARY:-}" ]]; then
   install -m 0755 "$PK95PB_BINARY" /usr/local/bin/pk95proxbackup.new
 else
-  if [[ "$VERSION" == latest ]]; then base="https://github.com/${REPO}/releases/latest/download"; else base="https://github.com/${REPO}/releases/download/${VERSION}"; fi
+  if [[ "$RELEASE" == latest ]]; then base="https://github.com/${REPO}/releases/latest/download"; else base="https://github.com/${REPO}/releases/download/${RELEASE}"; fi
   tmp="$(mktemp -d)"
   curl -fsSL --retry 3 -o "$tmp/pk95proxbackup-linux-${ARCH}" "$base/pk95proxbackup-linux-${ARCH}" || fail "Download von ${base} fehlgeschlagen (gibt es schon ein Release?)."
   curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || fail "SHA256SUMS fehlt im Release."
