@@ -202,6 +202,8 @@ type RestoreOptions struct {
 	Start bool // start the guest afterwards
 	Force bool // overwrite an existing guest with the same VMID
 	Live  bool // VMs from PBS: start at once and restore in the background
+	// Unique gives containers new MAC addresses (VMs always get them unless Force).
+	Unique bool
 }
 
 // Restore restores a backup volume (storage:backup/vm/100/<time>) as a guest.
@@ -209,10 +211,12 @@ func (p *PVE) Restore(ctx context.Context, node, typ string, vmid int, archive, 
 	var upid string
 	var err error
 	if typ == "lxc" || typ == "ct" {
-		err = p.Do(ctx, http.MethodPost, "/nodes/"+url.PathEscape(node)+"/lxc", Params{
-			"vmid": vmid, "ostemplate": archive, "restore": true, "storage": storage,
-			"start": boolNil(o.Start), "force": boolNil(o.Force),
-		}, &upid)
+		params := Params{"vmid": vmid, "ostemplate": archive, "restore": true, "storage": storage,
+			"start": boolNil(o.Start), "force": boolNil(o.Force)}
+		if o.Unique {
+			params["unique"] = true
+		}
+		err = p.Do(ctx, http.MethodPost, "/nodes/"+url.PathEscape(node)+"/lxc", params, &upid)
 	} else {
 		params := Params{"vmid": vmid, "archive": archive, "storage": storage, "start": boolNil(o.Start || o.Live), "force": boolNil(o.Force), "live-restore": boolNil(o.Live)}
 		if !o.Force {

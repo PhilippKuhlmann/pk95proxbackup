@@ -79,6 +79,8 @@ type Core struct {
 	LocalRunner hostexec.Runner
 	// SelfUUID returns the SMBIOS UUID of this VM (for USB passthrough).
 	SelfUUID func() string
+	// EnsureStorage returns (and if needed adds) the PVE storage of a datastore (set by the API).
+	EnsureStorage func(ctx context.Context, pve *prox.PVE, cl PVECluster, srv PBSServer, store string) (string, error)
 
 	mu      sync.Mutex
 	rotBusy map[string]bool

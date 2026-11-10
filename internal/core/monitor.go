@@ -263,6 +263,7 @@ func (c *Core) Run(ctx context.Context) {
 		c.check(ctx, prev, &ov)
 		c.reportBackups(ctx, &ov)
 		c.scheduleRotations(ctx, ov.Rotations, time.Now())
+		c.scheduleRestoreTests(time.Now())
 		prev = &ov
 		_ = c.St.PruneSessions()
 		_ = c.St.PruneEvents(180 * 24 * time.Hour)

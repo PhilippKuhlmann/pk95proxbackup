@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,6 +131,23 @@ func (c *Core) RunningTasks(ctx context.Context) []RunningTask {
 		}
 	}
 	c.mu.Unlock()
+	if r := c.ActiveRestoreTest(); r != nil {
+		done, cur := 0, ""
+		for _, x := range r.Results {
+			if x.Status != "pending" && x.Status != "running" {
+				done++
+			}
+			if x.Status == "running" {
+				cur = strings.TrimSpace(x.Name + " (" + x.VMID + "): " + x.Phase)
+			}
+		}
+		pct := -1.0
+		if len(r.Results) > 0 {
+			pct = float64(done) * 100 / float64(len(r.Results))
+		}
+		out = append(out, RunningTask{Source: "app", Server: "Appliance", Type: "restoretest", Label: "Wiederherstellungstest " + r.PlanName,
+			StartTime: r.Start, Progress: prox.Progress{Percent: pct, Step: cur, Detail: fmt.Sprintf("%d von %d Servern", done, len(r.Results))}})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartTime < out[j].StartTime })
 	// A rotation copy or a backup that just ended: let the monitor start the aftercare and
 	// send the report right away instead of at its next minute.

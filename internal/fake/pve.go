@@ -3,7 +3,6 @@ package fake
 import (
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +10,9 @@ import (
 
 	"pk95proxbackup/internal/prox"
 )
+
+// RestoreDuration is how long a simulated restore runs (tests shorten it).
+var RestoreDuration = 20 * time.Second
 
 // PVENoPrivs makes the next Setup simulate an API token without rights.
 var PVENoPrivs bool
@@ -30,6 +32,8 @@ type PVE struct {
 	jobs                []prox.BackupJob
 	tasks               tasks
 	storageFingerprints map[string]string
+	cfg                 map[int]map[string]string
+	started             map[int]time.Time
 	jobN                int
 	// NoPrivs simulates a token without rights (privilege separation, no ACL).
 	NoPrivs bool
@@ -37,7 +41,8 @@ type PVE struct {
 
 // NewPVE creates a cluster with the given nodes.
 func NewPVE(nodes []string) *PVE {
-	return &PVE{nodes: nodes, smbios: map[int]string{}, usbCfg: map[int]map[string]string{}, usb: map[string][]prox.USBDevice{}}
+	return &PVE{nodes: nodes, smbios: map[int]string{}, usbCfg: map[int]map[string]string{}, usb: map[string][]prox.USBDevice{},
+		cfg: map[int]map[string]string{}, started: map[int]time.Time{}}
 }
 
 // AddGuest adds a VM (qemu) or container (lxc).
@@ -301,11 +306,13 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			typ = "vzrestore"
 		}
 		node := seg[1]
-		upid := p.tasks.start(node, typ, f.Get("vmid"), 20*time.Second, []string{"restore " + f.Get("archive") + f.Get("ostemplate")}, func() (string, []string) {
+		archive := f.Get("archive") + f.Get("ostemplate")
+		upid := p.tasks.start(node, typ, f.Get("vmid"), RestoreDuration, []string{"restore " + archive}, func() (string, []string) {
 			p.mu.Lock()
 			defer p.mu.Unlock()
+			p.cfg[id] = backupConfig(archive, seg[2], id)
 			if g := p.guest(id); g == nil {
-				p.guests = append(p.guests, prox.Guest{VMID: id, Name: "restored-" + strconv.Itoa(id), Node: node, Type: seg[2], Status: "stopped"})
+				p.guests = append(p.guests, prox.Guest{VMID: id, Name: p.cfg[id]["name"] + p.cfg[id]["hostname"], Node: node, Type: seg[2], Status: "stopped"})
 			}
 			return "OK", []string{"restore done"}
 		})
@@ -328,38 +335,38 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		taskLog(w, p.tasks.get(upid))
 	case len(seg) == 4 && seg[2] == "hardware" && seg[3] == "usb":
 		data(w, p.usb[seg[1]])
-	case len(seg) == 5 && seg[2] == "qemu" && seg[4] == "config":
-		id := atoi(seg[3])
-		cfg := p.usbCfg[id]
-		if cfg == nil {
-			cfg = map[string]string{}
-			p.usbCfg[id] = cfg
-		}
-		if m == "PUT" {
-			for _, d := range strings.Split(f.Get("delete"), ",") {
-				delete(cfg, d)
-			}
-			for k := range f {
-				if strings.HasPrefix(k, "usb") {
-					cfg[k] = f.Get(k)
-				}
-			}
-			data(w, nil)
+	case len(seg) == 3 && seg[0] == "nodes" && seg[2] == "network":
+		data(w, []map[string]string{{"iface": "vmbr0", "type": "bridge"}, {"iface": "vmbr1", "type": "bridge"}})
+	case len(seg) == 3 && seg[0] == "nodes" && seg[2] == "status":
+		data(w, map[string]any{"memory": map[string]int64{"total": 64 * gib, "used": 22 * gib, "free": 42 * gib}, "cpuinfo": map[string]int{"cpus": 16}})
+	case len(seg) == 5 && seg[0] == "nodes" && seg[2] == "storage" && seg[4] == "status":
+		if seg[3] == "voll" {
+			data(w, map[string]any{"storage": seg[3], "total": 100 * gib, "used": 98 * gib, "avail": 2 * gib, "active": 1})
 			return
 		}
-		out := map[string]any{"name": "vm", "memory": 4096}
-		if u, ok := p.smbios[id]; ok {
-			out["smbios1"] = "uuid=" + u
+		data(w, map[string]any{"storage": seg[3], "total": 900 * gib, "used": 300 * gib, "avail": 600 * gib, "active": 1})
+	case len(seg) == 4 && seg[0] == "nodes" && (seg[2] == "qemu" || seg[2] == "lxc") && m == "DELETE":
+		id := atoi(seg[3])
+		g := p.guest(id)
+		if g == nil {
+			apiErr(w, 500, "Configuration file does not exist")
+			return
 		}
-		keys := []string{}
-		for k := range cfg {
-			keys = append(keys, k)
+		if g.Status == "running" {
+			apiErr(w, 500, "VM "+seg[3]+" is running - destroy failed")
+			return
 		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			out[k] = cfg[k]
+		keep := p.guests[:0]
+		for _, x := range p.guests {
+			if x.VMID != id {
+				keep = append(keep, x)
+			}
 		}
-		data(w, out)
+		p.guests = keep
+		delete(p.cfg, id)
+		data(w, p.tasks.start(seg[1], "qmdestroy", seg[3], time.Second, nil, nil))
+	case len(seg) >= 5 && seg[0] == "nodes" && (seg[2] == "qemu" || seg[2] == "lxc"):
+		p.guestOp(w, m, seg, f)
 	default:
 		apiErr(w, 404, "Method '"+m+" "+path+"' not implemented (demo)")
 	}

@@ -92,6 +92,7 @@ function fmtDur(a, b) {
   if (s < 3600) return Math.round(s / 60) + " Min.";
   return (s / 3600).toFixed(1).replace(".", ",") + " Std.";
 }
+const fmtSecs = (n) => fmtDur(1, 1 + n) || "0 s";
 function pct(used, total) { return total ? Math.round((used * 100) / total) : 0; }
 function usageBar(used, total) {
   if (!total) return `<div class="usage"><span class="track"></span><span class="pct">—</span></div>`;
@@ -312,6 +313,7 @@ const NAV = [
   { head: "Sichern" },
   { path: "/sicherungen", label: "VMs & Container", icon: "archive" },
   { path: "/wiederherstellen", label: "Wiederherstellen", icon: "restore" },
+  { path: "/restoretests", label: "Restore-Tests", icon: "shield" },
   { path: "/jobs", label: "Sicherungsjobs", icon: "calendar" },
   { path: "/aufgaben", label: "Aufgaben", icon: "list" },
   { head: "Speicher" },
@@ -1751,6 +1753,147 @@ async function restoreWhole(g, typ, b, time) {
       const r = await POST("/api/restore", { cluster: g.cluster, node: replace ? homeNode : v.node, pbs: b.server, store: b.store, type: typ, bid: String(g.vmid), time,
         vmid: Number(v.vmid), storage: v.storage, start: v.start, live: !!v.live, replace, confirm: v.confirm });
       showTask(r.source, r.upid, replace ? `${g.vmid} wird ersetzt` : `Wiederherstellung als ${v.vmid}`);
+    },
+  });
+}
+
+// ---------- Restore-Tests ----------
+const WD = ["", "Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const RT_STATUS = { ok: ["Erfolgreich", "green"], warning: ["Hinweis", "amber"], error: ["Fehler", "rose"], skipped: ["Übersprungen", "amber"],
+  running: ["Läuft", "blue"], pending: ["Wartet", ""], cancelled: ["Abgebrochen", "amber"] };
+const rtPill = (st) => { const [l, t] = RT_STATUS[st] || [st, ""]; return pill(l, t, st === "running", st === "running"); };
+
+PAGES["/restoretests"] = async (el, token) => {
+  await loadConn();
+  const draw = async () => {
+    const r = await GET("/api/restoretests");
+    if (token !== pageToken) return;
+    const plans = r.plans, runs = r.runs, act = r.active;
+    const cl = (id) => (state.clusters.find((c) => c.id === id) || {}).name || id;
+    el.innerHTML = pageHead("Restore-Tests", "Spielt regelmäßig die neueste Sicherung jedes Servers testweise zurück, startet sie abgeschottet vom Netzwerk, prüft ob das System hochkommt und löscht sie wieder. So weißt du, dass die Sicherungen im Ernstfall funktionieren.",
+      `<button class="btn" type="button" data-add>${icon("plus")} Plan anlegen</button>`) +
+      (act ? `<div class="panel"><div class="panel-head"><div><div class="panel-title">Läuft gerade: ${esc(act.plan_name)}</div><div class="muted small">gestartet ${fmtTime(act.start)} von ${esc(act.by)}</div></div>
+        <button class="btn red sm" type="button" data-cancel>${icon("stop")} Abbrechen</button></div>${rtTable(act, true)}</div>` : "") +
+      `<div class="panel flush"><div class="panel-head"><div class="panel-title">Pläne</div></div>
+        ${plans.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Plan</th><th>Quelle</th><th>Getestet auf</th><th>Zeitplan</th><th>Auswahl</th><th></th></tr></thead><tbody>
+        ${plans.map((p) => `<tr class="${p.enabled ? "" : "off"}"><td data-l="Plan"><div class="t-main">${esc(p.name)}</div>${p.enabled ? "" : '<div class="t-sub">Zeitplan aus</div>'}</td>
+          <td data-l="Quelle" class="small">${esc(serverName(p.pbs))} / <b>${esc(p.store)}</b></td>
+          <td data-l="Getestet auf" class="small">${esc(cl(p.cluster))} · ${esc(p.node)}<div class="t-sub">Disks auf ${esc(p.storage)}</div></td>
+          <td data-l="Zeitplan" class="small">${(p.weekdays || []).map((d) => WD[d]).join(", ") || "—"} ${esc(p.time || "")}</td>
+          <td data-l="Auswahl" class="small">${p.select === "all" ? "alle Server" : (p.select === "include" ? "nur " : "alle außer ") + esc(p.vmids)}</td>
+          <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-run="${p.id}" ${act ? "disabled" : ""}>${icon("play")} Jetzt testen</button>
+            <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${p.id}">${icon("pencil")}</button>
+            <button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${p.id}">${icon("trash")}</button></div></td></tr>`).join("")}
+        </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Plan", "Zum Beispiel: jeden Samstag um 02:00 alle Server aus dem Hauptspeicher auf pve1 testen.", `<button class="btn sm" type="button" data-add2>${icon("plus")} Plan anlegen</button>`, "shield")}</div>`}</div>
+      <div class="panel flush"><div class="panel-head"><div class="panel-title">Verlauf</div></div>
+        ${runs.filter((x) => x.status !== "running").length ? `<div class="rows">${runs.filter((x) => x.status !== "running").map((x) => {
+          const n = (st) => x.results.filter((y) => y.status === st).length;
+          return `<div class="row" style="cursor:pointer;align-items:center" data-show="${esc(x.id)}"><span class="when">${fmtTime(x.start, true)}</span>${rtPill(x.status)}
+            <div class="grow"><div class="title"><b>${esc(x.plan_name)}</b> <span class="muted small">${x.end ? "Dauer " + fmtDur(x.start, x.end) : ""} · ${esc(x.by)}</span></div>
+            <div class="flex" style="margin-top:4px">${n("ok") ? pill(n("ok") + " erfolgreich", "green") : ""}${n("warning") ? pill(n("warning") + " Hinweis", "amber") : ""}${n("error") ? pill(n("error") + " Fehler", "rose") : ""}${n("skipped") ? pill(n("skipped") + " übersprungen", "amber") : ""}${x.error ? `<span class="small bad">${esc(x.error)}</span>` : ""}</div></div>${icon("chevron-down")}</div>`;
+        }).join("")}</div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Testlauf", "", "", "list")}</div>`}</div>
+      <div class="callout"><div class="ct"><div class="ch">So bleibt der Test vom Betrieb getrennt</div><div class="cb">Jeder Server wird unter einer freien Test-ID (ab 990000) mit neuen MAC-Adressen wiederhergestellt. Vor dem Start werden die Netzwerkkarten getrennt, durchgereichte PCI- und USB-Geräte, Bind-Mounts und eingelegte ISOs entfernt, CPU und RAM begrenzt und der Autostart abgeschaltet. Vorher prüft die Appliance, ob Platz und Arbeitsspeicher reichen – sonst wird der Server übersprungen. Nach dem Test wird alles gelöscht; Reste eines abgebrochenen Laufs räumt der nächste Lauf weg.</div></div></div>`;
+    qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => rtPlanForm(null, draw));
+    qsa("[data-edit]", el).forEach((b) => b.onclick = () => rtPlanForm(plans.find((p) => p.id === b.dataset.edit), draw));
+    qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
+      const p = plans.find((x) => x.id === b.dataset.del);
+      if (await confirmDialog({ title: `Plan „${p.name}“ löschen?`, text: "Der Verlauf bleibt erhalten.", button: "Löschen" }))
+        run(b, async () => { await DEL(`/api/restoretests/${p.id}`); await draw(); }, "Gelöscht.");
+    });
+    qsa("[data-run]", el).forEach((b) => b.onclick = async () => {
+      if (await confirmDialog({ title: "Restore-Test jetzt starten?", text: "Die Server werden nacheinander auf dem gewählten Knoten wiederhergestellt und gestartet. Das belastet Speicher und Netzwerk – am besten außerhalb der Arbeitszeit.", button: "Starten", tone: "blue", ic: "play" }))
+        run(b, async () => { await POST(`/api/restoretests/${b.dataset.run}/run`); await draw(); }, "Restore-Test gestartet.");
+    });
+    const cb = qs("[data-cancel]", el);
+    if (cb) cb.onclick = async () => { if (await confirmDialog({ title: "Test abbrechen?", text: "Der gerade getestete Server wird noch aufgeräumt.", button: "Abbrechen" })) run(cb, () => POST("/api/restoretests/cancel"), "Wird abgebrochen …"); };
+    qsa("[data-show]", el).forEach((row) => row.onclick = () => {
+      const x = runs.find((y) => y.id === row.dataset.show);
+      openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("shield")}</span><div class="grow"><div class="dlg-title">${esc(x.plan_name)} · ${fmtTime(x.start, true)}</div><p class="dlg-text">${x.end ? "Dauer " + fmtDur(x.start, x.end) + " · " : ""}gestartet von ${esc(x.by)}</p></div>${rtPill(x.status)}</div>
+        <div class="dlg-body">${x.error ? `<div class="form-error">${esc(x.error)}</div>` : ""}${rtTable(x, false)}</div>
+        <div class="dlg-foot"><button class="btn gray" type="button" onclick="this.closest('dialog').close()">Schließen</button></div>`, "xwide");
+    });
+    if (act) kickRunning();
+    return !!act;
+  };
+  el.innerHTML = pageHead("Restore-Tests", "Lade …");
+  let active = await draw();
+  const loop = async () => { active = await draw(); };
+  every(5000, token, async () => { if (active || Math.random() < 0.2) await loop(); });
+};
+
+function rtTable(x, live) {
+  return `<div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>Status</th><th>Sicherung vom</th><th>Dauer</th><th>Ergebnis</th>${live ? "" : "<th>Bild</th>"}</tr></thead><tbody>
+    ${x.results.map((r) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${r.type === "ct" ? "CT" : "VM"}</span> ${esc(r.vmid)} ${esc(r.name || "")}</div>${r.test_id ? `<div class="t-sub">Test-ID ${r.test_id}${r.disk_bytes ? " · " + fmtBytes(r.disk_bytes) : ""}</div>` : ""}</td>
+      <td data-l="Status">${rtPill(r.status)}${r.phase ? `<div class="t-sub">${esc(r.phase)} …</div>` : ""}</td>
+      <td data-l="Sicherung vom" class="small nowrap">${fmtTime(r.backup_time, true)}</td>
+      <td data-l="Dauer" class="small nowrap">${r.restore_secs ? "Restore " + fmtSecs(r.restore_secs) : ""}${r.boot_secs ? "<br>Start " + fmtSecs(r.boot_secs) : ""}</td>
+      <td data-l="Ergebnis" class="small"><div class="${r.status === "error" ? "bad" : ""}">${esc(r.info || "")}</div>${r.hostname ? `<div class="t-sub">Hostname ${esc(r.hostname)}</div>` : ""}${r.notes ? `<div class="t-sub">Isoliert: ${esc(r.notes)}</div>` : ""}</td>
+      ${live ? "" : `<td data-l="Bild">${r.screenshot ? `<a href="/api/restoretests/screenshot?run=${enc(x.id)}&file=${enc(r.screenshot)}" target="_blank" rel="noopener"><img src="/api/restoretests/screenshot?run=${enc(x.id)}&file=${enc(r.screenshot)}" alt="Screenshot ${esc(r.vmid)}" style="width:160px;border:1px solid var(--line);border-radius:var(--r)"></a>` : '<span class="muted small">—</span>'}</td>`}</tr>`).join("") || `<tr><td colspan="6" class="muted">Noch keine Server.</td></tr>`}
+  </tbody></table></div>`;
+}
+
+function rtPlanForm(p, done) {
+  const edit = !!p;
+  p = p || { enabled: true, select: "all", weekdays: [6], time: "02:00", max_cores: 4, max_memory: 8192, boot_wait: 180, time_limit: 240, id_base: 990000, cluster: state.clusters[0]?.id, pbs: state.servers[0]?.id };
+  formDialog({
+    title: edit ? `Plan „${p.name}“ bearbeiten` : "Restore-Test-Plan anlegen", ic: "shield",
+    fields: [
+      { name: "name", label: "Name", value: p.name, required: true, placeholder: "Wöchentlicher Test", wide: true },
+      { type: "html", wide: true, html: `<div class="section-title">Was wird getestet?</div>` },
+      { name: "pbs", label: "Backup-Server", type: "select", value: p.pbs, options: state.servers.map((x) => [x.id, x.name]) },
+      { name: "store", label: "Datastore", type: "select", options: [["", "Lade …"]] },
+      { name: "select", type: "radio", label: "Server", value: p.select, options: [["all", "Alle", "Jeweils die neueste Sicherung"], ["include", "Nur …", "Nur diese IDs"], ["exclude", "Alle außer …", "Diese IDs auslassen"]] },
+      { name: "vmids", label: "IDs", value: p.vmids, mono: true, placeholder: "100,101,110", wide: true },
+      { type: "html", wide: true, html: `<div class="section-title">Wo wird getestet?</div><div class="hint">Am besten ein Knoten und Speicher mit genug freiem Platz, nicht der Speicher der Produktiv-VMs, wenn er knapp ist.</div>` },
+      { name: "cluster", label: "Proxmox VE", type: "select", value: p.cluster, options: state.clusters.map((x) => [x.id, x.name]) },
+      { name: "node", label: "Knoten", type: "select", options: [["", "Lade …"]] },
+      { name: "storage", label: "Speicher für die Test-Disks", type: "select", options: [["", "Lade …"]] },
+      { type: "html", wide: true, html: `<div class="section-title">Wann?</div><div class="flex" data-wd>${[1, 2, 3, 4, 5, 6, 7].map((d) => `<label class="check"><input type="checkbox" class="plain" value="${d}" ${(p.weekdays || []).includes(d) ? "checked" : ""}><span>${WD[d]}</span></label>`).join("")}</div>`, name: "weekdays" },
+      { name: "time", label: "Uhrzeit", type: "time", value: p.time },
+      { name: "enabled", label: "Zeitplan aktiv", type: "checkbox", value: p.enabled },
+      { type: "html", wide: true, html: `<div class="section-title">Grenzen</div>` },
+      { name: "max_cores", label: "Höchstens CPU-Kerne", type: "number", min: 0, value: p.max_cores, hint: "0 = wie das Original" },
+      { name: "max_memory", label: "Höchstens RAM (MiB)", type: "number", min: 0, value: p.max_memory, hint: "0 = wie das Original" },
+      { name: "boot_wait", label: "Wartezeit nach dem Start (s)", type: "number", min: 30, value: p.boot_wait, hint: "Bis zum Screenshot; mit Gast-Agent endet sie früher." },
+      { name: "time_limit", label: "Zeitlimit je Restore (Min.)", type: "number", min: 1, value: p.time_limit },
+      { name: "id_base", label: "Test-IDs ab", type: "number", min: 100, value: p.id_base, mono: true },
+      { name: "keep_failed", label: "Fehlgeschlagene Test-VMs zur Untersuchung behalten (bis zum nächsten Lauf)", type: "checkbox", value: p.keep_failed, wide: true },
+    ],
+    onMount: async (d) => {
+      const form = qs("form", d);
+      const show = () => { qs('[data-field="vmids"]', d).hidden = formValues(form).select === "all"; };
+      qsa('[name="select"]', d).forEach((r) => r.onchange = show);
+      show();
+      const fillStores = async (val) => {
+        const sel = qs('[name="store"]', d);
+        try { const list = await storesOf(qs('[name="pbs"]', d).value); sel.innerHTML = list.map((x) => `<option ${x.name === val ? "selected" : ""}>${esc(x.name)}</option>`).join(""); }
+        catch (e) { sel.innerHTML = ""; toastErr(e); }
+      };
+      const fillStorage = async (val) => {
+        const sel = qs('[name="storage"]', d);
+        try {
+          const r = await GET(`/api/pve/${qs('[name="cluster"]', d).value}/nodes/${enc(qs('[name="node"]', d).value)}/storages?content=images`);
+          sel.innerHTML = r.storages.map((x) => `<option value="${esc(x.storage)}" ${x.storage === val ? "selected" : ""}>${esc(x.storage)} (${fmtBytes(x.avail)} frei)</option>`).join("");
+        } catch (e) { sel.innerHTML = ""; }
+      };
+      const fillNodes = async (val, sval) => {
+        const sel = qs('[name="node"]', d);
+        try {
+          const r = await GET(`/api/pve/${qs('[name="cluster"]', d).value}/storages`);
+          sel.innerHTML = (r.nodes || []).map((n) => `<option ${n.node === val ? "selected" : ""}>${esc(n.node)}</option>`).join("");
+        } catch (e) { sel.innerHTML = ""; }
+        await fillStorage(sval);
+      };
+      qs('[name="pbs"]', d).onchange = () => fillStores("");
+      qs('[name="cluster"]', d).onchange = () => fillNodes("", "");
+      qs('[name="node"]', d).onchange = () => fillStorage("");
+      await Promise.all([fillStores(p.store), fillNodes(p.node, p.storage)]);
+    },
+    submit: async (v, d) => {
+      v.weekdays = qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value));
+      ["max_cores", "max_memory", "boot_wait", "time_limit", "id_base"].forEach((k) => { v[k] = Number(v[k]) || 0; });
+      if (edit) await PUT(`/api/restoretests/${p.id}`, v); else await POST("/api/restoretests", v);
+      toast("Gespeichert."); done();
     },
   });
 }

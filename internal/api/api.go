@@ -45,6 +45,7 @@ type Server struct {
 func New(c *core.Core, web fs.FS, secure bool) *Server {
 	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}}
 	s.routes()
+	c.EnsureStorage = s.ensurePVEStorage
 	return s
 }
 
@@ -131,6 +132,13 @@ func (s *Server) routes() {
 	a("GET /api/guests/snapshots", s.guestSnapshots)
 	a("POST /api/restore", s.restore)
 	a("GET /api/restore/files", s.restoreFiles)
+	a("GET /api/restoretests", s.listRestoreTests)
+	a("POST /api/restoretests", s.saveRestoreTest)
+	a("POST /api/restoretests/cancel", s.cancelRestoreTest)
+	a("GET /api/restoretests/screenshot", s.restoreTestScreenshot)
+	a("PUT /api/restoretests/{id}", s.saveRestoreTest)
+	a("DELETE /api/restoretests/{id}", s.deleteRestoreTest)
+	a("POST /api/restoretests/{id}/run", s.runRestoreTest)
 	a("GET /api/restore/sources", s.restoreSources)
 	a("GET /api/restore/source", s.restoreSourceGuests)
 	a("GET /api/restore/download", s.restoreDownload)
