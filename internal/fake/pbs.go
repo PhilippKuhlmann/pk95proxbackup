@@ -27,6 +27,18 @@ type job struct {
 	state  string
 }
 
+var (
+	aclMu sync.Mutex
+	acls  = map[string][]string{}
+)
+
+// ACLRoles returns the roles the simulated servers granted on path to authID.
+func ACLRoles(path, authID string) []string {
+	aclMu.Lock()
+	defer aclMu.Unlock()
+	return append([]string(nil), acls[path+"|"+authID]...)
+}
+
 // PBS is a simulated Proxmox Backup Server.
 type PBS struct {
 	mu        sync.Mutex
@@ -497,6 +509,9 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		data(w, map[string]string{"tokenid": seg[2] + "!" + seg[4], "value": "00000000-demo-secret"})
 	case path == "/access/acl":
+		aclMu.Lock()
+		acls[f.Get("path")+"|"+f.Get("auth-id")] = append(acls[f.Get("path")+"|"+f.Get("auth-id")], f.Get("role"))
+		aclMu.Unlock()
 		data(w, nil)
 	default:
 		apiErr(w, 404, "Path '"+path+"' not found (demo)")

@@ -223,9 +223,13 @@ func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.
 		return fmt.Errorf("Token anlegen: %w", err)
 	}
 	// The user needs the rights as well: a token never has more than its user.
+	// PowerUser: back up and prune; Reader: also read backups written by others (sync
+	// jobs, USB copies) – without it restoring them fails with "backup owner check failed".
 	for _, id := range []string{tokenID, user} {
-		if err := pbs.SetACL(ctx, "/datastore/"+store, "DatastorePowerUser", id); err != nil {
-			return fmt.Errorf("Rechte setzen: %w", err)
+		for _, role := range []string{"DatastorePowerUser", "DatastoreReader"} {
+			if err := pbs.SetACL(ctx, "/datastore/"+store, role, id); err != nil {
+				return fmt.Errorf("Rechte setzen: %w", err)
+			}
 		}
 	}
 	port := srv.Port
@@ -241,10 +245,17 @@ func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.
 // ensurePVEStorage returns the storage of a cluster for a datastore and adds one when there
 // is none (for restoring from a USB disk or another Backup Server).
 func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store string) (string, error) {
-	name, err := s.pveStorageFor(ctx, pve, srv, store)
-	if err != nil || name != "" {
-		return name, err
+	st, err := s.pveStorageEntry(ctx, pve, srv, store)
+	if err != nil {
+		return "", err
 	}
+	if st.Storage != "" {
+		if err := s.readAccess(ctx, srv, store, st.Username); err != nil {
+			return "", err
+		}
+		return st.Storage, nil
+	}
+	name := ""
 	pbs := s.C.PBSClient(srv)
 	existing := map[string]bool{}
 	if list, err := pve.Storages(ctx); err == nil {
@@ -717,19 +728,54 @@ func (s *Server) guestSnapshots(w http.ResponseWriter, r *http.Request) {
 
 // pveStorageFor finds the storage of a cluster that points to a datastore of a Backup Server.
 func (s *Server) pveStorageFor(ctx context.Context, pve *prox.PVE, srv core.PBSServer, store string) (string, error) {
+	st, err := s.pveStorageEntry(ctx, pve, srv, store)
+	return st.Storage, err
+}
+
+func (s *Server) pveStorageEntry(ctx context.Context, pve *prox.PVE, srv core.PBSServer, store string) (prox.Storage, error) {
 	storages, err := pve.Storages(ctx)
 	if err != nil {
-		return "", err
+		return prox.Storage{}, err
 	}
 	for _, st := range storages {
 		if st.Type != "pbs" || st.Datastore != store {
 			continue
 		}
 		if m, ok := s.matchServer(st); ok && m.ID == srv.ID {
-			return st.Storage, nil
+			return st, nil
 		}
 	}
-	return "", nil
+	return prox.Storage{}, nil
+}
+
+// readAccess makes sure the PBS login of a PVE storage may read every backup of the
+// datastore, not only its own (USB copies and sync jobs belong to the job). Storages added
+// before the appliance granted DatastoreReader get it here, once per process.
+func (s *Server) readAccess(ctx context.Context, srv core.PBSServer, store, authID string) error {
+	if authID == "" || strings.HasPrefix(authID, "root@pam") {
+		return nil
+	}
+	key := srv.ID + "|" + store + "|" + authID
+	s.limMu.Lock()
+	done := s.granted[key]
+	s.limMu.Unlock()
+	if done {
+		return nil
+	}
+	pbs := s.C.PBSClient(srv)
+	ids := []string{authID}
+	if user, _, isToken := strings.Cut(authID, "!"); isToken {
+		ids = append(ids, user)
+	}
+	for _, id := range ids {
+		if err := pbs.SetACL(ctx, "/datastore/"+store, "DatastoreReader", id); err != nil {
+			return fmt.Errorf("Leserecht für %s auf %s setzen: %w", id, store, err)
+		}
+	}
+	s.limMu.Lock()
+	s.granted[key] = true
+	s.limMu.Unlock()
+	return nil
 }
 
 // backupVolume identifies one backup as Proxmox VE volume (storage:backup/vm/100/<time>).

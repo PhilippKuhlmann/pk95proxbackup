@@ -36,13 +36,14 @@ type Server struct {
 	Secure bool // cookies only over HTTPS
 	mux    *http.ServeMux
 
-	limMu sync.Mutex
-	fails map[string][]time.Time
+	limMu   sync.Mutex
+	fails   map[string][]time.Time
+	granted map[string]bool // read access given to PVE storages (see readAccess)
 }
 
 // New builds the handler.
 func New(c *core.Core, web fs.FS, secure bool) *Server {
-	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}}
+	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}}
 	s.routes()
 	return s
 }

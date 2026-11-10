@@ -403,4 +403,17 @@ func TestRestoreSources(t *testing.T) {
 			t.Fatalf("usb storage must use its own token: %v", m)
 		}
 	}
+	// It may read backups written by others (the copies belong to the sync job).
+	for _, id := range []string{"pk95-pve@pbs!pve-cluster-usb-a", "pk95-pve@pbs"} {
+		if roles := strings.Join(fake.ACLRoles("/datastore/usb-a", id), ","); !strings.Contains(roles, "DatastoreReader") || !strings.Contains(roles, "DatastorePowerUser") {
+			t.Fatalf("%s roles on usb-a: %q", id, roles)
+		}
+	}
+	// A storage added earlier without the read role gets it when restoring from it.
+	if code, _ := cl.do("GET", "/api/restore/files?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1794168000", nil, false); code != 200 {
+		t.Fatal("restore from backup")
+	}
+	if roles := strings.Join(fake.ACLRoles("/datastore/backup", "pk95-pve@pbs!pve-cluster"), ","); !strings.Contains(roles, "DatastoreReader") {
+		t.Fatalf("existing storage must get read access: %v", roles)
+	}
 }
