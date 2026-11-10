@@ -132,6 +132,28 @@ func (s *Server) restoreTestReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "Lauf nicht gefunden.")
 		return
 	}
+	download := r.URL.Query().Get("download") == "1"
+	b, err := s.renderReport(*run, func(file string) (string, []byte) {
+		data, err := os.ReadFile(s.C.ScreenshotPath(run.ID, file))
+		if err != nil {
+			return "", nil
+		}
+		return "image/png", data
+	}, !download)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'")
+	if download {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="restore-test-%s.html"`, fileNameRe.FindString(run.ID)))
+	}
+	_, _ = w.Write(b)
+}
+
+// renderReport renders the stand-alone report; images delivers the picture of a result.
+func (s *Server) renderReport(run core.RestoreTestRun, images func(file string) (string, []byte), tools bool) ([]byte, error) {
 	status := map[string][2]string{"ok": {"Erfolgreich", "ok"}, "warning": {"Hinweis", "warning"}, "error": {"Fehler", "error"},
 		"skipped": {"Übersprungen", "skipped"}, "running": {"Läuft", "warning"}, "pending": {"Wartet", "warning"}, "cancelled": {"Abgebrochen", "warning"}}
 	var rows, shots []reportRow
@@ -154,8 +176,8 @@ func (s *Server) restoreTestReport(w http.ResponseWriter, r *http.Request) {
 			row.Size = "–"
 		}
 		if res.Screenshot != "" {
-			if b, err := os.ReadFile(s.C.ScreenshotPath(run.ID, res.Screenshot)); err == nil {
-				row.Image = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(b))
+			if ctype, b := images(res.Screenshot); len(b) > 0 {
+				row.Image = template.URL("data:" + ctype + ";base64," + base64.StdEncoding.EncodeToString(b))
 				shots = append(shots, row)
 			}
 		}
@@ -193,19 +215,12 @@ func (s *Server) restoreTestReport(w http.ResponseWriter, r *http.Request) {
 		end = time.Now().Unix()
 	}
 	host, _ := os.Hostname()
-	download := r.URL.Query().Get("download") == "1"
-	data := map[string]any{"Run": run, "Rows": rows, "Shots": shots, "Counts": cs, "Title": title, "Summary": summary,
+	data := map[string]any{"Run": &run, "Rows": rows, "Shots": shots, "Counts": cs, "Title": title, "Summary": summary,
 		"Word": status[run.Status][0], "Start": clock(run.Start, true), "End": clock(run.End, true), "Total": secs(end - run.Start),
-		"Host": host, "Version": s.C.Version, "Now": time.Now().Format("02.01.2006 15:04"), "Tools": !download}
+		"Host": host, "Version": s.C.Version, "Now": time.Now().Format("02.01.2006 15:04"), "Tools": tools}
 	var b bytes.Buffer
 	if err := reportTmpl.Execute(&b, data); err != nil {
-		fail(w, err)
-		return
+		return nil, err
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'")
-	if download {
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="restore-test-%s.html"`, fileNameRe.FindString(run.ID)))
-	}
-	_, _ = w.Write(b.Bytes())
+	return b.Bytes(), nil
 }

@@ -817,8 +817,17 @@ func (c *Core) finishRun(plan RestoreTestPlan, cl PVECluster, run *RestoreTestRu
 			kind = "CT"
 		}
 		info := r.Info
-		rows = append(rows, notify.Row{Kind: kind, ID: r.VMID, Name: r.Name, Status: st, Time: r.BackupTime,
-			Duration: humanDuration(r.Restore + r.Boot), Size: fmtBytes(r.DiskBytes), Info: info})
+		if r.OS != "" && !strings.Contains(info, r.OS) {
+			info += " (" + r.OS + ")"
+		}
+		dur := ""
+		if r.Restore > 0 {
+			dur = "Restore " + humanDuration(r.Restore)
+			if r.Boot > 0 {
+				dur += " · Start " + humanDuration(r.Boot)
+			}
+		}
+		rows = append(rows, notify.Row{Kind: kind, ID: r.VMID, Name: r.Name, Status: st, Duration: dur, Size: fmtBytes(r.DiskBytes), Info: info})
 	}
 	total := len(run.Results)
 	d := &notify.Details{RowsTitle: "Getestete Server", Rows: rows, Link: "/api/restoretests/report?run=" + run.ID,
@@ -844,7 +853,34 @@ func (c *Core) finishRun(plan RestoreTestPlan, cl PVECluster, run *RestoreTestRu
 		title = fmt.Sprintf("Wiederherstellungstest: %d von %d Servern ohne Probleme", okN, total)
 		body = fmt.Sprintf("%d von %d Servern ließen sich einwandfrei wiederherstellen und starten, bei den übrigen gab es Hinweise.", okN, total) + forward
 	}
-	c.EventDetails(sev, "Wiederherstellungstest", title, body, d)
+	// Everything goes into the mail: the recipients usually cannot log in to the appliance.
+	var files []notify.Attachment
+	jpegs := map[string][]byte{}
+	shotBytes := 0
+	for _, r := range run.Results {
+		if r.Screenshot == "" {
+			continue
+		}
+		b, err := mailJPEG(c.ScreenshotPath(run.ID, r.Screenshot), 1024)
+		if err != nil || shotBytes+len(b) > 12<<20 { // keep the mail below ~15 MB
+			continue
+		}
+		shotBytes += len(b)
+		cid := "shot-" + r.Type + "-" + r.VMID + "@pk95"
+		jpegs[r.Screenshot] = b
+		st := r.Status
+		if st == "skipped" {
+			st = "warning"
+		}
+		files = append(files, notify.Attachment{Name: r.Type + "-" + r.VMID + ".jpg", ContentType: "image/jpeg", Data: b, ContentID: cid})
+		d.Images = append(d.Images, notify.Image{CID: cid, Caption: strings.TrimSpace(r.VMID + " " + r.Name + " – " + r.Info), Status: st})
+	}
+	if c.ReportHTML != nil {
+		report := c.ReportHTML(copyRun(run), func(file string) (string, []byte) { return "image/jpeg", jpegs[file] })
+		files = append(files, notify.Attachment{Name: "Restore-Test-" + run.ID + ".html", ContentType: "text/html; charset=utf-8", Data: report})
+		d.Note = "Der vollständige Bericht mit allen Zeiten und Bildern hängt als Datei an (im Browser öffnen, drucken oder ablegen)."
+	}
+	c.EventWithFiles(sev, "Wiederherstellungstest", title, body, d, files)
 }
 
 func allStart(n int) string {

@@ -81,6 +81,9 @@ type Core struct {
 	SelfUUID func() string
 	// EnsureStorage returns (and if needed adds) the PVE storage of a datastore (set by the API).
 	EnsureStorage func(ctx context.Context, pve *prox.PVE, cl PVECluster, srv PBSServer, store string) (string, error)
+	// ReportHTML renders the restore test report; images returns the picture of a result
+	// as content type and data (set by the API).
+	ReportHTML func(run RestoreTestRun, images func(file string) (string, []byte)) []byte
 
 	mu      sync.Mutex
 	rotBusy map[string]bool
@@ -222,6 +225,11 @@ func (c *Core) Event(severity, source, title, body string) {
 
 // EventDetails records an event with structured details (guests, facts, log excerpt).
 func (c *Core) EventDetails(severity, source, title, body string, d *notify.Details) {
+	c.EventWithFiles(severity, source, title, body, d, nil)
+}
+
+// EventWithFiles is EventDetails with attachments for the notification mail.
+func (c *Core) EventWithFiles(severity, source, title, body string, d *notify.Details, files []notify.Attachment) {
 	ev := store.Event{Severity: severity, Source: source, Title: title, Body: body}
 	if d != nil {
 		if b, err := json.Marshal(d); err == nil {
@@ -235,6 +243,7 @@ func (c *Core) EventDetails(severity, source, title, body string, d *notify.Deta
 	ns := c.NotifySettings()
 	if (ns.MailEnabled || ns.HookEnabled) && ns.Wants(severity) {
 		msg := c.Message(severity, source, title, body, d)
+		msg.Attachments = files
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()

@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net"
 	"net/http"
 	"net/url"
@@ -200,6 +204,8 @@ func (s *Server) sampleMessage(status string) notify.Message {
 		title = "Testnachricht: Datensicherung fehlgeschlagen"
 		body = "Die Datensicherung hat nicht funktioniert, keiner der 2 Server wurde gesichert." + forward
 		d.Log = []string{"ERROR: Backup of VM 100 failed - backup connect failed: command error: error trying to connect: tcp connect error: No route to host", "TASK ERROR: job errors"}
+	case "restoretest":
+		return s.sampleRestoreTest()
 	case "usb":
 		rows = []notify.Row{{Kind: "VM", ID: "100", Name: "dc01", Status: "ok", Time: now.Add(-6 * time.Hour).Unix(), Size: "32.0 GiB"},
 			{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Time: now.Add(-6 * time.Hour).Unix(), Size: "420 GiB"},
@@ -217,9 +223,76 @@ func (s *Server) sampleMessage(status string) notify.Message {
 }
 
 func (s *Server) previewMail(w http.ResponseWriter, r *http.Request) {
+	m := s.sampleMessage(r.URL.Query().Get("status"))
+	if !s.C.NotifySettings().MailLinks {
+		m.URL = "" // as the recipients will see it
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
-	_, _ = w.Write([]byte(notify.HTML(s.sampleMessage(r.URL.Query().Get("status")))))
+	_, _ = w.Write([]byte(notify.HTMLPreview(m)))
+}
+
+// sampleScreen draws a made-up login screen for the restore test example.
+func sampleScreen(label string, bg color.RGBA) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 800, 500))
+	for y := 0; y < 500; y++ {
+		for x := 0; x < 800; x++ {
+			c := bg
+			if x > 250 && x < 550 && y > 170 && y < 330 {
+				c = color.RGBA{240, 240, 240, 255}
+			}
+			if x > 280 && x < 520 && y > 250 && y < 270 {
+				c = color.RGBA{180, 180, 180, 255}
+			}
+			img.SetRGBA(x, y, c)
+		}
+	}
+	_ = label
+	var b bytes.Buffer
+	_ = jpeg.Encode(&b, img, &jpeg.Options{Quality: 75})
+	return b.Bytes()
+}
+
+func (s *Server) sampleRestoreTest() notify.Message {
+	now := time.Now()
+	shots := map[string][]byte{"vm-100.png": sampleScreen("dc01", color.RGBA{0, 90, 158, 255}), "vm-101.png": sampleScreen("fileserver", color.RGBA{40, 40, 48, 255})}
+	run := core.RestoreTestRun{ID: now.Format("20060102-150405"), PlanName: "Wöchentlicher Test (Beispiel)", By: "Zeitplan", Status: "ok",
+		Start: now.Add(-14 * time.Minute).Unix(), End: now.Unix(), Cluster: "PVE (Beispiel)", Node: "pve1", Storage: "local-zfs", Source: "PBS / backup",
+		Results: []core.RestoreTestResult{
+			{Type: "vm", VMID: "100", Name: "dc01", Status: "ok", TestID: 990000, BackupTime: now.Add(-9 * time.Hour).Unix(), Started: now.Add(-14 * time.Minute).Unix(),
+				RestoreEnd: now.Add(-11 * time.Minute).Unix(), Finished: now.Add(-8 * time.Minute).Unix(), Restore: 182, Boot: 64, DiskBytes: 64 << 30,
+				OS: "Windows Server 2022 Standard", Hostname: "DC01", Info: "Betriebssystem antwortet", Notes: "Netzwerk getrennt", Screenshot: "vm-100.png"},
+			{Type: "vm", VMID: "101", Name: "fileserver", Status: "ok", TestID: 990001, BackupTime: now.Add(-9 * time.Hour).Unix(), Started: now.Add(-8 * time.Minute).Unix(),
+				RestoreEnd: now.Add(-4 * time.Minute).Unix(), Finished: now.Add(-2 * time.Minute).Unix(), Restore: 236, Boot: 41, DiskBytes: 420 << 30,
+				OS: "Debian GNU/Linux 13 (trixie)", Hostname: "fileserver", Info: "Betriebssystem antwortet", Notes: "Netzwerk getrennt; hostpci0 entfernt", Screenshot: "vm-101.png"},
+			{Type: "ct", VMID: "110", Name: "pihole", Status: "ok", TestID: 990002, BackupTime: now.Add(-9 * time.Hour).Unix(), Started: now.Add(-2 * time.Minute).Unix(),
+				RestoreEnd: now.Add(-110 * time.Second).Unix(), Finished: now.Unix(), Restore: 10, Boot: 95, DiskBytes: 8 << 30, Info: "Container läuft", Notes: "Netzwerk getrennt"},
+		}}
+	d := &notify.Details{Status: "ok", RowsTitle: "Getestete Server",
+		Facts: []notify.Fact{{Label: "System", Value: run.Cluster}, {Label: "Getestet auf", Value: "pve1 / local-zfs"}, {Label: "Sicherungen aus", Value: run.Source},
+			{Label: "Beginn", Value: time.Unix(run.Start, 0).Format("02.01.2006 um 15:04 Uhr")}, {Label: "Dauer", Value: "14 Min. 0 s"}},
+		Note: "Der vollständige Bericht mit allen Zeiten und Bildern hängt als Datei an (im Browser öffnen, drucken oder ablegen)."}
+	var files []notify.Attachment
+	for _, r := range run.Results {
+		kind := map[string]string{"vm": "VM", "ct": "CT"}[r.Type]
+		info := r.Info
+		if r.OS != "" {
+			info += " (" + r.OS + ")"
+		}
+		d.Rows = append(d.Rows, notify.Row{Kind: kind, ID: r.VMID, Name: r.Name, Status: "ok", Size: humanBytes(r.DiskBytes), Info: info,
+			Duration: fmt.Sprintf("Restore %s · Start %s", secs(r.Restore), secs(r.Boot))})
+		if b := shots[r.Screenshot]; b != nil {
+			cid := "shot-" + r.VMID + "@pk95"
+			files = append(files, notify.Attachment{Name: r.Type + "-" + r.VMID + ".jpg", ContentType: "image/jpeg", Data: b, ContentID: cid})
+			d.Images = append(d.Images, notify.Image{CID: cid, Caption: r.VMID + " " + r.Name + " – " + r.Info, Status: "ok"})
+		}
+	}
+	report, _ := s.renderReport(run, func(f string) (string, []byte) { return "image/jpeg", shots[f] }, false)
+	files = append(files, notify.Attachment{Name: "Restore-Test-" + run.ID + ".html", ContentType: "text/html; charset=utf-8", Data: report})
+	m := s.C.Message("info", "Wiederherstellungstest", "Testnachricht: Wiederherstellungstest erfolgreich – alle 3 Server lassen sich aus der Sicherung starten",
+		"Alle 3 Server wurden testweise aus der Sicherung wiederhergestellt und gestartet. Ihre Sicherungen sind einsatzbereit. Sie müssen nichts tun.", d)
+	m.Attachments = files
+	return m
 }
 
 // ---- shares ----

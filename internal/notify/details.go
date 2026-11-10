@@ -13,6 +13,17 @@ type Details struct {
 	Log []string `json:"log,omitempty"`
 	// Link points into the web UI (path, the mail adds the address).
 	Link string `json:"link,omitempty"`
+	// Images are shown in the mail (inline attachments with these content IDs).
+	Images []Image `json:"images,omitempty"`
+	// Note is a closing remark, e.g. "Der vollständige Bericht hängt an."
+	Note string `json:"note,omitempty"`
+}
+
+// Image is a picture in the mail.
+type Image struct {
+	CID     string `json:"cid"`
+	Caption string `json:"caption"`
+	Status  string `json:"status,omitempty"`
 }
 
 // Fact is one label/value pair.

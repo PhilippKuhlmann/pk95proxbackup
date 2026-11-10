@@ -46,6 +46,10 @@ func New(c *core.Core, web fs.FS, secure bool) *Server {
 	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}}
 	s.routes()
 	c.EnsureStorage = s.ensurePVEStorage
+	c.ReportHTML = func(run core.RestoreTestRun, images func(string) (string, []byte)) []byte {
+		b, _ := s.renderReport(run, images, false)
+		return b
+	}
 	return s
 }
 

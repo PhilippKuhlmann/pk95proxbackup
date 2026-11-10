@@ -2,6 +2,7 @@ package notify
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"html/template"
 	"strings"
@@ -88,6 +89,9 @@ func Text(m Message) string {
 			}
 		}
 	}
+	if d != nil && d.Note != "" {
+		b.WriteString("\n" + d.Note + "\n")
+	}
 	if m.URL != "" {
 		b.WriteString("\n" + m.URL + linkPath(m) + "\n")
 	}
@@ -159,6 +163,12 @@ var mailTmpl = template.Must(template.New("mail").Funcs(template.FuncMap{
     <div style="font-size:13px;font-weight:700;color:#6b7280;margin-bottom:6px;">Technische Details für Ihren IT-Betreuer</div>
     <div style="background:#f9fafb;color:#374151;border:1px solid #e5e7eb;border-radius:3px;padding:10px 12px;font-family:Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;">{{range .Log}}{{.}}
 {{end}}</div></td></tr>{{end}}{{end}}
+  {{with .D}}{{if .Images}}<tr><td style="padding:20px 24px 0;">
+    <div style="font-size:15px;font-weight:700;color:#111827;margin-bottom:8px;">Bildschirm nach dem Start</div>
+    {{range .Images}}{{$t := tone .Status}}<div style="margin:0 0 14px;border:1px solid #e5e7eb;border-radius:3px;overflow:hidden;">
+      <img src="{{index $.Imgs .CID}}" alt="{{.Caption}}" width="630" style="display:block;width:100%;max-width:630px;height:auto;background:#000;">
+      <div style="padding:7px 10px;font-size:12px;color:#374151;background:#f9fafb;"><span style="display:inline-block;padding:1px 6px;border-radius:2px;background:{{$t.Wash}};color:{{$t.Ink}};font-weight:700;font-size:10px;text-transform:uppercase;">{{$t.Mark}} {{$t.Word}}</span> {{.Caption}}</div></div>{{end}}
+  </td></tr>{{end}}{{if .Note}}<tr><td style="padding:16px 24px 0;font-size:14px;color:#374151;">📎 {{.Note}}</td></tr>{{end}}{{end}}
   {{if .Link}}<tr><td style="padding:24px 24px 0;">
     <a href="{{.Link}}" style="display:inline-block;background:#1f73d6;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:3px;">Details ansehen</a></td></tr>{{end}}
   <tr><td style="padding:24px;"><div style="border-top:1px solid #e5e7eb;padding-top:14px;font-size:12px;color:#6b7280;line-height:1.6;">
@@ -167,8 +177,13 @@ var mailTmpl = template.Must(template.New("mail").Funcs(template.FuncMap{
     <span style="color:#9ca3af;">{{.M.Host}}{{if .M.Version}} · PK95 ProxBackup {{.M.Version}}{{end}}</span></div></td></tr>
 </table></td></tr></table></body></html>`))
 
-// HTML renders the mail body.
-func HTML(m Message) string {
+// HTML renders the mail body (images as cid: references to the inline attachments).
+func HTML(m Message) string { return renderHTML(m, false) }
+
+// HTMLPreview renders the mail for a browser: inline images become data: URLs.
+func HTMLPreview(m Message) string { return renderHTML(m, true) }
+
+func renderHTML(m Message, preview bool) string {
 	ok, warn, fail := m.counts()
 	t := m.Time
 	if t.IsZero() {
@@ -187,6 +202,19 @@ func HTML(m Message) string {
 		"OK": ok, "Warn": warn, "Fail": fail, "HasCounts": ok+warn+fail > 1,
 		"Link": template.URL(link), "When": t.Format("02.01.2006 um 15:04 Uhr"), "Preheader": pre,
 	}
+	// image sources: cid: references to the inline attachments, data: URLs for a browser preview
+	imgs := map[string]template.URL{}
+	for _, a := range m.Attachments {
+		if a.ContentID == "" {
+			continue
+		}
+		if preview {
+			imgs[a.ContentID] = template.URL("data:" + a.ContentType + ";base64," + base64.StdEncoding.EncodeToString(a.Data))
+		} else {
+			imgs[a.ContentID] = template.URL("cid:" + a.ContentID)
+		}
+	}
+	data["Imgs"] = imgs
 	var b bytes.Buffer
 	if err := mailTmpl.Execute(&b, data); err != nil {
 		return "<pre>" + template.HTMLEscapeString(Text(m)) + "</pre>"

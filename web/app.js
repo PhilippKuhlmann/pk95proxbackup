@@ -2048,6 +2048,7 @@ PAGES["/einstellungen"] = async (el) => {
           ${field({ name: "smtp_password", label: "Passwort", type: "password", placeholder: set.has_smtp_password ? "unverändert" : "" })}
           ${field({ name: "mail_from", label: "Absender", value: n.mail_from, placeholder: "backup@example.org" })}
           ${field({ name: "mail_to", label: "Empfänger", value: n.mail_to, placeholder: "ich@example.org, …", wide: true })}
+          ${field({ name: "mail_links", label: "Knopf „Details ansehen“ in Mails", type: "checkbox", value: n.mail_links, wide: true, hint: "Nur einschalten, wenn die Empfänger sich an der Appliance anmelden können. Kunden ohne Zugang bekommen alles in der Mail: Details, Screenshots und den Bericht als Anhang." })}
         </div></div>
         <div class="section"><div class="form-grid">
           ${field({ name: "hook_enabled", label: "Per Push (ntfy, Gotify, Webhook)", type: "checkbox", value: n.hook_enabled, wide: true })}
@@ -2061,9 +2062,10 @@ PAGES["/einstellungen"] = async (el) => {
             <a class="btn gray sm" href="/api/settings/preview?status=ok" target="_blank" rel="noopener"><span class="dot green"></span> Erfolg</a>
             <a class="btn gray sm" href="/api/settings/preview?status=warning" target="_blank" rel="noopener"><span class="dot amber"></span> Warnung</a>
             <a class="btn gray sm" href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a>
-            <a class="btn gray sm" href="/api/settings/preview?status=usb" target="_blank" rel="noopener"><span class="dot green"></span> USB fertig</a></div></div>
+            <a class="btn gray sm" href="/api/settings/preview?status=usb" target="_blank" rel="noopener"><span class="dot green"></span> USB fertig</a>
+            <a class="btn gray sm" href="/api/settings/preview?status=restoretest" target="_blank" rel="noopener"><span class="dot green"></span> Restore-Test</a></div></div>
         <div class="flex"><button class="btn" type="submit">Speichern</button>
-          <select data-test-status aria-label="Art der Testnachricht" style="width:auto;min-width:0"><option value="ok">Test: Erfolg</option><option value="warning">Test: Warnung</option><option value="error">Test: Fehler</option><option value="usb">Test: USB fertig</option></select>
+          <select data-test-status aria-label="Art der Testnachricht" style="width:auto;min-width:0"><option value="ok">Test: Erfolg</option><option value="warning">Test: Warnung</option><option value="error">Test: Fehler</option><option value="usb">Test: USB fertig</option><option value="restoretest">Test: Restore-Test (mit Bildern und Bericht)</option></select>
           <button class="btn gray" type="button" data-test>Testnachricht senden</button></div>
       </form></div>
     <div>

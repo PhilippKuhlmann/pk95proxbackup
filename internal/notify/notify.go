@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,9 @@ type Settings struct {
 	SMTPPass    string `json:"smtp_password,omitempty"`
 	MailFrom    string `json:"mail_from"`
 	MailTo      string `json:"mail_to"`
+	// MailLinks shows the "Details ansehen" button in mails – only useful when the
+	// recipients can log in to the appliance (customers usually cannot).
+	MailLinks bool `json:"mail_links"`
 
 	HookEnabled bool   `json:"hook_enabled"`
 	HookKind    string `json:"hook_kind"` // ntfy, gotify, json
@@ -52,6 +56,16 @@ type Message struct {
 	URL      string // address of the web UI
 	Version  string
 	Time     time.Time
+	// Attachments go along with the mail (Inline ones are shown in the HTML via cid:).
+	Attachments []Attachment
+}
+
+// Attachment is a file sent with a mail.
+type Attachment struct {
+	Name        string
+	ContentType string
+	Data        []byte
+	ContentID   string // set for inline images: <img src="cid:ContentID">
 }
 
 var rank = map[string]int{"info": 0, "warning": 1, "critical": 2}
@@ -86,20 +100,7 @@ func sendMail(s Settings, m Message) error {
 			to = append(to, t)
 		}
 	}
-	var msg bytes.Buffer
-	boundary := "pk95-" + fmt.Sprint(time.Now().UnixNano())
-	fmt.Fprintf(&msg, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n",
-		s.MailFrom, strings.Join(to, ", "), mimeHeader(Subject(m)), time.Now().Format(time.RFC1123Z), boundary)
-	for _, part := range []struct{ ctype, body string }{{"text/plain", Text(m)}, {"text/html", HTML(m)}} {
-		fmt.Fprintf(&msg, "--%s\r\nContent-Type: %s; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n", boundary, part.ctype)
-		enc := b64(part.body)
-		for len(enc) > 76 {
-			msg.WriteString(enc[:76] + "\r\n")
-			enc = enc[76:]
-		}
-		msg.WriteString(enc + "\r\n")
-	}
-	fmt.Fprintf(&msg, "--%s--\r\n", boundary)
+	msg := BuildMail(s, m, to)
 
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	var conn net.Conn
@@ -113,7 +114,7 @@ func sendMail(s Settings, m Message) error {
 	if err != nil {
 		return err
 	}
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Minute)) // attachments can be a few MB
 	c, err := smtp.NewClient(conn, s.SMTPHost)
 	if err != nil {
 		conn.Close()
@@ -142,7 +143,7 @@ func sendMail(s Settings, m Message) error {
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write(msg.Bytes()); err != nil {
+	if _, err := w.Write(msg); err != nil {
 		return err
 	}
 	if err := w.Close(); err != nil {
@@ -231,4 +232,59 @@ func hookText(m Message) string {
 		t = t[:3500] + "\n…"
 	}
 	return strings.TrimSpace(t)
+}
+
+// BuildMail renders the complete MIME message:
+//
+//	multipart/mixed
+//	├─ multipart/related
+//	│  ├─ multipart/alternative (text/plain, text/html)
+//	│  └─ inline images (Content-ID)
+//	└─ attachments
+func BuildMail(s Settings, m Message, to []string) []byte {
+	if !s.MailLinks {
+		m.URL = "" // recipients cannot open the appliance: no button, no link
+	}
+	var inline, files []Attachment
+	for _, a := range m.Attachments {
+		if a.ContentID != "" {
+			inline = append(inline, a)
+		} else {
+			files = append(files, a)
+		}
+	}
+	id := fmt.Sprint(time.Now().UnixNano())
+	bMixed, bRel, bAlt := "pk95-mix-"+id, "pk95-rel-"+id, "pk95-alt-"+id
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n",
+		s.MailFrom, strings.Join(to, ", "), mimeHeader(Subject(m)), time.Now().Format(time.RFC1123Z), bMixed)
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: multipart/related; boundary=%q\r\n\r\n", bMixed, bRel)
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n", bRel, bAlt)
+	for _, part := range []struct{ ctype, body string }{{"text/plain", Text(m)}, {"text/html", HTML(m)}} {
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: %s; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n", bAlt, part.ctype)
+		writeB64(&b, []byte(part.body))
+	}
+	fmt.Fprintf(&b, "--%s--\r\n", bAlt)
+	for _, a := range inline {
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: %s; name=%q\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <%s>\r\nContent-Disposition: inline; filename=%q\r\n\r\n",
+			bRel, a.ContentType, a.Name, a.ContentID, a.Name)
+		writeB64(&b, a.Data)
+	}
+	fmt.Fprintf(&b, "--%s--\r\n", bRel)
+	for _, a := range files {
+		fmt.Fprintf(&b, "--%s\r\nContent-Type: %s; name=%q\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=%q\r\n\r\n",
+			bMixed, a.ContentType, a.Name, a.Name)
+		writeB64(&b, a.Data)
+	}
+	fmt.Fprintf(&b, "--%s--\r\n", bMixed)
+	return b.Bytes()
+}
+
+func writeB64(b *bytes.Buffer, data []byte) {
+	enc := base64.StdEncoding.EncodeToString(data)
+	for len(enc) > 76 {
+		b.WriteString(enc[:76] + "\r\n")
+		enc = enc[76:]
+	}
+	b.WriteString(enc + "\r\n")
 }

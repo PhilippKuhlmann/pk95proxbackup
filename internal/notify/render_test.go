@@ -37,3 +37,37 @@ func TestHTMLColorsAndContent(t *testing.T) {
 		t.Errorf("text:\n%s", txt)
 	}
 }
+
+func TestBuildMailWithImagesAndAttachment(t *testing.T) {
+	m := sample("ok")
+	m.Details.Images = []Image{{CID: "shot-100@pk95", Caption: "100 dc01", Status: "ok"}}
+	m.Details.Note = "Der vollständige Bericht hängt an."
+	m.Attachments = []Attachment{
+		{Name: "vm-100.jpg", ContentType: "image/jpeg", Data: []byte("JPEGDATA"), ContentID: "shot-100@pk95"},
+		{Name: "Restore-Test.html", ContentType: "text/html; charset=utf-8", Data: []byte("<html>Bericht</html>")},
+	}
+	raw := string(BuildMail(Settings{MailFrom: "a@x.de"}, m, []string{"kunde@x.de"}))
+	for _, want := range []string{"multipart/mixed", "multipart/related", "multipart/alternative", "Content-ID: <shot-100@pk95>",
+		"Content-Disposition: inline; filename=\"vm-100.jpg\"", "Content-Disposition: attachment; filename=\"Restore-Test.html\""} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("mail misses %q", want)
+		}
+	}
+	html := HTML(m)
+	if !strings.Contains(html, `src="cid:shot-100@pk95"`) || !strings.Contains(html, "Der vollständige Bericht hängt an.") {
+		t.Error("html must reference the inline image and mention the attachment")
+	}
+	// Without MailLinks the mail has no button and no link to the appliance.
+	if strings.Contains(raw, base64Of("Details ansehen")) || strings.Contains(raw, "10.0.0.5") {
+		t.Error("link must not be in the mail when MailLinks is off")
+	}
+	withLinks := BuildMail(Settings{MailFrom: "a@x.de", MailLinks: true}, m, []string{"x@x.de"})
+	if len(withLinks) == 0 {
+		t.Fatal("empty")
+	}
+	if p := HTMLPreview(m); !strings.Contains(p, "data:image/jpeg;base64,") {
+		t.Error("preview must inline the image")
+	}
+}
+
+func base64Of(s string) string { return b64(s)[:12] }
