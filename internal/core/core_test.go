@@ -152,7 +152,7 @@ func TestRotationCopyCycle(t *testing.T) {
 	evs, _ := c.St.Events(ctx, "", 0, 20)
 	found := false
 	for _, e := range evs {
-		if strings.Contains(e.Title, "Kopie auf") && strings.Contains(e.Body, "abgezogen") {
+		if strings.Contains(e.Title, "kann abgezogen werden") && strings.Contains(e.Body, "Beim nächsten Wechsel bitte die Festplatte „Platte B (ungerade Tage)“ anschließen") {
 			found = true
 		}
 	}

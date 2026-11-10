@@ -80,9 +80,11 @@ func (s *Server) savePVE(w http.ResponseWriter, r *http.Request) {
 		fieldErrs(w, map[string]string{"secret": "Verbindung fehlgeschlagen: " + err.Error()})
 		return
 	}
-	if _, err := pve.Storages(ctx); err != nil {
-		fieldErrs(w, map[string]string{"token_id": "Der Token darf die Speicher nicht lesen: " + err.Error() + ". Beim Token „Privilege Separation“ ausschalten oder ihm die Rolle Administrator auf / geben."})
-		return
+	if perms, err := pve.Permissions(ctx); err == nil {
+		if missing := prox.MissingPrivs(perms); len(missing) > 0 {
+			fieldErrs(w, map[string]string{"token_id": permHint(req.TokenID, missing)})
+			return
+		}
 	}
 	if id == "" {
 		req.ID = core.NewID(4)
@@ -261,6 +263,15 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	jobs, err := pve.BackupJobs(r.Context())
 	if err != nil {
+		if prox.IsStatus(err, 403) {
+			if perms, perr := pve.Permissions(r.Context()); perr == nil {
+				if missing := prox.MissingPrivs(perms); len(missing) > 0 {
+					cl, _ := s.C.Cluster(r.PathValue("id"))
+					writeErr(w, http.StatusBadGateway, permHint(cl.TokenID, missing))
+					return
+				}
+			}
+		}
 		fail(w, err)
 		return
 	}
@@ -450,6 +461,18 @@ func (s *Server) runJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"upids": upids, "errors": errs})
 }
 
+// permHint explains missing privileges of a PVE token with the command that fixes them.
+func permHint(tokenID string, missing []string) string {
+	user, _, _ := strings.Cut(tokenID, "!")
+	cmd := "pveum acl modify / --tokens '" + tokenID + "' --roles Administrator"
+	if user != "root@pam" {
+		// A token never has more rights than its user.
+		cmd = "pveum acl modify / --users '" + user + "' --roles Administrator && " + cmd
+	}
+	return "Dem Token fehlen Rechte in Proxmox VE (" + strings.Join(missing, ", ") + "). Er sieht sonst keine VMs und Jobs. " +
+		"Auf einem Knoten ausführen: " + cmd + " – ein Token hat nie mehr Rechte als sein Benutzer."
+}
+
 func emptyNil(s string) any {
 	if s == "" {
 		return nil
@@ -536,6 +559,13 @@ func (s *Server) guests(w http.ResponseWriter, r *http.Request) {
 				errs = append(errs, cl.Name+": "+err.Error())
 				mu.Unlock()
 				return
+			}
+			if perms, err := pve.Permissions(ctx); err == nil {
+				if missing := prox.MissingPrivs(perms); len(missing) > 0 {
+					mu.Lock()
+					errs = append(errs, cl.Name+": "+permHint(cl.TokenID, missing))
+					mu.Unlock()
+				}
 			}
 			nb := map[int]bool{}
 			if nbs, err := pve.NotBackedUp(ctx); err == nil {

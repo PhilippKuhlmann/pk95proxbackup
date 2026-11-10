@@ -135,13 +135,10 @@ func (c *Core) reportBackupRun(ctx context.Context, tasks []TaskInfo) {
 			switch {
 			case g.OK:
 				row.Status = "ok"
-				if g.Reused != "" {
-					row.Info = "inkrementell, " + strings.TrimSuffix(g.Reused, "%") + " % unverändert"
-				}
 			case g.Done:
 				row.Status, row.Info = "error", g.Error
 			default:
-				row.Status, row.Info = "error", "abgebrochen"
+				row.Status, row.Info = "error", "Sicherung wurde abgebrochen"
 			}
 			rows = append(rows, row)
 		}
@@ -169,46 +166,48 @@ func (c *Core) reportBackupRun(ctx context.Context, tasks []TaskInfo) {
 		b, _ := strconv.Atoi(rows[j].ID)
 		return a < b
 	})
-	d := &notify.Details{RowsTitle: "Gesicherte VMs und Container", Rows: rows, Link: "/sicherungen"}
-	sort.Strings(nodes)
+	d := &notify.Details{RowsTitle: "Gesicherte Server", Rows: rows, Link: "/sicherungen"}
+	_ = mode
 	d.Facts = []notify.Fact{
-		{Label: "Proxmox VE", Value: cl.Name},
-		{Label: "Knoten", Value: strings.Join(dedupe(nodes), ", ")},
+		{Label: "System", Value: cl.Name},
+		{Label: "Beginn", Value: fmtWhen(start)},
+		{Label: "Dauer", Value: humanDuration(end - start)},
 	}
 	if storage != "" {
-		d.Facts = append(d.Facts, notify.Fact{Label: "Ziel", Value: storage})
+		d.Facts = append(d.Facts, notify.Fact{Label: "Gesichert nach", Value: storage})
 	}
-	if mode != "" {
-		d.Facts = append(d.Facts, notify.Fact{Label: "Modus", Value: map[string]string{"snapshot": "Snapshot", "suspend": "Anhalten", "stop": "Stopp"}[mode]})
-	}
-	d.Facts = append(d.Facts,
-		notify.Fact{Label: "Beginn", Value: time.Unix(start, 0).Format("02.01.2006 15:04")},
-		notify.Fact{Label: "Dauer", Value: humanDuration(end - start)},
-	)
-	severity, title := "info", ""
+	severity, title, body := "info", "", ""
 	total := okN + failN
+	var failed []string
+	for _, r := range rows {
+		if r.Status != "ok" {
+			failed = append(failed, strings.TrimSpace(r.Name+" ("+r.ID+")"))
+		}
+	}
+	forward := " Bitte leiten Sie diese Nachricht an Ihren IT-Betreuer weiter."
 	switch {
-	case total == 0 && taskFailed:
-		severity, d.Status, title = "critical", "error", "Sicherung fehlgeschlagen"
+	case total == 0:
+		severity, d.Status = "critical", "error"
+		title = "Datensicherung fehlgeschlagen"
+		body = "Die Datensicherung hat nicht funktioniert, es wurde kein Server gesichert." + forward
 	case failN == 0 && !taskFailed:
 		d.Status = "ok"
-		title = fmt.Sprintf("Sicherung erfolgreich: %d %s", okN, plural(okN, "Gast", "Gäste"))
+		title = fmt.Sprintf("Datensicherung erfolgreich – %s gesichert", allServers(okN))
+		body = fmt.Sprintf("Die Datensicherung war erfolgreich: %s gesichert. Sie müssen nichts tun.", allServers(okN))
 	case okN == 0:
 		severity, d.Status = "critical", "error"
-		title = fmt.Sprintf("Sicherung fehlgeschlagen: %d %s", failN, plural(failN, "Gast", "Gäste"))
+		title = "Datensicherung fehlgeschlagen"
+		body = fmt.Sprintf("Die Datensicherung hat nicht funktioniert, keiner der %d Server wurde gesichert.", failN) + forward
 	default:
 		severity, d.Status = "warning", "warning"
-		title = fmt.Sprintf("Sicherung mit Fehlern: %d von %d gesichert", okN, total)
+		title = fmt.Sprintf("Datensicherung unvollständig – %d von %d Servern gesichert", okN, total)
+		body = fmt.Sprintf("%d von %d Servern wurden gesichert. Nicht gesichert: %s.", okN, total, strings.Join(failed, ", ")) + forward
 	}
 	if d.Status != "ok" && len(errLines) > 0 {
 		if len(errLines) > 15 {
 			errLines = errLines[:15]
 		}
 		d.Log = errLines
-	}
-	body := fmt.Sprintf("%d von %d VMs/Containern gesichert.", okN, total)
-	if total == 0 {
-		body = "Keine VM und kein Container wurde gesichert."
 	}
 	c.EventDetails(severity, cl.Name, title, body, d)
 }
@@ -261,7 +260,7 @@ func (c *Core) diskContents(ctx context.Context, pbs *prox.PBS, store string) []
 		}
 		info := ""
 		if count[k] > 1 {
-			info = fmt.Sprintf("%d Stände auf der Platte", count[k])
+			info = fmt.Sprintf("dazu %d ältere Stände", count[k]-1)
 		}
 		rows = append(rows, notify.Row{Kind: kind, ID: s.ID, Name: name, Status: "ok", Time: s.Time, Size: fmtBytes(s.Size), Info: info})
 	}
@@ -303,6 +302,14 @@ func dedupe(in []string) []string {
 		}
 	}
 	return out
+}
+
+// allServers: "der Server" / "alle 7 Server".
+func allServers(n int) string {
+	if n == 1 {
+		return "der Server wurde"
+	}
+	return fmt.Sprintf("alle %d Server wurden", n)
 }
 
 func plural(n int, one, many string) string {

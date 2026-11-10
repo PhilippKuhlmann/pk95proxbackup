@@ -189,6 +189,7 @@ func Setup(c *core.Core) (func(), error) {
 	offsite.AddStore("offsite", "/mnt/datastore/offsite", "", 8000*gib, 0)
 
 	pve := NewPVE([]string{"pve1", "pve2"})
+	pve.NoPrivs = PVENoPrivs
 	pve.AddGuest(100, "dc01", "pve1", "qemu", "running")
 	pve.AddGuest(101, "fileserver", "pve1", "qemu", "running")
 	pve.AddGuest(102, "nextcloud", "pve2", "qemu", "running")

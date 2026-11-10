@@ -21,7 +21,7 @@ func TestHTMLColorsAndContent(t *testing.T) {
 		}
 	}
 	h := HTML(sample("warning"))
-	for _, want := range []string{"dc&lt;01&gt;", "pihole", "kaputt", "pbs-backup", "https://10.0.0.5/sicherungen", "1 erfolgreich", "1 fehlgeschlagen", "Auszug aus dem Protokoll"} {
+	for _, want := range []string{"dc&lt;01&gt;", "pihole", "kaputt", "pbs-backup", "https://10.0.0.5/sicherungen", "1 erfolgreich", "1 fehlgeschlagen", "Technische Details für Ihren IT-Betreuer"} {
 		if !strings.Contains(h, want) {
 			t.Errorf("html misses %q", want)
 		}

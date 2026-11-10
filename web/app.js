@@ -693,9 +693,10 @@ PAGES["/verbindungen"] = async (el, token) => {
           <td data-l="Name"><div class="t-main">${esc(c.name)}</div><div class="t-sub mono">${esc(c.token_id)}</div></td>
           <td data-l="Adresse"><span class="mono small">${esc(c.host)}:${c.port || 8006}</span></td>
           <td data-l="Status">${x.online ? pill("Online", "green", true) + `<div class="t-sub">PVE ${esc(x.version)} · ${x.nodes} Knoten</div>` : pill("Offline", "rose") + `<div class="t-sub">${esc(x.error || "")}</div>`}</td>
-          <td data-l="Gäste">${x.online ? `${x.guests} ${x.not_backed_up ? `<div class="t-sub bad">${x.not_backed_up} ohne Job</div>` : ""}` : "—"}</td>
+          <td data-l="Gäste">${x.online ? ((x.missing || []).length ? '<span class="bad small">keine Rechte</span>' : `${x.guests} ${x.not_backed_up ? `<div class="t-sub bad">${x.not_backed_up} ohne Job</div>` : ""}`) : "—"}</td>
           <td class="act"><div class="row-actions"><button class="btn gray sm" type="button" data-storages="${c.id}">${icon("database")} Backup-Speicher</button><button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit-pve="${c.id}">${icon("pencil")}</button><button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del-pve="${c.id}">${icon("trash")}</button></div></td></tr>`; }).join("")}
         </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Proxmox VE verbunden", "Unten steht, wie du den API-Token anlegst.", "", "server")}</div>`}
+        ${state.clusters.filter((c) => (cst[c.id]?.missing || []).length).map((c) => `<div style="padding:0 16px 16px">${permCallout(c, cst[c.id].missing)}</div>`).join("")}
       </div>
       <div class="grid">
         <div class="panel"><div class="panel-head"><div class="panel-title">Token für Proxmox VE</div></div>
@@ -732,6 +733,17 @@ PAGES["/verbindungen"] = async (el, token) => {
   el.innerHTML = pageHead("Verbindungen", "Lade …");
   await draw();
 };
+
+// permCallout explains a PVE token without the needed rights, with the command that fixes it.
+function permCallout(c, missing) {
+  const user = c.token_id.split("!")[0];
+  const cmds = (user !== "root@pam" ? `pveum acl modify / --users '${user}' --roles Administrator\n` : "") + `pveum acl modify / --tokens '${c.token_id}' --roles Administrator`;
+  return `<div class="callout red" style="margin:0"><div class="ct"><div class="ch">${esc(c.name)}: dem API-Token fehlen Rechte</div>
+    <div class="cb">Ohne sie sieht die Appliance keine VMs, Container und Sicherungsjobs. Fehlend: ${missing.map(esc).join(", ")}.<br>
+    Ein Token mit „Privilege Separation“ hat nie mehr Rechte als sein Benutzer${user !== "root@pam" ? ` – deshalb braucht auch <code>${esc(user)}</code> die Rolle` : ""}. Auf einem Knoten von ${esc(c.name)} in der Shell ausführen:</div>
+    <div class="mt">${codeBlock(cmds)}</div>
+    <div class="cb mt">Kontrolle: <code>pveum user permissions '${esc(c.token_id)}' --path /</code> – danach diese Seite neu laden.</div></div></div>`;
+}
 
 function codeBlock(text) {
   return `<div class="code"><pre>${esc(text)}</pre><button class="ib" type="button" title="Kopieren" aria-label="Kopieren" data-copy="${esc(text)}">${icon("copy")}</button></div>`;
@@ -1440,7 +1452,10 @@ PAGES["/sicherungen"] = async (el, token) => {
       if (onlyIssues) return !g.in_job || !g.last_backup || now - g.last_backup > 2 * 86400;
       return true;
     });
-    qs("[data-list]", el).innerHTML = (data.errors || []).map((e) => callout("red", "Nicht alles erreichbar", esc(e))).join("") + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Knoten</th><th>Letzte Sicherung</th><th>Gesichert auf</th><th></th></tr></thead><tbody>
+    qs("[data-list]", el).innerHTML = (data.errors || []).map((e) => {
+      const c = state.clusters.find((x) => e.startsWith(x.name + ": "));
+      return c && e.includes("fehlen Rechte") ? `<div style="margin:12px">${permCallout(c, (e.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean))}</div>` : callout("red", "Nicht alles erreichbar", esc(e));
+    }).join("") + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Knoten</th><th>Letzte Sicherung</th><th>Gesichert auf</th><th></th></tr></thead><tbody>
       ${list.map((g) => { const age = g.last_backup ? now - g.last_backup : 0; return `<tr>
         <td data-l="Gast"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} ${g.in_job ? "" : ' · <span class="bad">in keinem Sicherungsjob</span>'}</div></td>
         <td data-l="Knoten"><div class="small">${esc(g.node)}</div><div class="t-sub">${esc(g.cluster_name)}</div></td>
@@ -1449,6 +1464,7 @@ PAGES["/sicherungen"] = async (el, token) => {
         <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-backup="${g.cluster}|${g.vmid}">${icon("download")} Jetzt sichern</button>
           <button class="btn gray sm" type="button" data-restore="${g.cluster}|${g.vmid}" ${g.backups.length ? "" : "disabled"}>${icon("restore")} Wiederherstellen</button></div></td></tr>`; }).join("")}
       </tbody></table></div></div>` : empty(data.guests.length ? "Nichts gefunden" : "Keine VMs oder Container", data.guests.length ? "" : "Zuerst unter Verbindungen Proxmox VE eintragen.", "", "archive"));
+    bindCopy(el);
     const find = (v) => { const [c, id] = v.split("|"); return data.guests.find((g) => g.cluster === c && String(g.vmid) === id); };
     qsa("[data-backup]", el).forEach((b) => b.onclick = () => backupNow(find(b.dataset.backup)));
     qsa("[data-restore]", el).forEach((b) => b.onclick = () => restoreDialog(find(b.dataset.restore)));
@@ -1548,7 +1564,7 @@ PAGES["/jobs"] = async (el, token) => {
     if (token !== pageToken) return;
     el.innerHTML = pageHead("Sicherungsjobs", "Zeitgesteuerte Sicherungen in Proxmox VE (Rechenzentrum → Backup). Ziel ist ein Backup-Speicher, z. B. ein Datastore dieser Appliance.") +
       all.map(({ c, r, err }) => `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(c.name)}</div><div class="actions"><button class="btn" type="button" data-add="${c.id}">${icon("plus")} Job anlegen</button></div></div>
-        ${err ? `<div style="padding:0 16px 16px">${callout("red", "Nicht erreichbar", esc(err))}</div>` : r.jobs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Job</th><th>Zeitplan</th><th>Was</th><th>Ziel</th><th>Aufbewahrung</th><th></th></tr></thead><tbody>
+        ${err ? `<div style="padding:0 16px 16px">${err.includes("fehlen Rechte") ? permCallout(c, (err.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean)) : callout("red", "Nicht erreichbar", esc(err))}</div>` : r.jobs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Job</th><th>Zeitplan</th><th>Was</th><th>Ziel</th><th>Aufbewahrung</th><th></th></tr></thead><tbody>
         ${r.jobs.map((j) => { const names = Object.fromEntries(r.guests.map((g) => [String(g.vmid), g.name])); const ids = (j.vmid || j.exclude || "").split(",").filter(Boolean);
           return `<tr class="${j.enabled === 0 ? "off" : ""}"><td data-l="Job"><div class="t-main">${esc(j.comment || j.id)} ${j.enabled === 0 ? pill("aus") : ""}</div><div class="t-sub mono">${esc(j.id)}</div></td>
           <td data-l="Zeitplan"><span class="mono">${esc(j.schedule)}</span>${j["next-run"] ? `<div class="t-sub">nächster: ${fmtTime(j["next-run"])}</div>` : ""}</td>
@@ -1559,6 +1575,7 @@ PAGES["/jobs"] = async (el, token) => {
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${c.id}|${esc(j.id)}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${c.id}|${esc(j.id)}">${icon("trash")}</button></div></td></tr>`; }).join("")}</tbody></table></div>` :
           `<div style="padding:0 16px 16px">${empty("Noch kein Sicherungsjob", "Zum Beispiel jede Nacht um 21:00 alle VMs auf den Backup-Server.", "", "calendar")}</div>`}</div>`).join("");
+    bindCopy(el);
     const find = (v) => { const [cid, jid] = v.split("|"); const x = all.find((a) => a.c.id === cid); return { x, job: x.r?.jobs.find((j) => j.id === jid), jid }; };
     qsa("[data-add]", el).forEach((b) => b.onclick = () => jobForm(all.find((a) => a.c.id === b.dataset.add), null, draw));
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => { const f = find(b.dataset.edit); jobForm(f.x, f.job, draw); });
@@ -1695,9 +1712,10 @@ PAGES["/einstellungen"] = async (el) => {
           <div class="flex"><span class="small muted">Vorschau:</span>
             <a class="btn gray sm" href="/api/settings/preview?status=ok" target="_blank" rel="noopener"><span class="dot green"></span> Erfolg</a>
             <a class="btn gray sm" href="/api/settings/preview?status=warning" target="_blank" rel="noopener"><span class="dot amber"></span> Warnung</a>
-            <a class="btn gray sm" href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a></div></div>
+            <a class="btn gray sm" href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a>
+            <a class="btn gray sm" href="/api/settings/preview?status=usb" target="_blank" rel="noopener"><span class="dot green"></span> USB fertig</a></div></div>
         <div class="flex"><button class="btn" type="submit">Speichern</button>
-          <select data-test-status aria-label="Art der Testnachricht" style="width:auto;min-width:0"><option value="ok">Test: Erfolg</option><option value="warning">Test: Warnung</option><option value="error">Test: Fehler</option></select>
+          <select data-test-status aria-label="Art der Testnachricht" style="width:auto;min-width:0"><option value="ok">Test: Erfolg</option><option value="warning">Test: Warnung</option><option value="error">Test: Fehler</option><option value="usb">Test: USB fertig</option></select>
           <button class="btn gray" type="button" data-test>Testnachricht senden</button></div>
       </form></div>
     <div>

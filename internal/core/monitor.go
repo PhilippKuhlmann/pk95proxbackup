@@ -38,6 +38,8 @@ type ClusterState struct {
 	Guests      int    `json:"guests"`
 	NotBackedUp int    `json:"not_backed_up"`
 	Jobs        int    `json:"jobs"`
+	// Missing are privileges the API token lacks (it then sees no guests or jobs).
+	Missing []string `json:"missing,omitempty"`
 }
 
 // ShareState is the shown state of a share.
@@ -181,6 +183,9 @@ func (c *Core) clusterState(ctx context.Context, cl PVECluster) (ClusterState, [
 	}
 	st.Online = true
 	st.Version = v.Version
+	if perms, err := pve.Permissions(ctx); err == nil {
+		st.Missing = prox.MissingPrivs(perms)
+	}
 	if n, err := pve.Nodes(ctx); err == nil {
 		st.Nodes = len(n)
 	}

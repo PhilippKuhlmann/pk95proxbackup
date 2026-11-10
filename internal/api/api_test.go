@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pk95proxbackup/internal/api"
@@ -211,5 +212,34 @@ func TestReverseProxy(t *testing.T) {
 	}
 	if out["public_url"] != "https://pbs.example.org" {
 		t.Fatalf("configured public url wins: %v", out["public_url"])
+	}
+}
+
+func TestPVEWithoutPrivileges(t *testing.T) {
+	fake.PVENoPrivs = true
+	t.Cleanup(func() { fake.PVENoPrivs = false })
+	cl := login(t)
+	want := "pveum acl modify / --tokens 'root@pam!pk95' --roles Administrator"
+	if !strings.Contains(api.PermHintForTest("u@pve!t", []string{"VM.Audit"}), "--users 'u@pve'") {
+		t.Fatal("hint for a non-root user must grant the user too")
+	}
+	code, out := cl.do("GET", "/api/pve/cluster/jobs", nil, false)
+	if code != 502 || !strings.Contains(out["error"].(string), want) || !strings.Contains(out["error"].(string), "Sys.Audit") {
+		t.Fatalf("jobs: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/guests", nil, false)
+	errs, _ := out["errors"].([]any)
+	if len(errs) != 1 || !strings.Contains(errs[0].(string), want) {
+		t.Fatalf("guests must explain the empty list: %v", out)
+	}
+	_, out = cl.do("GET", "/api/overview?fresh=1", nil, false)
+	cls := out["overview"].(map[string]any)["clusters"].([]any)
+	if m := cls[0].(map[string]any)["missing"]; m == nil || len(m.([]any)) == 0 {
+		t.Fatalf("overview must list missing privileges: %v", cls[0])
+	}
+	// Saving the connection again is refused with the same hint.
+	code, out = cl.do("PUT", "/api/pve/cluster", map[string]any{"name": "Cluster", "host": "127.0.0.1", "port": 1, "token_id": "root@pam!pk95", "fingerprint": "aa"}, true)
+	if code != 422 && code != 200 {
+		t.Fatalf("save: %d %v", code, out)
 	}
 }

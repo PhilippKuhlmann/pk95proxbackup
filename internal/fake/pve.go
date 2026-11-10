@@ -12,6 +12,9 @@ import (
 	"pk95proxbackup/internal/prox"
 )
 
+// PVENoPrivs makes the next Setup simulate an API token without rights.
+var PVENoPrivs bool
+
 // VzdumpDuration is how long a simulated backup runs (tests shorten it).
 var VzdumpDuration = 25 * time.Second
 
@@ -28,6 +31,8 @@ type PVE struct {
 	tasks               tasks
 	storageFingerprints map[string]string
 	jobN                int
+	// NoPrivs simulates a token without rights (privilege separation, no ACL).
+	NoPrivs bool
 }
 
 // NewPVE creates a cluster with the given nodes.
@@ -111,9 +116,28 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m := r.Method
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.NoPrivs {
+		// Like Proxmox VE: lists come back empty, the job list needs Sys.Audit.
+		switch path {
+		case "/cluster/resources", "/cluster/backup-info/not-backed-up", "/storage":
+			data(w, []any{})
+			return
+		case "/cluster/backup":
+			apiErr(w, 403, "Permission check failed (/, Sys.Audit)")
+			return
+		}
+	}
 	switch {
 	case path == "/version":
 		data(w, map[string]string{"version": "9.0.10", "release": "9.0"})
+	case path == "/access/permissions":
+		root := map[string]int{}
+		if !p.NoPrivs {
+			for _, pr := range prox.PVERequiredPrivs {
+				root[pr] = 1
+			}
+		}
+		data(w, map[string]map[string]int{"/": root})
 	case path == "/nodes":
 		out := []prox.Node{}
 		for _, n := range p.nodes {

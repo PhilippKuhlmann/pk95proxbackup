@@ -82,7 +82,7 @@ func Text(m Message) string {
 			}
 		}
 		if len(d.Log) > 0 {
-			b.WriteString("\nProtokoll:\n")
+			b.WriteString("\nTechnische Details für Ihren IT-Betreuer:\n")
 			for _, l := range d.Log {
 				b.WriteString("  " + l + "\n")
 			}
@@ -146,7 +146,7 @@ var mailTmpl = template.Must(template.New("mail").Funcs(template.FuncMap{
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border:1px solid #e5e7eb;border-radius:3px;border-collapse:separate;">
       <tr style="background:#f9fafb;">
         <td style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#6b7280;">Status</td>
-        <td style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#6b7280;">Gast</td>
+        <td style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#6b7280;">Name</td>
         <td style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#6b7280;">Details</td>
       </tr>
       {{range .Rows}}{{$t := tone .Status}}<tr>
@@ -156,14 +156,15 @@ var mailTmpl = template.Must(template.New("mail").Funcs(template.FuncMap{
       </tr>{{end}}
     </table></td></tr>{{end}}
   {{if .Log}}<tr><td style="padding:20px 24px 0;">
-    <div style="font-size:15px;font-weight:700;color:#111827;margin-bottom:8px;">Auszug aus dem Protokoll</div>
-    <div style="background:#0d1e35;color:#d9edff;border-radius:3px;padding:12px 14px;font-family:Menlo,Consolas,monospace;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word;">{{range .Log}}{{.}}
+    <div style="font-size:13px;font-weight:700;color:#6b7280;margin-bottom:6px;">Technische Details für Ihren IT-Betreuer</div>
+    <div style="background:#f9fafb;color:#374151;border:1px solid #e5e7eb;border-radius:3px;padding:10px 12px;font-family:Menlo,Consolas,monospace;font-size:11.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;">{{range .Log}}{{.}}
 {{end}}</div></td></tr>{{end}}{{end}}
   {{if .Link}}<tr><td style="padding:24px 24px 0;">
-    <a href="{{.Link}}" style="display:inline-block;background:#1f73d6;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:3px;">In PK95 ProxBackup öffnen</a></td></tr>{{end}}
+    <a href="{{.Link}}" style="display:inline-block;background:#1f73d6;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:3px;">Details ansehen</a></td></tr>{{end}}
   <tr><td style="padding:24px;"><div style="border-top:1px solid #e5e7eb;padding-top:14px;font-size:12px;color:#6b7280;line-height:1.6;">
-    Gesendet von <b style="color:#374151;">{{.M.Host}}</b> am {{.When}}{{if .M.Version}} · PK95 ProxBackup {{.M.Version}}{{end}}<br>
-    Welche Meldungen kommen, stellst du in der Oberfläche unter Einstellungen → Benachrichtigungen ein.</div></td></tr>
+    Diese Nachricht wurde automatisch von Ihrer Datensicherung verschickt ({{.When}}).<br>
+    Bei Fragen wenden Sie sich bitte an Ihren IT-Betreuer.<br>
+    <span style="color:#9ca3af;">{{.M.Host}}{{if .M.Version}} · PK95 ProxBackup {{.M.Version}}{{end}}</span></div></td></tr>
 </table></td></tr></table></body></html>`))
 
 // HTML renders the mail body.

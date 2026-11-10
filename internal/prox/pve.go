@@ -283,3 +283,34 @@ func (p *PVE) VMConfig(ctx context.Context, node string, vmid int) (map[string]a
 func (p *PVE) SetVMConfig(ctx context.Context, node string, vmid int, params Params) error {
 	return p.Do(ctx, http.MethodPut, "/nodes/"+url.PathEscape(node)+"/qemu/"+strconv.Itoa(vmid)+"/config", params, nil)
 }
+
+// Permissions returns the effective privileges of the token per ACL path (GET /access/permissions).
+func (p *PVE) Permissions(ctx context.Context) (map[string]map[string]int, error) {
+	var out map[string]map[string]int
+	err := p.Do(ctx, http.MethodGet, "/access/permissions", nil, &out)
+	return out, err
+}
+
+// PVERequiredPrivs are the privileges the appliance needs on "/" in Proxmox VE.
+var PVERequiredPrivs = []string{
+	"Sys.Audit",               // backup jobs, nodes, tasks
+	"VM.Audit",                // see VMs and containers
+	"VM.Backup",               // back up
+	"VM.Allocate",             // restore as a new guest
+	"VM.Config.HWType",        // pass a USB port through
+	"Datastore.Audit",         // see storages
+	"Datastore.Allocate",      // add the PBS as storage
+	"Datastore.AllocateSpace", // write backups and restored disks
+}
+
+// MissingPrivs lists the required privileges the token lacks on "/".
+func MissingPrivs(perms map[string]map[string]int) []string {
+	root := perms["/"]
+	var missing []string
+	for _, p := range PVERequiredPrivs {
+		if _, ok := root[p]; !ok {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}

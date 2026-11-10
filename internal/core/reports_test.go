@@ -43,7 +43,7 @@ func TestBackupRunReport(t *testing.T) {
 	var found []notify.Details
 	var titles []string
 	for _, e := range evs {
-		if strings.HasPrefix(e.Title, "Sicherung") {
+		if strings.HasPrefix(e.Title, "Datensicherung") {
 			var d notify.Details
 			if err := json.Unmarshal(e.Details, &d); err != nil {
 				t.Fatal(err)
@@ -55,7 +55,7 @@ func TestBackupRunReport(t *testing.T) {
 	if len(found) != 1 {
 		t.Fatalf("want one report, got %v", titles)
 	}
-	if titles[0] != "warning Sicherung mit Fehlern: 4 von 5 gesichert" {
+	if titles[0] != "warning Datensicherung unvollständig – 4 von 5 Servern gesichert" {
 		t.Fatalf("title %q", titles[0])
 	}
 	d := found[0]

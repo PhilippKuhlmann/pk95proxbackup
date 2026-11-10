@@ -177,27 +177,43 @@ func (s *Server) testNotify(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sampleMessage(status string) notify.Message {
 	now := time.Now()
 	rows := []notify.Row{
-		{Kind: "VM", ID: "100", Name: "dc01", Status: "ok", Duration: "00:01:05", Size: "32.00 GiB", Info: "inkrementell, 94 % unverändert"},
-		{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Duration: "00:06:41", Size: "420.00 GiB", Info: "inkrementell, 98 % unverändert"},
+		{Kind: "VM", ID: "100", Name: "dc01", Status: "ok", Duration: "00:01:05", Size: "32.00 GiB"},
+		{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Duration: "00:06:41", Size: "420.00 GiB"},
 		{Kind: "CT", ID: "110", Name: "pihole", Status: "ok", Duration: "00:00:21", Size: "4.00 GiB"},
 	}
-	sev, title, body := "info", "Testnachricht: Sicherung erfolgreich: 3 Gäste", "3 von 3 VMs/Containern gesichert."
-	d := &notify.Details{Status: "ok", RowsTitle: "Gesicherte VMs und Container", Link: "/sicherungen"}
+	sev := "info"
+	title := "Testnachricht: Datensicherung erfolgreich – alle 3 Server wurden gesichert"
+	body := "Die Datensicherung war erfolgreich: alle 3 Server wurden gesichert. Sie müssen nichts tun."
+	d := &notify.Details{Status: "ok", RowsTitle: "Gesicherte Server", Link: "/sicherungen"}
+	forward := " Bitte leiten Sie diese Nachricht an Ihren IT-Betreuer weiter."
 	switch status {
 	case "warning":
 		rows = append([]notify.Row{{Kind: "VM", ID: "112", Name: "test-win11", Status: "error", Info: "unable to find configuration file for VM 112"}}, rows...)
-		sev, d.Status, title, body = "warning", "warning", "Testnachricht: Sicherung mit Fehlern: 3 von 4 gesichert", "3 von 4 VMs/Containern gesichert."
+		sev, d.Status = "warning", "warning"
+		title = "Testnachricht: Datensicherung unvollständig – 3 von 4 Servern gesichert"
+		body = "3 von 4 Servern wurden gesichert. Nicht gesichert: test-win11 (112)." + forward
 		d.Log = []string{"ERROR: Backup of VM 112 failed - unable to find configuration file for VM 112", "INFO: Backup job finished with errors"}
 	case "error":
-		rows = []notify.Row{{Kind: "VM", ID: "100", Name: "dc01", Status: "error", Info: "backup connect failed: command error: error trying to connect: tcp connect error: No route to host"},
-			{Kind: "VM", ID: "101", Name: "fileserver", Status: "error", Info: "backup connect failed: command error: error trying to connect: tcp connect error: No route to host"}}
-		sev, d.Status, title, body = "critical", "error", "Testnachricht: Sicherung fehlgeschlagen: 2 Gäste", "0 von 2 VMs/Containern gesichert."
+		rows = []notify.Row{{Kind: "VM", ID: "100", Name: "dc01", Status: "error", Info: "backup connect failed: No route to host"},
+			{Kind: "VM", ID: "101", Name: "fileserver", Status: "error", Info: "backup connect failed: No route to host"}}
+		sev, d.Status = "critical", "error"
+		title = "Testnachricht: Datensicherung fehlgeschlagen"
+		body = "Die Datensicherung hat nicht funktioniert, keiner der 2 Server wurde gesichert." + forward
 		d.Log = []string{"ERROR: Backup of VM 100 failed - backup connect failed: command error: error trying to connect: tcp connect error: No route to host", "TASK ERROR: job errors"}
+	case "usb":
+		rows = []notify.Row{{Kind: "VM", ID: "100", Name: "dc01", Status: "ok", Time: now.Add(-6 * time.Hour).Unix(), Size: "32.0 GiB"},
+			{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Time: now.Add(-6 * time.Hour).Unix(), Size: "420 GiB"},
+			{Kind: "CT", ID: "110", Name: "pihole", Status: "ok", Time: now.Add(-6 * time.Hour).Unix(), Size: "4.0 GiB"}}
+		d = &notify.Details{Status: "ok", RowsTitle: "Diese Server sind auf der Festplatte gesichert", Link: "/wechselplatten", Rows: rows,
+			Facts: []notify.Fact{{Label: "Festplatte", Value: "„USB1“"}, {Label: "Gesichert am", Value: now.Format("02.01.2006 um 15:04 Uhr")},
+				{Label: "Enthält", Value: "3 Server"}, {Label: "Festplatte belegt", Value: "24 % (456 GiB von 1,8 TiB)"}, {Label: "Beim nächsten Wechsel", Value: "„USB2“ anschließen"}}}
+		return s.C.Message("info", "USB-Sicherung", "Testnachricht: USB-Sicherung fertig – Festplatte „USB1“ kann abgezogen werden",
+			"Alle Daten wurden erfolgreich auf die Festplatte „USB1“ gesichert. Sie können die Festplatte jetzt abziehen und an einem sicheren Ort aufbewahren, am besten außer Haus. Beim nächsten Wechsel bitte die Festplatte „USB2“ anschließen.", d)
 	}
 	d.Rows = rows
-	d.Facts = []notify.Fact{{Label: "Proxmox VE", Value: "Cluster (Beispiel)"}, {Label: "Knoten", Value: "pve1, pve2"}, {Label: "Ziel", Value: "pbs-backup"},
-		{Label: "Modus", Value: "Snapshot"}, {Label: "Beginn", Value: now.Add(-9 * time.Minute).Format("02.01.2006 15:04")}, {Label: "Dauer", Value: "8 Min. 7 s"}}
-	return s.C.Message(sev, "Beispiel", title, body, d)
+	d.Facts = []notify.Fact{{Label: "System", Value: "PVE (Beispiel)"}, {Label: "Beginn", Value: now.Add(-9 * time.Minute).Format("02.01.2006 um 15:04 Uhr")},
+		{Label: "Dauer", Value: "8 Min. 7 s"}, {Label: "Gesichert nach", Value: "pbs-backup"}}
+	return s.C.Message(sev, "Datensicherung", title, body, d)
 }
 
 func (s *Server) previewMail(w http.ResponseWriter, r *http.Request) {

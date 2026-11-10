@@ -499,12 +499,15 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 	c.saveRuntime(key, rt)
 	if !ok {
 		det := &notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{
-			{Label: "Satz", Value: r.Name}, {Label: "Platte", Value: d.Label + " (" + d.Store + ")"}, {Label: "Ergebnis", Value: j.LastRunState}}}
+			{Label: "Festplatte", Value: "„" + d.Label + "“"},
+			{Label: "Zeitpunkt", Value: fmtWhen(j.LastRunEnd)},
+			{Label: "Fehlermeldung", Value: j.LastRunState}}}
 		if lines, err := pbs.TaskLog(ctx, j.LastRunUPID); err == nil {
 			det.Log = taskLogExcerpt(lines)
 		}
-		c.EventDetails("critical", "Wechselplatten", "Kopie auf "+d.Label+" fehlgeschlagen",
-			fmt.Sprintf("Satz „%s“, Datastore %s: %s", r.Name, d.Store, j.LastRunState), det)
+		c.EventDetails("critical", rotationSource, "USB-Sicherung auf „"+d.Label+"“ fehlgeschlagen",
+			"Die Daten konnten nicht auf die Festplatte „"+d.Label+"“ gesichert werden. "+
+				"Bitte lassen Sie die Festplatte angeschlossen und leiten Sie diese Nachricht an Ihren IT-Betreuer weiter.", det)
 		return
 	}
 	if c.tryBusy(key) {
@@ -523,7 +526,7 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	if r.KeepLast+r.KeepDaily+r.KeepWeekly+r.KeepMonthly > 0 {
 		c.setPhase(key, rt, "pruning")
 		if err := c.prune(ctx, pbs, d.Store, r); err != nil {
-			problems = append(problems, "Aufräumen: "+err.Error())
+			problems = append(problems, "Aufräumen (prune): "+err.Error())
 		}
 	}
 	c.mu.Lock()
@@ -532,25 +535,33 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	if gcDue {
 		c.setPhase(key, rt, "gc")
 		if upid, err := pbs.GC(ctx, d.Store); err != nil {
-			problems = append(problems, "Speicher freigeben: "+err.Error())
+			problems = append(problems, "Speicher freigeben (GC): "+err.Error())
 		} else if _, err := pbs.WaitTask(ctx, upid, 12*time.Hour); err != nil {
-			problems = append(problems, "Speicher freigeben: "+err.Error())
+			problems = append(problems, "Speicher freigeben (GC): "+err.Error())
 		} else {
 			c.mu.Lock()
 			rt.LastGC = time.Now().Unix()
 			c.mu.Unlock()
 		}
 	}
-	msg := fmt.Sprintf("Satz „%s“: Die Sicherungen von %s sind auf %s kopiert (%s).", r.Name, r.SourceStore, d.Label, fmtTime(rt.LastOK))
 	// What is on the disk now (read before it is unmounted).
-	det := &notify.Details{Status: "ok", RowsTitle: "Auf der Platte " + d.Label, Rows: c.diskContents(ctx, pbs, d.Store), Link: "/wechselplatten"}
-	det.Facts = []notify.Fact{{Label: "Satz", Value: r.Name}, {Label: "Platte", Value: d.Label + " (" + d.Store + ")"}, {Label: "Quelle", Value: r.SourceStore}}
+	rows := c.diskContents(ctx, pbs, d.Store)
+	det := &notify.Details{Status: "ok", RowsTitle: "Diese Server sind auf der Festplatte gesichert", Rows: rows, Link: "/wechselplatten"}
+	det.Facts = []notify.Fact{
+		{Label: "Festplatte", Value: "„" + d.Label + "“"},
+		{Label: "Gesichert am", Value: fmtWhen(rt.LastOK)},
+		{Label: "Enthält", Value: fmt.Sprintf("%d Server", len(rows))},
+	}
 	if us, err := pbs.Usage(ctx); err == nil {
 		for _, u := range us {
 			if u.Store == d.Store && u.Total > 0 {
-				det.Facts = append(det.Facts, notify.Fact{Label: "Belegung", Value: fmt.Sprintf("%s von %s (%d %%)", fmtBytes(u.Used), fmtBytes(u.Total), u.Used*100/u.Total)})
+				det.Facts = append(det.Facts, notify.Fact{Label: "Festplatte belegt", Value: fmt.Sprintf("%d %% (%s von %s)", u.Used*100/u.Total, fmtBytes(u.Used), fmtBytes(u.Total))})
 			}
 		}
+	}
+	next := c.nextDisk(r, d)
+	if next != "" {
+		det.Facts = append(det.Facts, notify.Fact{Label: "Beim nächsten Wechsel", Value: "„" + next + "“ anschließen"})
 	}
 	if r.UnmountOnDone {
 		c.setPhase(key, rt, "unmounting")
@@ -562,7 +573,6 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 			c.mu.Lock()
 			rt.DoneAt = time.Now().Unix()
 			c.mu.Unlock()
-			msg += " Die Platte ist ausgehängt und kann abgezogen werden."
 		}
 	} else {
 		c.mu.Lock()
@@ -570,15 +580,29 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		c.mu.Unlock()
 	}
 	c.saveRuntime(key, rt)
-	if r.UnmountOnDone && rt.DoneAt > 0 {
-		det.Facts = append(det.Facts, notify.Fact{Label: "Platte", Value: "ausgehängt – kann abgezogen werden"})
+	canPull := !r.UnmountOnDone || rt.DoneAt > 0
+	title := "USB-Sicherung auf „" + d.Label + "“ fertig"
+	msg := "Alle Daten wurden erfolgreich auf die Festplatte „" + d.Label + "“ gesichert."
+	if r.UnmountOnDone && canPull {
+		title = "USB-Sicherung fertig – Festplatte „" + d.Label + "“ kann abgezogen werden"
+		msg += " Sie können die Festplatte jetzt abziehen und an einem sicheren Ort aufbewahren, am besten außer Haus."
+	}
+	if next != "" {
+		msg += " Beim nächsten Wechsel bitte die Festplatte „" + next + "“ anschließen."
 	}
 	if len(problems) > 0 {
 		det.Status, det.Log = "warning", problems
-		c.EventDetails("warning", "Wechselplatten", "Kopie auf "+d.Label+" fertig, mit Problemen", msg, det)
+		if !canPull {
+			title = "USB-Sicherung auf „" + d.Label + "“ fertig – bitte noch nicht abziehen"
+			msg = "Die Daten wurden auf die Festplatte „" + d.Label + "“ gesichert, sie konnte danach aber nicht sicher getrennt werden. " +
+				"Bitte ziehen Sie die Festplatte noch nicht ab und leiten Sie diese Nachricht an Ihren IT-Betreuer weiter."
+		} else {
+			msg += " Beim Aufräumen der Festplatte gab es ein Problem; bitte leiten Sie diese Nachricht an Ihren IT-Betreuer weiter."
+		}
+		c.EventDetails("warning", rotationSource, title, msg, det)
 		return
 	}
-	c.EventDetails("info", "Wechselplatten", "Kopie auf "+d.Label+" fertig", msg, det)
+	c.EventDetails("info", rotationSource, title, msg, det)
 }
 
 func (c *Core) prune(ctx context.Context, pbs *prox.PBS, store string, r Rotation) error {
@@ -691,7 +715,10 @@ func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, no
 				}
 				c.saveRuntime(key, rt)
 				if err := c.RunRotationDisk(ctx, r, d.RotDisk); err != nil {
-					c.Event("warning", "Wechselplatten", "Geplante Kopie auf "+d.Label+" nicht gestartet", err.Error())
+					c.EventDetails("warning", rotationSource, "Geplante USB-Sicherung konnte nicht starten",
+						"Um "+r.Time+" Uhr sollte auf die Festplatte „"+d.Label+"“ gesichert werden, das hat nicht geklappt. "+
+							"Bitte prüfen Sie, ob die Festplatte richtig angeschlossen ist. Hilft das nicht, leiten Sie diese Nachricht an Ihren IT-Betreuer weiter.",
+						&notify.Details{Status: "warning", Link: "/wechselplatten", Log: []string{err.Error()}})
 				}
 			}
 		}
@@ -720,19 +747,33 @@ func (c *Core) remind(r Rotation, st RotationState, now time.Time) {
 		return
 	}
 	var msgs []string
-	if st.Overdue {
-		msgs = append(msgs, "Letzte Kopie auf eine Wechselplatte: "+fmtTime(st.LastCopy)+".")
-	}
+	var rows []notify.Row
+	var labels []string
 	for _, d := range st.Disks {
-		if d.Stale {
-			msgs = append(msgs, d.Label+" war lange nicht angesteckt (letzte Kopie "+fmtTime(d.LastOK)+").")
+		labels = append(labels, "„"+d.Label+"“")
+		row := notify.Row{Kind: "USB", ID: d.Label, Status: "ok", Info: "zuletzt gesichert am " + fmtWhen(d.LastOK)}
+		if d.LastOK == 0 {
+			row.Info = "noch nie benutzt"
 		}
+		if d.Stale {
+			row.Status = "warning"
+			msgs = append(msgs, "Die Festplatte „"+d.Label+"“ war schon lange nicht mehr angeschlossen. Bitte verwenden Sie sie beim nächsten Wechsel wieder, damit auch sie aktuell ist.")
+		}
+		rows = append(rows, row)
+	}
+	if st.Overdue {
+		msgs = append([]string{"Die letzte USB-Sicherung ist vom " + fmtWhen(st.LastCopy) + ". Bitte schließen Sie eine der Festplatten (" + strings.Join(labels, ", ") + ") an, damit wieder gesichert wird."}, msgs...)
 	}
 	if len(msgs) == 0 {
 		return
 	}
 	_ = c.St.SetSetting(key, day)
-	c.Event("warning", "Wechselplatten", "Wechselplatten von „"+r.Name+"“ prüfen", strings.Join(msgs, "\n"))
+	title := "Erinnerung: Bitte USB-Festplatte wechseln"
+	if !st.Overdue {
+		title = "Erinnerung: Eine USB-Festplatte wurde lange nicht benutzt"
+	}
+	c.EventDetails("warning", rotationSource, title, strings.Join(msgs, "\n\n"),
+		&notify.Details{Status: "warning", RowsTitle: "Ihre USB-Festplatten", Rows: rows, Link: "/wechselplatten"})
 }
 
 // PrepareDisk wipes a disk and creates a removable datastore on it.
@@ -780,3 +821,32 @@ func (c *Core) PrepareDisk(ctx context.Context, serverID, disk, store, fs string
 
 var _ = http.MethodGet
 var _ = log.Printf
+
+// rotationSource names the USB rotation in events and mails (readers are customers).
+const rotationSource = "USB-Sicherung"
+
+// nextDisk suggests the disk to plug in next: the one whose last copy is the oldest.
+func (c *Core) nextDisk(r Rotation, cur RotDisk) string {
+	best, bestTS := "", int64(-1)
+	for _, d := range r.Disks {
+		if d.Key == cur.Key {
+			continue
+		}
+		rt := c.runtime(rtKey(r, d))
+		c.mu.Lock()
+		ts := rt.LastOK
+		c.mu.Unlock()
+		if bestTS < 0 || ts < bestTS {
+			best, bestTS = d.Label, ts
+		}
+	}
+	return best
+}
+
+// fmtWhen renders a time for readers: "10.11.2026 um 05:44 Uhr".
+func fmtWhen(ts int64) string {
+	if ts == 0 {
+		return "noch nie"
+	}
+	return time.Unix(ts, 0).Format("02.01.2006 um 15:04 Uhr")
+}
