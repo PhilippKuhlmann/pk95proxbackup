@@ -208,6 +208,7 @@ type Job struct {
 	RunOnMount     bool   `json:"run-on-mount,omitempty"`
 	UnmountOnDone  bool   `json:"unmount-on-done,omitempty"`
 	Direction      string `json:"sync-direction,omitempty"`
+	TransferLast   int    `json:"transfer-last,omitempty"`
 	Disable        bool   `json:"disable,omitempty"`
 	KeepLast       int    `json:"keep-last,omitempty"`
 	KeepDaily      int    `json:"keep-daily,omitempty"`

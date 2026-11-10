@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -30,6 +32,10 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"overview": ov, "events": evs})
 }
 
+func (s *Server) running(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.C.RunningTasks(r.Context()), "time": time.Now().Unix()})
+}
+
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
@@ -53,7 +59,45 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	ns := s.C.NotifySettings()
 	hasPass, hasToken := ns.SMTPPass != "", ns.HookToken != ""
 	ns.SMTPPass, ns.HookToken = "", ""
-	writeJSON(w, http.StatusOK, map[string]any{"notify": ns, "has_smtp_password": hasPass, "has_hook_token": hasToken})
+	writeJSON(w, http.StatusOK, map[string]any{"notify": ns, "has_smtp_password": hasPass, "has_hook_token": hasToken,
+		"access": s.C.Access(), "seen_proxy": s.C.SeenProxy(), "public_url": s.C.PublicURL(), "client_ip": s.clientIP(r), "remote_ip": remoteIP(r)})
+}
+
+func (s *Server) putAccess(w http.ResponseWriter, r *http.Request) {
+	var req core.Access
+	if !decode(w, r, &req) {
+		return
+	}
+	errs := map[string]string{}
+	req.PublicURL = strings.TrimRight(strings.TrimSpace(req.PublicURL), "/")
+	if req.PublicURL != "" {
+		u, err := url.Parse(req.PublicURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || (u.Path != "" && u.Path != "/") {
+			errs["public_url"] = "Vollständige Adresse wie https://backup.example.org"
+		}
+	}
+	var proxies []string
+	for _, p := range req.TrustedProxies {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if net.ParseIP(p) == nil {
+			if _, _, err := net.ParseCIDR(p); err != nil {
+				errs["trusted_proxies"] = p + " ist keine IP-Adresse."
+			}
+		}
+		proxies = append(proxies, p)
+	}
+	req.TrustedProxies = proxies
+	if fieldErrs(w, errs) {
+		return
+	}
+	if err := s.C.St.SetSetting("access", req); err != nil {
+		fail(w, err)
+		return
+	}
+	ok(w)
 }
 
 func (s *Server) readNotify(w http.ResponseWriter, r *http.Request) (notify.Settings, bool) {
@@ -121,11 +165,45 @@ func (s *Server) testNotify(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
-	if err := notify.Send(ctx, n, notify.Message{Severity: "info", Title: "Testnachricht", Body: "Die Benachrichtigungen von PK95 ProxBackup funktionieren."}); err != nil {
+	status := r.URL.Query().Get("status")
+	if err := notify.Send(ctx, n, s.sampleMessage(status)); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	ok(w)
+}
+
+// sampleMessage is a backup report with made-up guests: for the test mail and the preview.
+func (s *Server) sampleMessage(status string) notify.Message {
+	now := time.Now()
+	rows := []notify.Row{
+		{Kind: "VM", ID: "100", Name: "dc01", Status: "ok", Duration: "00:01:05", Size: "32.00 GiB", Info: "inkrementell, 94 % unverändert"},
+		{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Duration: "00:06:41", Size: "420.00 GiB", Info: "inkrementell, 98 % unverändert"},
+		{Kind: "CT", ID: "110", Name: "pihole", Status: "ok", Duration: "00:00:21", Size: "4.00 GiB"},
+	}
+	sev, title, body := "info", "Testnachricht: Sicherung erfolgreich: 3 Gäste", "3 von 3 VMs/Containern gesichert."
+	d := &notify.Details{Status: "ok", RowsTitle: "Gesicherte VMs und Container", Link: "/sicherungen"}
+	switch status {
+	case "warning":
+		rows = append([]notify.Row{{Kind: "VM", ID: "112", Name: "test-win11", Status: "error", Info: "unable to find configuration file for VM 112"}}, rows...)
+		sev, d.Status, title, body = "warning", "warning", "Testnachricht: Sicherung mit Fehlern: 3 von 4 gesichert", "3 von 4 VMs/Containern gesichert."
+		d.Log = []string{"ERROR: Backup of VM 112 failed - unable to find configuration file for VM 112", "INFO: Backup job finished with errors"}
+	case "error":
+		rows = []notify.Row{{Kind: "VM", ID: "100", Name: "dc01", Status: "error", Info: "backup connect failed: command error: error trying to connect: tcp connect error: No route to host"},
+			{Kind: "VM", ID: "101", Name: "fileserver", Status: "error", Info: "backup connect failed: command error: error trying to connect: tcp connect error: No route to host"}}
+		sev, d.Status, title, body = "critical", "error", "Testnachricht: Sicherung fehlgeschlagen: 2 Gäste", "0 von 2 VMs/Containern gesichert."
+		d.Log = []string{"ERROR: Backup of VM 100 failed - backup connect failed: command error: error trying to connect: tcp connect error: No route to host", "TASK ERROR: job errors"}
+	}
+	d.Rows = rows
+	d.Facts = []notify.Fact{{Label: "Proxmox VE", Value: "Cluster (Beispiel)"}, {Label: "Knoten", Value: "pve1, pve2"}, {Label: "Ziel", Value: "pbs-backup"},
+		{Label: "Modus", Value: "Snapshot"}, {Label: "Beginn", Value: now.Add(-9 * time.Minute).Format("02.01.2006 15:04")}, {Label: "Dauer", Value: "8 Min. 7 s"}}
+	return s.C.Message(sev, "Beispiel", title, body, d)
+}
+
+func (s *Server) previewMail(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
+	_, _ = w.Write([]byte(notify.HTML(s.sampleMessage(r.URL.Query().Get("status")))))
 }
 
 // ---- shares ----

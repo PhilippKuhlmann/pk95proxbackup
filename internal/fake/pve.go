@@ -12,6 +12,9 @@ import (
 	"pk95proxbackup/internal/prox"
 )
 
+// VzdumpDuration is how long a simulated backup runs (tests shorten it).
+var VzdumpDuration = 25 * time.Second
+
 // PVE is a simulated Proxmox VE cluster.
 type PVE struct {
 	mu                  sync.Mutex
@@ -205,11 +208,49 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apiErr(w, 404, "job does not exist")
 	case len(seg) == 3 && seg[0] == "nodes" && seg[2] == "vzdump":
 		ids := strings.Split(f.Get("vmid"), ",")
-		lines := []string{"INFO: starting new backup job: vzdump " + strings.Join(ids, " ") + " --storage " + f.Get("storage")}
-		for _, id := range ids {
-			lines = append(lines, "INFO: Starting Backup of VM "+id, "INFO: Finished Backup of VM "+id)
+		mode := f.Get("mode")
+		if mode == "" {
+			mode = "snapshot"
 		}
-		data(w, p.tasks.start(seg[1], "vzdump", f.Get("vmid"), 8*time.Second, lines, nil))
+		head := []string{"INFO: starting new backup job: vzdump " + strings.Join(ids, " ") + " --storage " + f.Get("storage") + " --mode " + mode}
+		var rest []string
+		failed := false
+		for i, id := range ids {
+			g := p.guest(atoi(id))
+			typ, name := "qemu", "vm"+id
+			if g != nil {
+				typ, name = g.Type, g.Name
+			}
+			start := []string{"INFO: Starting Backup of VM " + id + " (" + typ + ")", "INFO: Backup started at " + time.Now().Format("2006-01-02 15:04:05")}
+			if i == 0 {
+				head = append(head, start...)
+			} else {
+				rest = append(rest, start...)
+			}
+			if id == "112" {
+				rest = append(rest, "ERROR: Backup of VM 112 failed - unable to find configuration file for VM 112 on node '"+seg[1]+"'", "INFO: Failed at "+time.Now().Format("2006-01-02 15:04:05"))
+				failed = true
+				continue
+			}
+			label := "VM Name: "
+			if typ == "lxc" {
+				label = "CT Name: "
+			}
+			gb := 8 + atoi(id)%7*9
+			rest = append(rest, "INFO: "+label+name,
+				"INFO: creating Proxmox Backup Server archive '"+map[string]string{"qemu": "vm", "lxc": "ct"}[typ]+"/"+id+"/"+time.Now().UTC().Format("2006-01-02T15:04:05Z")+"'",
+				"INFO: backup was done incrementally, reused "+strconv.Itoa(gb-1)+".40 GiB (9"+strconv.Itoa(atoi(id)%9)+"%)",
+				"INFO: transferred "+strconv.Itoa(gb)+".00 GiB in 42 seconds (512.0 MiB/s)",
+				"INFO: Finished Backup of VM "+id+" (00:00:"+strconv.Itoa(20+atoi(id)%40)+")")
+		}
+		status := "OK"
+		if failed {
+			rest = append(rest, "INFO: Backup job finished with errors")
+			status = "job errors"
+		} else {
+			rest = append(rest, "INFO: Backup job finished successfully")
+		}
+		data(w, p.tasks.start(seg[1], "vzdump", f.Get("vmid"), VzdumpDuration, head, func() (string, []string) { return status, rest }))
 	case len(seg) == 3 && seg[0] == "nodes" && (seg[2] == "qemu" || seg[2] == "lxc") && m == "POST":
 		id := atoi(f.Get("vmid"))
 		if p.guest(id) != nil {
@@ -221,7 +262,7 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			typ = "vzrestore"
 		}
 		node := seg[1]
-		upid := p.tasks.start(node, typ, f.Get("vmid"), 10*time.Second, []string{"restore " + f.Get("archive") + f.Get("ostemplate")}, func() (string, []string) {
+		upid := p.tasks.start(node, typ, f.Get("vmid"), 20*time.Second, []string{"restore " + f.Get("archive") + f.Get("ostemplate")}, func() (string, []string) {
 			p.mu.Lock()
 			defer p.mu.Unlock()
 			p.guests = append(p.guests, prox.Guest{VMID: id, Name: "restored-" + strconv.Itoa(id), Node: node, Type: seg[2], Status: "stopped"})

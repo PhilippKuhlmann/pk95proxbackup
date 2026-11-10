@@ -169,3 +169,47 @@ func TestStaticSPA(t *testing.T) {
 		resp.Body.Close()
 	}
 }
+
+func TestReverseProxy(t *testing.T) {
+	cl := login(t)
+	get := func(xff string) map[string]any {
+		req, _ := http.NewRequest("GET", cl.base+"/api/settings", nil)
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+			req.Header.Set("X-Forwarded-Proto", "https")
+			req.Header.Set("X-Forwarded-Host", "backup.example.org")
+		}
+		resp, err := cl.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out := map[string]any{}
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return out
+	}
+	// Not trusted yet: the header is ignored for the client address, but the proxy is noticed.
+	out := get("203.0.113.7")
+	if out["client_ip"] != "127.0.0.1" {
+		t.Fatalf("untrusted proxy must not set the client ip: %v", out["client_ip"])
+	}
+	if seen := out["seen_proxy"].(map[string]any); seen["url"] != "https://backup.example.org" || seen["proxy_ip"] != "127.0.0.1" {
+		t.Fatalf("seen proxy %v", seen)
+	}
+	if out["public_url"] != "https://backup.example.org" {
+		t.Fatalf("public url from the proxy: %v", out["public_url"])
+	}
+	if code, o := cl.do("PUT", "/api/settings/access", map[string]any{"public_url": "ftp://x", "trusted_proxies": []string{"kein-ip"}}, true); code != 422 {
+		t.Fatalf("bad access settings: %d %v", code, o)
+	}
+	if code, o := cl.do("PUT", "/api/settings/access", map[string]any{"public_url": "https://pbs.example.org/", "trusted_proxies": []string{"127.0.0.1"}}, true); code != 200 {
+		t.Fatalf("access: %d %v", code, o)
+	}
+	out = get("203.0.113.7, 10.0.0.9")
+	if out["client_ip"] != "10.0.0.9" {
+		t.Fatalf("trusted proxy: client ip %v", out["client_ip"])
+	}
+	if out["public_url"] != "https://pbs.example.org" {
+		t.Fatalf("configured public url wins: %v", out["public_url"])
+	}
+}

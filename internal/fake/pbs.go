@@ -131,7 +131,11 @@ func (p *PBS) used(s *store) int64 {
 
 func (p *PBS) runSync(j *job) string {
 	target := j.params["store"]
-	return p.tasks.start(p.node, "syncjob", j.params["id"]+":"+j.params["remote-store"]+":"+target, 6*time.Second,
+	remote := j.params["remote"]
+	if remote == "" {
+		remote = `\x2d`
+	}
+	return p.tasks.start(p.node, "syncjob", remote+":"+j.params["remote-store"]+":"+target+"::"+j.params["id"], 20*time.Second,
 		[]string{"Starting datastore sync job '" + j.params["id"] + "'", "sync datastore '" + target + "' from '" + j.params["remote-store"] + "'"},
 		func() (string, []string) {
 			p.mu.Lock()
@@ -147,7 +151,24 @@ func (p *PBS) runSync(j *job) string {
 				for _, s := range dst.snaps {
 					have[s.Type+s.ID+strconv.FormatInt(s.Time, 10)] = true
 				}
+				// transfer-last: only the newest N snapshots of each group
+				keep := map[string]bool{}
+				if n := atoi(j.params["transfer-last"]); n > 0 {
+					byGroup := map[string][]int64{}
+					for _, s := range src.snaps {
+						byGroup[s.Type+"/"+s.ID] = append(byGroup[s.Type+"/"+s.ID], s.Time)
+					}
+					for g, ts := range byGroup {
+						sort.Slice(ts, func(a, b int) bool { return ts[a] > ts[b] })
+						for i := 0; i < n && i < len(ts); i++ {
+							keep[g+strconv.FormatInt(ts[i], 10)] = true
+						}
+					}
+				}
 				for _, s := range src.snaps {
+					if len(keep) > 0 && !keep[s.Type+"/"+s.ID+strconv.FormatInt(s.Time, 10)] {
+						continue
+					}
 					if !have[s.Type+s.ID+strconv.FormatInt(s.Time, 10)] {
 						dst.snaps = append(dst.snaps, s)
 						n++
@@ -255,10 +276,25 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				data(w, map[string]any{})
 				return
 			}
-			data(w, p.tasks.start(p.node, "garbage_collection", seg[2], 4*time.Second, []string{"starting garbage collection on store " + seg[2], "Removed garbage: 1.2 GiB"}, nil))
+			data(w, p.tasks.start(p.node, "garbage_collection", seg[2], 12*time.Second, []string{"starting garbage collection on store " + seg[2], "Removed garbage: 1.2 GiB"}, nil))
 		case "verify":
-			data(w, p.tasks.start(p.node, "verify", seg[2], 5*time.Second, []string{"verify datastore " + seg[2]}, nil))
+			data(w, p.tasks.start(p.node, "verify", seg[2], 15*time.Second, []string{"verify datastore " + seg[2]}, nil))
 		case "prune-datastore":
+			// keep-last only (enough for the demo and the tests)
+			if n := atoi(f.Get("keep-last")); n > 0 && f.Get("keep-daily")+f.Get("keep-weekly")+f.Get("keep-monthly") == "" {
+				byGroup := map[string][]prox.Snapshot{}
+				for _, sn := range s.snaps {
+					byGroup[sn.Type+"/"+sn.ID] = append(byGroup[sn.Type+"/"+sn.ID], sn)
+				}
+				s.snaps = nil
+				for _, list := range byGroup {
+					sort.Slice(list, func(a, b int) bool { return list[a].Time > list[b].Time })
+					if len(list) > n {
+						list = list[:n]
+					}
+					s.snaps = append(s.snaps, list...)
+				}
+			}
 			data(w, p.tasks.start(p.node, "prune", seg[2], 2*time.Second, []string{"prune datastore " + seg[2]}, nil))
 		case "snapshots":
 			if m == "DELETE" {
@@ -308,7 +344,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			o := map[string]any{}
 			for k, v := range j.params {
-				if n, err := strconv.Atoi(v); err == nil && strings.HasPrefix(k, "keep-") {
+				if n, err := strconv.Atoi(v); err == nil && (strings.HasPrefix(k, "keep-") || k == "transfer-last") {
 					o[k] = n
 				} else if k == "run-on-mount" || k == "remove-vanished" {
 					o[k] = boolv(v)
@@ -424,7 +460,10 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data(w, p.tasks.start(p.node, "dircreate", name, 3*time.Second, []string{"create datastore '" + name + "' on disk " + disk}, nil))
 	case path == "/nodes/localhost/tasks":
 		out := []map[string]any{}
-		for _, t := range p.tasks.recent(atoi(f.Get("limit"))) {
+		for _, t := range p.tasks.recent(max(atoi(f.Get("limit")), 50)) {
+			if boolv(f.Get("running")) && t.End != 0 {
+				continue
+			}
 			o := map[string]any{"upid": t.UPID, "node": t.Node, "worker_type": t.Type, "worker_id": t.ID, "user": t.User, "starttime": t.Start}
 			if t.End != 0 {
 				o["endtime"], o["status"] = t.End, t.Status

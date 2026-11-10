@@ -670,6 +670,7 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 		SourceStore    string `json:"source_store"`
 		Schedule       string `json:"schedule"`
 		RemoveVanished bool   `json:"remove_vanished"`
+		TransferLast   int    `json:"transfer_last"`
 		Comment        string `json:"comment"`
 	}
 	if !decode(w, r, &req) {
@@ -693,6 +694,9 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 	if !schedRe.MatchString(req.Schedule) {
 		errs["schedule"] = "Zeitplan wie in PBS, z. B. daily oder *-*-* 23:00."
 	}
+	if req.TransferLast < 0 || req.TransferLast > 1000 {
+		errs["transfer_last"] = "0 (alle) bis 1000."
+	}
 	if fieldErrs(w, errs) {
 		return
 	}
@@ -706,6 +710,9 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 	if remote != "" {
 		p["remote"] = remote
 	}
+	if req.TransferLast > 0 {
+		p["transfer-last"] = req.TransferLast
+	}
 	job := r.PathValue("job")
 	if job == "" {
 		p["id"] = core.JobID("pk95-sync", core.NewID(3))
@@ -714,6 +721,9 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 		var del []string
 		if remote == "" {
 			del = append(del, "remote")
+		}
+		if req.TransferLast == 0 {
+			del = append(del, "transfer-last")
 		}
 		if req.Schedule == "" {
 			del = append(del, "schedule")

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"pk95proxbackup/internal/notify"
 	"pk95proxbackup/internal/prox"
 	"pk95proxbackup/internal/shares"
 )
@@ -254,7 +255,8 @@ func (c *Core) Run(ctx context.Context) {
 			}
 		}
 		ov := c.BuildOverview(ctx)
-		c.check(prev, &ov)
+		c.check(ctx, prev, &ov)
+		c.reportBackups(ctx, &ov)
 		c.scheduleRotations(ctx, ov.Rotations, time.Now())
 		prev = &ov
 		_ = c.St.PruneSessions()
@@ -275,9 +277,9 @@ func (c *Core) Run(ctx context.Context) {
 }
 
 // check compares two overviews and raises events for changes.
-func (c *Core) check(prev, cur *Overview) {
+func (c *Core) check(ctx context.Context, prev, cur *Overview) {
 	if prev == nil {
-		c.checkFailedTasks(cur, nil)
+		c.checkFailedTasks(ctx, cur)
 		return
 	}
 	was := map[string]ServerState{}
@@ -340,7 +342,7 @@ func (c *Core) check(prev, cur *Overview) {
 			c.Event("info", "Freigaben", "Freigabe "+s.Name+" wieder eingehängt", s.Source)
 		}
 	}
-	c.checkFailedTasks(cur, prev)
+	c.checkFailedTasks(ctx, cur)
 }
 
 func pctOf(d prox.DatastoreUsage) int {
@@ -350,8 +352,9 @@ func pctOf(d prox.DatastoreUsage) int {
 	return int(d.Used * 100 / d.Total)
 }
 
-// checkFailedTasks reports backup, sync, verify and GC tasks that ended with an error.
-func (c *Core) checkFailedTasks(cur, prev *Overview) {
+// checkFailedTasks reports tasks that ended with an error, with an excerpt of their log.
+// Backups of Proxmox VE are reported by reportBackups (with the list of guests).
+func (c *Core) checkFailedTasks(ctx context.Context, cur *Overview) {
 	var seen map[string]bool
 	_ = c.St.GetSetting("seen-failed", &seen)
 	if seen == nil {
@@ -369,15 +372,37 @@ func (c *Core) checkFailedTasks(cur, prev *Overview) {
 			continue
 		}
 		changed = true
-		if first || time.Since(time.Unix(t.EndTime, 0)) > 24*time.Hour {
+		if first || time.Since(time.Unix(t.EndTime, 0)) > 24*time.Hour || (t.Type == "vzdump" && strings.HasPrefix(t.Source, "pve:")) {
 			continue
 		}
-		c.Event("critical", t.Server, TaskLabel(t.Type)+" fehlgeschlagen", strings.TrimSpace(t.ID+" "+t.Node)+": "+t.Status)
+		d := &notify.Details{Status: "error", Link: "/aufgaben", Facts: []notify.Fact{
+			{Label: "Server", Value: t.Server},
+			{Label: "Aufgabe", Value: TaskLabel(t.Type) + " " + t.ID},
+			{Label: "Beginn", Value: time.Unix(t.StartTime, 0).Format("02.01.2006 15:04")},
+			{Label: "Dauer", Value: humanDuration(t.EndTime - t.StartTime)},
+			{Label: "Ergebnis", Value: t.Status},
+		}}
+		kind, id, _ := strings.Cut(t.Source, ":")
+		var lines []prox.TaskLine
+		var err error
+		if kind == "pbs" {
+			if pbs, _, e := c.PBS(id); e == nil {
+				lines, err = pbs.TaskLog(ctx, t.UPID)
+			}
+		} else if pve, _, e := c.PVE(id); e == nil {
+			lines, err = pve.TaskLog(ctx, t.UPID)
+		}
+		if err == nil && len(lines) > 0 {
+			d.Log = taskLogExcerpt(lines)
+		}
+		c.EventDetails("critical", t.Server, TaskLabel(t.Type)+" fehlgeschlagen", strings.TrimSpace(t.ID+" "+t.Node)+": "+t.Status, d)
 	}
 	if changed || len(keep) != len(seen) {
+		if len(keep) == 0 {
+			keep["-"] = true
+		}
 		_ = c.St.SetSetting("seen-failed", keep)
 	}
-	_ = prev
 }
 
 // TaskLabel names a task type in German.

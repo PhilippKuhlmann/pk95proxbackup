@@ -54,6 +54,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "same-origin")
+	if r.Header.Get("X-Forwarded-For") != "" {
+		host := r.Header.Get("X-Forwarded-Host")
+		if host == "" {
+			host = r.Host
+		}
+		s.C.NoteProxy(remoteIP(r), strings.ToLower(r.Header.Get("X-Forwarded-Proto")), host)
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
 	}
@@ -72,10 +79,13 @@ func (s *Server) routes() {
 
 	a("GET /api/overview", s.overview)
 	a("GET /api/events", s.events)
+	a("GET /api/running", s.running)
 	a("GET /api/system", s.system)
 	a("GET /api/settings", s.getSettings)
 	a("PUT /api/settings", s.putSettings)
 	a("POST /api/settings/test", s.testNotify)
+	a("GET /api/settings/preview", s.previewMail)
+	a("PUT /api/settings/access", s.putAccess)
 	a("POST /api/account/password", s.changePassword)
 
 	// Backup Servers
@@ -188,12 +198,34 @@ func randomToken(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func clientIP(r *http.Request) string {
+func remoteIP(r *http.Request) string {
 	h, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return h
+}
+
+// clientIP is the address of the caller: behind a trusted reverse proxy the last address in
+// X-Forwarded-For that is not a trusted proxy itself.
+func (s *Server) clientIP(r *http.Request) string {
+	ip := remoteIP(r)
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" || !s.C.TrustsProxy(ip) {
+		return ip
+	}
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		p := strings.TrimSpace(parts[i])
+		if net.ParseIP(p) == nil {
+			break
+		}
+		ip = p
+		if !s.C.TrustsProxy(p) {
+			break
+		}
+	}
+	return ip
 }
 
 // ---- auth ----
@@ -277,7 +309,7 @@ func (s *Server) startSession(w http.ResponseWriter, userID int64) error {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.limited(ip) {
 		writeErr(w, http.StatusTooManyRequests, "Zu viele Fehlversuche. Bitte 15 Minuten warten.")
 		return
@@ -316,7 +348,7 @@ func validPassword(pw string) string {
 }
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.limited(ip) {
 		writeErr(w, http.StatusTooManyRequests, "Zu viele Fehlversuche. Bitte 15 Minuten warten.")
 		return

@@ -84,7 +84,15 @@ func Run(ctx context.Context, cfg Config) error {
 		srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 		go func() { errc <- srv.ListenAndServeTLS("", "") }()
 		if cfg.HTTPPort != "" {
+			handler := srv.Handler
 			redir := &http.Server{Addr: cfg.HTTPPort, ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// A reverse proxy that already speaks HTTPS to the browser may talk plain HTTP to
+				// us: serve it instead of redirecting (which would loop).
+				proto := strings.ToLower(r.Header.Get("X-Forwarded-Proto"))
+				if proto == "https" || (proto == "" && r.Header.Get("X-Forwarded-For") != "") {
+					handler.ServeHTTP(w, r)
+					return
+				}
 				host, _, err := net.SplitHostPort(r.Host)
 				if err != nil {
 					host = r.Host

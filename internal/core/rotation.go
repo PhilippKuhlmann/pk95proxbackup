@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"pk95proxbackup/internal/notify"
 	"pk95proxbackup/internal/prox"
 	"pk95proxbackup/internal/store"
 )
@@ -18,22 +19,24 @@ import (
 // Rotation is a set of removable disks (USB) that take turns holding a copy of a datastore.
 // Each disk is a removable datastore on the target server with its own sync job.
 type Rotation struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	ServerID      string    `json:"server_id"`     // where the disks are plugged in
-	SourceServer  string    `json:"source_server"` // where the backups are
-	SourceStore   string    `json:"source_store"`
-	SourceNS      string    `json:"source_ns,omitempty"`
-	Rhythm        string    `json:"rhythm"`   // daily, weekly
-	SwapDay       int       `json:"swap_day"` // weekly: 1 = Monday … 7 = Sunday
-	Time          string    `json:"time"`     // HH:MM daily copy, "" = only when plugged in
-	RunOnMount    bool      `json:"run_on_mount"`
-	UnmountOnDone bool      `json:"unmount_on_done"`
-	KeepLast      int       `json:"keep_last"`
-	KeepDaily     int       `json:"keep_daily"`
-	KeepWeekly    int       `json:"keep_weekly"`
-	KeepMonthly   int       `json:"keep_monthly"`
-	Disks         []RotDisk `json:"disks"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ServerID      string `json:"server_id"`     // where the disks are plugged in
+	SourceServer  string `json:"source_server"` // where the backups are
+	SourceStore   string `json:"source_store"`
+	SourceNS      string `json:"source_ns,omitempty"`
+	Rhythm        string `json:"rhythm"`   // daily, weekly
+	SwapDay       int    `json:"swap_day"` // weekly: 1 = Monday … 7 = Sunday
+	Time          string `json:"time"`     // HH:MM daily copy, "" = only when plugged in
+	RunOnMount    bool   `json:"run_on_mount"`
+	UnmountOnDone bool   `json:"unmount_on_done"`
+	// TransferLast copies only the newest N backups of each VM/CT (0 = all).
+	TransferLast int       `json:"transfer_last"`
+	KeepLast     int       `json:"keep_last"`
+	KeepDaily    int       `json:"keep_daily"`
+	KeepWeekly   int       `json:"keep_weekly"`
+	KeepMonthly  int       `json:"keep_monthly"`
+	Disks        []RotDisk `json:"disks"`
 }
 
 // RotDisk is one disk of a rotation set.
@@ -80,6 +83,9 @@ func (r *Rotation) Validate() map[string]string {
 	}
 	if r.Time == "" && !r.RunOnMount {
 		errs["time"] = "Uhrzeit angeben oder „beim Anstecken kopieren“ einschalten."
+	}
+	if r.TransferLast < 0 || r.TransferLast > 1000 {
+		errs["transfer_last"] = "0 (alle) bis 1000."
 	}
 	for _, k := range []int{r.KeepLast, r.KeepDaily, r.KeepWeekly, r.KeepMonthly} {
 		if k < 0 || k > 1000 {
@@ -142,6 +148,9 @@ func (c *Core) syncParams(r Rotation, d RotDisk, remote string) prox.Params {
 	if r.SourceNS != "" {
 		p["remote-ns"] = r.SourceNS
 	}
+	if r.TransferLast > 0 {
+		p["transfer-last"] = r.TransferLast
+	}
 	return p
 }
 
@@ -167,8 +176,15 @@ func (c *Core) ApplyRotation(ctx context.Context, r Rotation) error {
 		id := r.SyncJobID(d)
 		p := c.syncParams(r, d, remote)
 		if exists[id] {
+			var del []string
 			if remote == "" {
-				p["delete"] = "remote"
+				del = append(del, "remote")
+			}
+			if r.TransferLast == 0 {
+				del = append(del, "transfer-last")
+			}
+			if len(del) > 0 {
+				p["delete"] = del
 			}
 			err = pbs.UpdateJob(ctx, "sync", id, p)
 		} else {
@@ -197,15 +213,16 @@ func (c *Core) RemoveRotationDisk(ctx context.Context, r Rotation, d RotDisk) er
 // ---- runtime ----
 
 type diskRuntime struct {
-	SeenUPID  string `json:"seen_upid"`
-	LastOK    int64  `json:"last_ok"`
-	LastFail  int64  `json:"last_fail"`
-	LastError string `json:"last_error,omitempty"`
-	LastGC    int64  `json:"last_gc"`
-	Phase     string `json:"phase,omitempty"` // mounting, syncing, pruning, gc, unmounting
-	DoneAt    int64  `json:"done_at"`         // aftercare finished: disk can be swapped
-	LastDay   string `json:"last_day,omitempty"`
-	Remind    int64  `json:"remind,omitempty"`
+	SeenUPID   string `json:"seen_upid"`
+	LastOK     int64  `json:"last_ok"`
+	LastFail   int64  `json:"last_fail"`
+	LastError  string `json:"last_error,omitempty"`
+	LastGC     int64  `json:"last_gc"`
+	Phase      string `json:"phase,omitempty"` // mounting, syncing, pruning, gc, unmounting
+	PhaseSince int64  `json:"phase_since,omitempty"`
+	DoneAt     int64  `json:"done_at"` // aftercare finished: disk can be swapped
+	LastDay    string `json:"last_day,omitempty"`
+	Remind     int64  `json:"remind,omitempty"`
 }
 
 func rtKey(r Rotation, d RotDisk) string { return r.ID + "/" + d.Key }
@@ -231,6 +248,9 @@ func (c *Core) saveRuntime(key string, rt *diskRuntime) {
 
 func (c *Core) setPhase(key string, rt *diskRuntime, phase string) {
 	c.mu.Lock()
+	if rt.Phase != phase {
+		rt.PhaseSince = time.Now().Unix()
+	}
 	rt.Phase = phase
 	c.mu.Unlock()
 	c.saveRuntime(key, rt)
@@ -478,8 +498,13 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 	c.mu.Unlock()
 	c.saveRuntime(key, rt)
 	if !ok {
-		c.Event("critical", "Wechselplatten", "Kopie auf "+d.Label+" fehlgeschlagen",
-			fmt.Sprintf("Satz „%s“, Datastore %s: %s", r.Name, d.Store, j.LastRunState))
+		det := &notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{
+			{Label: "Satz", Value: r.Name}, {Label: "Platte", Value: d.Label + " (" + d.Store + ")"}, {Label: "Ergebnis", Value: j.LastRunState}}}
+		if lines, err := pbs.TaskLog(ctx, j.LastRunUPID); err == nil {
+			det.Log = taskLogExcerpt(lines)
+		}
+		c.EventDetails("critical", "Wechselplatten", "Kopie auf "+d.Label+" fehlgeschlagen",
+			fmt.Sprintf("Satz „%s“, Datastore %s: %s", r.Name, d.Store, j.LastRunState), det)
 		return
 	}
 	if c.tryBusy(key) {
@@ -517,6 +542,16 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		}
 	}
 	msg := fmt.Sprintf("Satz „%s“: Die Sicherungen von %s sind auf %s kopiert (%s).", r.Name, r.SourceStore, d.Label, fmtTime(rt.LastOK))
+	// What is on the disk now (read before it is unmounted).
+	det := &notify.Details{Status: "ok", RowsTitle: "Auf der Platte " + d.Label, Rows: c.diskContents(ctx, pbs, d.Store), Link: "/wechselplatten"}
+	det.Facts = []notify.Fact{{Label: "Satz", Value: r.Name}, {Label: "Platte", Value: d.Label + " (" + d.Store + ")"}, {Label: "Quelle", Value: r.SourceStore}}
+	if us, err := pbs.Usage(ctx); err == nil {
+		for _, u := range us {
+			if u.Store == d.Store && u.Total > 0 {
+				det.Facts = append(det.Facts, notify.Fact{Label: "Belegung", Value: fmt.Sprintf("%s von %s (%d %%)", fmtBytes(u.Used), fmtBytes(u.Total), u.Used*100/u.Total)})
+			}
+		}
+	}
 	if r.UnmountOnDone {
 		c.setPhase(key, rt, "unmounting")
 		if upid, err := pbs.Unmount(ctx, d.Store); err != nil {
@@ -535,11 +570,15 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		c.mu.Unlock()
 	}
 	c.saveRuntime(key, rt)
+	if r.UnmountOnDone && rt.DoneAt > 0 {
+		det.Facts = append(det.Facts, notify.Fact{Label: "Platte", Value: "ausgehängt – kann abgezogen werden"})
+	}
 	if len(problems) > 0 {
-		c.Event("warning", "Wechselplatten", "Kopie auf "+d.Label+" fertig, mit Problemen", msg+"\n"+strings.Join(problems, "\n"))
+		det.Status, det.Log = "warning", problems
+		c.EventDetails("warning", "Wechselplatten", "Kopie auf "+d.Label+" fertig, mit Problemen", msg, det)
 		return
 	}
-	c.Event("info", "Wechselplatten", "Kopie auf "+d.Label+" fertig", msg)
+	c.EventDetails("info", "Wechselplatten", "Kopie auf "+d.Label+" fertig", msg, det)
 }
 
 func (c *Core) prune(ctx context.Context, pbs *prox.PBS, store string, r Rotation) error {

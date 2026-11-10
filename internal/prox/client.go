@@ -147,6 +147,12 @@ func (p Params) encode() url.Values {
 
 // Do calls the API and decodes the "data" member of the answer into out (may be nil).
 func (c *Client) Do(ctx context.Context, method, path string, params Params, out any) error {
+	_, err := c.DoTotal(ctx, method, path, params, out)
+	return err
+}
+
+// DoTotal is Do and also returns the "total" member (task logs and lists report it).
+func (c *Client) DoTotal(ctx context.Context, method, path string, params Params, out any) (int, error) {
 	u := c.base + path
 	var body io.Reader
 	vals := params.encode()
@@ -159,7 +165,7 @@ func (c *Client) Do(ctx context.Context, method, path string, params Params, out
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Authorization", c.auth)
 	if body != nil {
@@ -171,29 +177,30 @@ func (c *Client) Do(ctx context.Context, method, path string, params Params, out
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return fmt.Errorf("%s nicht erreichbar: %w", c.Host, err)
+		return 0, fmt.Errorf("%s nicht erreichbar: %w", c.Host, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &APIError{Status: resp.StatusCode, Message: apiMessage(resp, raw)}
+		return 0, &APIError{Status: resp.StatusCode, Message: apiMessage(resp, raw)}
 	}
 	if out == nil {
-		return nil
+		return 0, nil
 	}
 	var env struct {
-		Data json.RawMessage `json:"data"`
+		Data  json.RawMessage `json:"data"`
+		Total int             `json:"total"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("unerwartete Antwort von %s: %w", c.Host, err)
+		return 0, fmt.Errorf("unerwartete Antwort von %s: %w", c.Host, err)
 	}
 	if len(env.Data) == 0 || bytes.Equal(env.Data, []byte("null")) {
-		return nil
+		return env.Total, nil
 	}
-	return json.Unmarshal(env.Data, out)
+	return env.Total, json.Unmarshal(env.Data, out)
 }
 
 func apiMessage(resp *http.Response, raw []byte) string {

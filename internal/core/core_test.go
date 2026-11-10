@@ -75,6 +75,14 @@ func TestRotationCopyCycle(t *testing.T) {
 	if err := c.ApplyRotation(ctx, rot); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
+	// Only the newest backup of each guest goes onto the disk, and only it stays there.
+	rot.TransferLast, rot.KeepLast, rot.KeepWeekly = 1, 1, 0
+	if err := c.St.Put(core.KindRotation, rot.ID, rot); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ApplyRotation(ctx, rot); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
 	disk := rot.Disks[0] // usb-a: plugged in and mounted in the demo
 	before := c.RotationStates(ctx)[0].Disks[0]
 	if !before.Present || !before.Mounted {
@@ -83,7 +91,18 @@ func TestRotationCopyCycle(t *testing.T) {
 	if err := c.RunRotationDisk(ctx, rot, disk); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	// While it copies, the running tasks show the copy with its progress.
+	time.Sleep(3 * time.Second)
+	var copying *core.RunningTask
+	for _, rt := range c.RunningTasks(ctx) {
+		if strings.Contains(rt.Label, "Platte A") {
+			copying = &rt
+		}
+	}
+	if copying == nil || copying.Progress.Percent < 0 || copying.UPID == "" {
+		t.Fatalf("running copy not reported with progress: %+v", c.RunningTasks(ctx))
+	}
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		st := c.RotationStates(ctx)[0].Disks[0]
 		if st.State == "ready" {
@@ -99,6 +118,36 @@ func TestRotationCopyCycle(t *testing.T) {
 			t.Fatalf("disk never became ready: %+v", st)
 		}
 		time.Sleep(500 * time.Millisecond)
+	}
+	srv, _ := c.Server("local")
+	pbs := c.PBSClient(srv)
+	if _, err := pbs.Mount(ctx, "usb-a"); err != nil {
+		t.Fatal(err)
+	}
+	src, _ := pbs.Snapshots(ctx, "backup", "")
+	dst, err := pbs.Snapshots(ctx, "usb-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest := map[string]int64{}
+	for _, sn := range src {
+		if sn.Time > newest[sn.Type+"/"+sn.ID] {
+			newest[sn.Type+"/"+sn.ID] = sn.Time
+		}
+	}
+	if len(dst) != len(newest) {
+		t.Fatalf("disk holds %d snapshots, want one per guest (%d)", len(dst), len(newest))
+	}
+	for _, sn := range dst {
+		if newest[sn.Type+"/"+sn.ID] != sn.Time {
+			t.Fatalf("disk holds %s/%s from %d, newest is %d", sn.Type, sn.ID, sn.Time, newest[sn.Type+"/"+sn.ID])
+		}
+	}
+	jobs, _ := pbs.Jobs(ctx, "sync")
+	for _, j := range jobs {
+		if j.ID == rot.SyncJobID(disk) && j.TransferLast != 1 {
+			t.Fatalf("sync job without transfer-last: %+v", j)
+		}
 	}
 	evs, _ := c.St.Events(ctx, "", 0, 20)
 	found := false
@@ -137,5 +186,11 @@ func TestJobID(t *testing.T) {
 	}
 	if id := core.JobID("pk95-prune", strings.Repeat("x", 40)); len(id) > 32 {
 		t.Errorf("too long: %s", id)
+	}
+}
+
+func TestUnescapeWorkerID(t *testing.T) {
+	if got := core.UnescapeWorkerIDForTest(`\x2d:backup:usb\x2da::pk95r\x2dab\x2dcd`); got != "-:backup:usb-a::pk95r-ab-cd" {
+		t.Fatalf("got %q", got)
 	}
 }

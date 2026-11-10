@@ -414,3 +414,47 @@ dialog::backdrop { background: rgba(17, 24, 39, 0.6); }
   .brand span { font-size: 16px; }
   .user-chip { display: none; }
 }
+
+/* ---- running tasks in the top bar ---- */
+.run-wrap { position: relative; }
+.run-btn { gap: 8px; padding: 6px 10px; max-width: 360px; }
+.run-btn .icon { width: 22px; height: 22px; }
+.run-btn.active { color: var(--c600); background: var(--c50); }
+:root[data-theme="dark"] .run-btn.active { background: #1f2937; color: var(--c400); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .run-btn.active { background: #1f2937; color: var(--c400); } }
+.run-btn.active .icon { animation: spin 1.6s linear infinite; }
+.run-btn .run-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; line-height: 1.2; text-align: left; }
+.run-btn .run-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.run-btn .run-mini { width: 160px; height: 4px; margin-top: 4px; border-radius: 999px; background: var(--c100); overflow: hidden; position: relative; }
+.run-btn .run-mini span { position: absolute; inset: 0 auto 0 0; background: var(--c600); border-radius: 999px; transition: width 0.6s; }
+.run-count { position: absolute; top: 2px; right: 2px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--c600); color: #fff; font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
+.run-panel { position: absolute; top: calc(100% + 10px); right: 0; z-index: 70; width: min(440px, calc(100vw - 16px)); max-height: 70vh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--shadow-xl); }
+.run-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 700; font-size: 14px; }
+.run-item { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: inherit; font: inherit; padding: 12px 16px; border-top: 1px solid var(--line-soft); cursor: pointer; }
+.run-item:first-of-type { border-top: 0; }
+.run-item:hover { background: var(--panel-2); }
+.run-item .ri-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.run-item .ri-label { font-weight: 600; font-size: 14px; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.run-item .ri-pct { font-family: var(--mono); font-size: 12.5px; color: var(--c700); white-space: nowrap; }
+.run-item .ri-sub { font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.pbar { position: relative; height: 6px; margin-top: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; }
+.pbar span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--c600); transition: width 0.6s; }
+.pbar.indet span { width: 35%; animation: indet 1.4s ease-in-out infinite; }
+@keyframes indet { from { left: -35%; } to { left: 100%; } }
+.run-empty { padding: 20px 16px; text-align: center; color: var(--muted); font-size: 14px; }
+@media (max-width: 900px) { .run-btn .run-text { display: none; } }
+
+/* ---- event details ---- */
+.rows > details.ev-details { display: block; }
+details.ev-details > summary { list-style: none; cursor: pointer; gap: 12px; }
+details.ev-details > summary::-webkit-details-marker { display: none; }
+.ev-open { color: var(--faint); flex: none; transition: transform 0.15s; }
+.ev-open .icon { width: 18px; height: 18px; }
+details.ev-details[open] .ev-open { transform: rotate(180deg); }
+.ev-body { display: grid; gap: 12px; margin: 12px 0 4px 124px; padding: 14px 16px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.ev-sub { font-weight: 700; font-size: 13px; color: var(--ink); }
+.ev-table { background: var(--panel); }
+.ev-table td, .ev-table th { padding: 8px 12px; }
+.ev-body .log { max-height: 260px; }
+@media (max-width: 720px) { .ev-body { margin-left: 0; } }

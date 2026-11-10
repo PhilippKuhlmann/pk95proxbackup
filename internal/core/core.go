@@ -6,9 +6,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -81,10 +83,12 @@ type Core struct {
 	mu      sync.Mutex
 	rotBusy map[string]bool
 	rotRT   map[string]*diskRuntime
-	ov      Overview
-	ovAt    time.Time
-	ovMu    sync.Mutex
-	refresh chan struct{}
+	// sync tasks seen running at the last RunningTasks call
+	runningSync map[string]bool
+	ov          Overview
+	ovAt        time.Time
+	ovMu        sync.Mutex
+	refresh     chan struct{}
 }
 
 // New creates the core.
@@ -211,20 +215,39 @@ func (c *Core) NotifySettings() notify.Settings {
 
 // Event records an event and sends it as notification when configured.
 func (c *Core) Event(severity, source, title, body string) {
-	if _, err := c.St.AddEvent(store.Event{Severity: severity, Source: source, Title: title, Body: body}); err != nil {
+	c.EventDetails(severity, source, title, body, nil)
+}
+
+// EventDetails records an event with structured details (guests, facts, log excerpt).
+func (c *Core) EventDetails(severity, source, title, body string, d *notify.Details) {
+	ev := store.Event{Severity: severity, Source: source, Title: title, Body: body}
+	if d != nil {
+		if b, err := json.Marshal(d); err == nil {
+			ev.Details = b
+		}
+	}
+	if _, err := c.St.AddEvent(ev); err != nil {
 		log.Printf("event: %v", err)
 	}
 	log.Printf("[%s] %s: %s %s", severity, source, title, strings.ReplaceAll(body, "\n", " "))
 	ns := c.NotifySettings()
 	if (ns.MailEnabled || ns.HookEnabled) && ns.Wants(severity) {
+		msg := c.Message(severity, source, title, body, d)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			if err := notify.Send(ctx, ns, notify.Message{Severity: severity, Title: title, Body: body}); err != nil {
+			if err := notify.Send(ctx, ns, msg); err != nil {
 				log.Printf("notify: %v", err)
 			}
 		}()
 	}
+}
+
+// Message builds a notification with the appliance's name and address.
+func (c *Core) Message(severity, source, title, body string, d *notify.Details) notify.Message {
+	host, _ := os.Hostname()
+	return notify.Message{Severity: severity, Source: source, Title: title, Body: body, Details: d,
+		Host: host, URL: c.PublicURL(), Version: c.Version, Time: time.Now()}
 }
 
 // RequestRefresh asks the monitor to rebuild the overview soon.

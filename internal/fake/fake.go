@@ -36,6 +36,7 @@ type task struct {
 	End    int64
 	Status string
 	Log    []string
+	Dur    time.Duration
 }
 
 type tasks struct {
@@ -48,7 +49,7 @@ func (t *tasks) start(node, typ, id string, dur time.Duration, lines []string, d
 	t.mu.Lock()
 	t.n++
 	upid := fmt.Sprintf("UPID:%s:%08X:%08X:%08X:%s:%s:root@pam:", node, 1000+t.n, t.n, time.Now().Unix(), typ, id)
-	tk := &task{UPID: upid, Node: node, Type: typ, ID: id, User: "root@pam!pk95proxbackup", Start: time.Now().Unix(), Log: lines}
+	tk := &task{UPID: upid, Node: node, Type: typ, ID: id, User: "root@pam!pk95proxbackup", Start: time.Now().Unix(), Log: lines, Dur: dur}
 	t.list = append(t.list, tk)
 	t.mu.Unlock()
 	go func() {
@@ -117,11 +118,30 @@ func taskLog(w http.ResponseWriter, tk *task) {
 		apiErr(w, 404, "no such task")
 		return
 	}
+	log := append([]string(nil), tk.Log...)
+	if tk.End == 0 && tk.Dur > 0 {
+		// Running: report progress the way the real servers log it.
+		pct := float64(time.Since(time.Unix(tk.Start, 0))) / float64(tk.Dur) * 100
+		if pct > 99 {
+			pct = 99
+		}
+		switch tk.Type {
+		case "syncjob", "verify":
+			log = append(log, fmt.Sprintf("percentage done: %.2f%% (%d/5 groups)", pct, int(pct/20)))
+		case "garbage_collection":
+			log = append(log, fmt.Sprintf("marked %d%% (%d of 40 index files)", int(pct), int(pct*0.4)))
+		case "vzdump":
+			log = append(log, fmt.Sprintf("INFO: %3d%% (%.1f GiB of 32.0 GiB) in %ds, read: 412 MiB/s", int(pct), pct*0.32, int(time.Since(time.Unix(tk.Start, 0)).Seconds())))
+		case "qmrestore", "vzrestore":
+			log = append(log, fmt.Sprintf("progress %d%% (read %.1f GiB of 32.0 GiB, zeroes = 3%%)", int(pct), pct*0.32))
+		}
+	}
 	lines := []map[string]any{}
-	for i, l := range tk.Log {
+	for i, l := range log {
 		lines = append(lines, map[string]any{"n": i + 1, "t": l})
 	}
-	data(w, lines)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": lines, "total": len(lines)})
 }
 
 func data(w http.ResponseWriter, v any) {

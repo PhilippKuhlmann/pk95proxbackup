@@ -40,7 +40,8 @@ func (c *Core) EnsureLocalServer(ctx context.Context) error {
 	}
 	r := c.LocalRunner
 	_, _ = r.Run(ctx, "proxmox-backup-manager", "user", "delete-token", "root@pam", localTokenName)
-	out, err := r.Run(ctx, "proxmox-backup-manager", "user", "generate-token", "root@pam", localTokenName, "--output-format", "json")
+	// Prints "Result: { "tokenid": …, "value": … }" (the command has no --output-format).
+	out, err := r.Run(ctx, "proxmox-backup-manager", "user", "generate-token", "root@pam", localTokenName)
 	if err != nil {
 		return err
 	}
@@ -48,8 +49,12 @@ func (c *Core) EnsureLocalServer(ctx context.Context) error {
 		TokenID string `json:"tokenid"`
 		Value   string `json:"value"`
 	}
-	if err := json.Unmarshal([]byte(out[strings.Index(out, "{"):]), &tok); err != nil {
-		return fmt.Errorf("Token-Antwort nicht lesbar: %w", err)
+	i, j := strings.Index(out, "{"), strings.LastIndex(out, "}")
+	if i < 0 || j < i {
+		return fmt.Errorf("Token-Antwort nicht lesbar: %q", out)
+	}
+	if err := json.Unmarshal([]byte(out[i:j+1]), &tok); err != nil || tok.TokenID == "" || tok.Value == "" {
+		return fmt.Errorf("Token-Antwort nicht lesbar: %q", out)
 	}
 	if _, err := r.Run(ctx, "proxmox-backup-manager", "acl", "update", "/", "Admin", "--auth-id", tok.TokenID); err != nil {
 		return err

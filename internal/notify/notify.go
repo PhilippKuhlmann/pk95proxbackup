@@ -44,8 +44,14 @@ func Defaults() Settings {
 // Message is one notification.
 type Message struct {
 	Severity string
+	Source   string
 	Title    string
 	Body     string
+	Details  *Details
+	Host     string // name of the appliance
+	URL      string // address of the web UI
+	Version  string
+	Time     time.Time
 }
 
 var rank = map[string]int{"info": 0, "warning": 1, "critical": 2}
@@ -80,12 +86,20 @@ func sendMail(s Settings, m Message) error {
 			to = append(to, t)
 		}
 	}
-	subject := "[PK95 ProxBackup] " + m.Title
 	var msg bytes.Buffer
-	fmt.Fprintf(&msg, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n",
-		s.MailFrom, strings.Join(to, ", "), mimeHeader(subject), time.Now().Format(time.RFC1123Z))
-	msg.WriteString(strings.ReplaceAll(m.Body, "\n", "\r\n"))
-	msg.WriteString("\r\n")
+	boundary := "pk95-" + fmt.Sprint(time.Now().UnixNano())
+	fmt.Fprintf(&msg, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n",
+		s.MailFrom, strings.Join(to, ", "), mimeHeader(Subject(m)), time.Now().Format(time.RFC1123Z), boundary)
+	for _, part := range []struct{ ctype, body string }{{"text/plain", Text(m)}, {"text/html", HTML(m)}} {
+		fmt.Fprintf(&msg, "--%s\r\nContent-Type: %s; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n", boundary, part.ctype)
+		enc := b64(part.body)
+		for len(enc) > 76 {
+			msg.WriteString(enc[:76] + "\r\n")
+			enc = enc[76:]
+		}
+		msg.WriteString(enc + "\r\n")
+	}
+	fmt.Fprintf(&msg, "--%s--\r\n", boundary)
 
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	var conn net.Conn
@@ -155,17 +169,20 @@ func sendHook(ctx context.Context, s Settings, m Message) error {
 	prio := map[string]string{"info": "3", "warning": "4", "critical": "5"}[m.Severity]
 	switch s.HookKind {
 	case "ntfy":
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, s.HookURL, strings.NewReader(m.Body))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, s.HookURL, strings.NewReader(hookText(m)))
 		if err == nil {
 			req.Header.Set("Title", mimeHeader("PK95 ProxBackup: "+m.Title))
 			req.Header.Set("Priority", prio)
-			req.Header.Set("Tags", map[string]string{"info": "floppy_disk", "warning": "warning", "critical": "rotating_light"}[m.Severity])
+			req.Header.Set("Tags", map[string]string{"ok": "white_check_mark", "warning": "warning", "error": "x"}[m.Details.StatusOf(m.Severity)])
+			if m.URL != "" {
+				req.Header.Set("Click", m.URL+linkPath(m))
+			}
 			if s.HookToken != "" {
 				req.Header.Set("Authorization", "Bearer "+s.HookToken)
 			}
 		}
 	case "gotify":
-		body, _ := json.Marshal(map[string]any{"title": "PK95 ProxBackup: " + m.Title, "message": m.Body, "priority": map[string]int{"info": 2, "warning": 5, "critical": 8}[m.Severity]})
+		body, _ := json.Marshal(map[string]any{"title": "PK95 ProxBackup: " + m.Title, "message": hookText(m), "priority": map[string]int{"info": 2, "warning": 5, "critical": 8}[m.Severity]})
 		u := s.HookURL
 		if s.HookToken != "" {
 			sep := "?"
@@ -179,7 +196,8 @@ func sendHook(ctx context.Context, s Settings, m Message) error {
 			req.Header.Set("Content-Type", "application/json")
 		}
 	default:
-		body, _ := json.Marshal(map[string]any{"source": "pk95proxbackup", "severity": m.Severity, "title": m.Title, "body": m.Body, "ts": time.Now().Unix()})
+		body, _ := json.Marshal(map[string]any{"source": "pk95proxbackup", "severity": m.Severity, "status": m.Details.StatusOf(m.Severity),
+			"title": m.Title, "body": m.Body, "details": m.Details, "host": m.Host, "ts": time.Now().Unix()})
 		req, err = http.NewRequestWithContext(ctx, http.MethodPost, s.HookURL, bytes.NewReader(body))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -201,4 +219,16 @@ func sendHook(ctx context.Context, s Settings, m Message) error {
 		return fmt.Errorf("HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
+}
+
+// hookText is the push message: the text version without the title (it is the push title).
+func hookText(m Message) string {
+	t := Text(m)
+	if i := strings.Index(t, "\n"); i >= 0 {
+		t = t[i+1:]
+	}
+	if len(t) > 3500 {
+		t = t[:3500] + "\n…"
+	}
+	return strings.TrimSpace(t)
 }

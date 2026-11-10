@@ -268,6 +268,7 @@ function formDialog({ title, text, ic = "pencil", tone = "", fields, submit, but
 
 // Task log viewer: polls until the task has stopped.
 function showTask(source, upid, title) {
+  kickRunning();
   const d = openDialog(`
     <div class="dlg-head"><span class="dlg-ic">${icon("terminal")}</span><div class="grow"><div class="dlg-title">${esc(title || "Aufgabe")}</div><p class="dlg-text mono small">${esc(upid)}</p></div><span data-st></span></div>
     <div class="dlg-body"><pre class="log" data-log>Lade …</pre></div>
@@ -296,7 +297,7 @@ function showTask(source, upid, title) {
 
 async function run(btn, fn, okText) {
   if (btn) { btn.disabled = true; btn.dataset.html = btn.innerHTML; btn.innerHTML = `<span class="spinner"></span>` + (btn.classList.contains("ib") ? "" : " " + btn.textContent.trim()); }
-  try { const r = await fn(); if (okText) toast(okText); return r; }
+  try { const r = await fn(); if (okText) toast(okText); kickRunning(); return r; }
   catch (e) { toastErr(e); }
   finally { if (btn && btn.isConnected) { btn.disabled = false; btn.innerHTML = btn.dataset.html; } }
 }
@@ -363,6 +364,8 @@ function shell() {
         <a href="/" data-go class="brand"><img src="/logo.svg" alt=""><span>PK95 ProxBackup</span></a>
       </div>
       <div class="right">
+        <div class="run-wrap"><button class="bar-btn run-btn" type="button" data-run-toggle aria-expanded="false" aria-haspopup="true" title="Laufende Aufgaben">${icon("refresh")}<span class="run-text" hidden></span><span class="run-count" hidden></span></button>
+          <div class="run-panel" data-run-panel hidden></div></div>
         <button class="bar-btn" type="button" data-theme-icon title="Zwischen hellem und dunklem Erscheinungsbild wechseln" aria-label="Erscheinungsbild wechseln">${themeIcon()}</button>
         <span class="user-chip"><span class="avatar">${esc((state.user || "?").slice(0, 2))}</span><span class="uname">${esc(state.user)}</span></span>
         <button class="bar-btn" type="button" data-logout title="Abmelden" aria-label="Abmelden">${icon("logout")}</button>
@@ -385,8 +388,88 @@ function shell() {
     try { localStorage.setItem("pk95pb-menu", c ? "zu" : "auf"); } catch (e) { /* ignore */ }
   };
   qs("[data-theme-icon]").onclick = setTheme;
+  bindRunning();
   qs("[data-logout]").onclick = async () => { await POST("/api/logout").catch(() => {}); state.user = null; render(); };
   void failing;
+}
+
+// ---------- running tasks (top bar) ----------
+const running = { tasks: [], timer: null, open: false, known: new Map(), first: true };
+
+function fmtElapsed(start) {
+  if (!start) return "";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - start));
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " Min. " + String(s % 60).padStart(2, "0") + " s";
+  return Math.floor(s / 3600) + " Std. " + Math.floor((s % 3600) / 60) + " Min.";
+}
+const pctText = (p) => (p.percent >= 0 ? Math.floor(p.percent) + " %" : "");
+
+function drawRunning() {
+  const btn = qs("[data-run-toggle]");
+  if (!btn) return;
+  const t = running.tasks;
+  btn.classList.toggle("active", t.length > 0);
+  const cnt = qs(".run-count", btn), txt = qs(".run-text", btn);
+  cnt.hidden = t.length < 2; cnt.textContent = t.length;
+  if (t.length) {
+    const a = t[0], p = a.progress;
+    txt.hidden = false;
+    txt.innerHTML = `<span class="run-title">${esc(a.label)}${p.percent >= 0 ? " · " + pctText(p) : ""}</span><span class="run-mini">${p.percent >= 0 ? `<span style="width:${p.percent}%"></span>` : ""}</span>`;
+    btn.title = t.length === 1 ? "1 Aufgabe läuft" : `${t.length} Aufgaben laufen`;
+  } else { txt.hidden = true; btn.title = "Keine laufenden Aufgaben"; }
+  // Live progress inside the disk cards of the rotation page.
+  qsa("[data-live]").forEach((box) => {
+    const a = t.find((x) => x.label === "Wechselplatte " + box.dataset.live || x.label === "Kopie auf Wechselplatte " + box.dataset.live);
+    box.hidden = !a;
+    if (!a) return;
+    const p = a.progress;
+    qs("[data-live-text]", box).textContent = a.source === "app" ? (p.step || "") : ["kopiert", p.step, p.detail].filter(Boolean).join(" · ");
+    qs("[data-live-pct]", box).textContent = pctText(p);
+    const bar = qs(".pbar", box);
+    bar.classList.toggle("indet", !(p.percent >= 0));
+    qs("span", bar).style.width = p.percent >= 0 ? p.percent + "%" : "";
+  });
+  const panel = qs("[data-run-panel]");
+  if (!running.open) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.innerHTML = `<div class="run-panel-head"><span>Laufende Aufgaben</span><a class="btn gray sm" href="/aufgaben" data-go>Alle Aufgaben</a></div>` + (t.length ? t.map((a, i) => {
+    const p = a.progress;
+    const sub = [a.server + (a.node ? " · " + a.node : ""), p.step, p.detail].filter(Boolean).map(esc).join(" · ");
+    return `<button type="button" class="run-item" data-ri="${i}" ${a.upid ? "" : "disabled"}><div class="ri-top"><span class="ri-label">${esc(a.label)}${a.id && a.source !== "app" && !a.label.includes("Wechselplatte") ? ` <span class="muted small mono">${esc(a.id)}</span>` : ""}</span><span class="ri-pct">${pctText(p) || fmtElapsed(a.starttime)}</span></div>
+      <div class="ri-sub">${sub}${p.percent >= 0 && a.starttime ? " · läuft seit " + fmtElapsed(a.starttime) : ""}</div>
+      <div class="pbar ${p.percent >= 0 ? "" : "indet"}"><span style="${p.percent >= 0 ? `width:${p.percent}%` : ""}"></span></div></button>`;
+  }).join("") : `<div class="run-empty">Gerade läuft nichts.</div>`);
+  qsa("[data-ri]", panel).forEach((b) => b.onclick = () => { const a = running.tasks[+b.dataset.ri]; if (a?.upid) { running.open = false; drawRunning(); showTask(a.source, a.upid, a.label); } });
+}
+
+async function pollRunning() {
+  clearTimeout(running.timer);
+  if (!state.user || !qs("[data-run-toggle]")) return;
+  try {
+    const r = await GET("/api/running");
+    const now = new Map(r.tasks.map((t) => [t.upid || t.label, t]));
+    if (!running.first) {
+      for (const [k, t] of running.known) if (!now.has(k)) toast(`Fertig: ${t.label}`);
+    }
+    running.first = false;
+    running.known = now;
+    running.tasks = r.tasks;
+    drawRunning();
+  } catch (e) { /* keep last state */ }
+  running.timer = setTimeout(pollRunning, running.tasks.length || running.open ? 3000 : 12000);
+}
+// Pages call this after starting something, so the bar shows it right away.
+function kickRunning() { setTimeout(pollRunning, 800); }
+
+function bindRunning() {
+  const btn = qs("[data-run-toggle]");
+  btn.onclick = (e) => { e.stopPropagation(); running.open = !running.open; btn.setAttribute("aria-expanded", running.open); drawRunning(); if (running.open) pollRunning(); };
+  qs("[data-run-panel]").onclick = (e) => e.stopPropagation();
+  document.addEventListener("click", () => { if (running.open) { running.open = false; btn.setAttribute("aria-expanded", "false"); drawRunning(); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && running.open) { running.open = false; drawRunning(); } });
+  running.first = true;
+  pollRunning();
 }
 
 function pageHead(title, sub = "", actions = "", back = null) {
@@ -548,7 +631,7 @@ PAGES["/"] = async (el, token) => {
           <div class="rows">${tasks.slice(0, 9).map((t) => `<div class="row" style="cursor:pointer" data-task="${esc(t.source)}|${esc(t.upid)}"><span class="when">${fmtTime(t.starttime)}</span><div class="grow"><div class="title">${esc(taskLabel(t.type))} <span class="muted">${esc(t.id || "")}</span></div><div class="t-sub">${esc(t.server)}${t.node ? " · " + esc(t.node) : ""}</div></div>${taskPill(t)}</div>`).join("") || `<div class="row muted">Keine Aufgaben.</div>`}</div>
         </div>
         <div class="panel flush"><div class="panel-head"><div class="panel-title">Ereignisse</div><a class="btn gray sm" href="/ereignisse" data-go>Alle</a></div>
-          <div class="rows">${(r.events || []).map(eventRow).join("") || `<div class="row muted">Noch keine Ereignisse.</div>`}</div>
+          <div class="rows">${(r.events || []).map((e) => eventRow(e, true)).join("") || `<div class="row muted">Noch keine Ereignisse.</div>`}</div>
         </div>
       </div>`;
     qs("[data-refresh]", el).onclick = (e) => run(e.currentTarget, () => draw(true));
@@ -560,9 +643,28 @@ PAGES["/"] = async (el, token) => {
 };
 
 const SEV = { info: ["Info", "blue"], warning: ["Warnung", "amber"], critical: ["Kritisch", "rose"] };
-function eventRow(ev) {
-  const [l, t] = SEV[ev.severity] || SEV.info;
-  return `<div class="row"><span class="when" title="${fmtTime(ev.ts, true)}">${fmtTime(ev.ts)}</span>${pill(l, t)}<div class="grow"><div class="title"><b>${esc(ev.source)}:</b> ${esc(ev.title)}</div>${ev.body ? `<div class="body">${esc(ev.body)}</div>` : ""}</div></div>`;
+const STATUS = { ok: ["Erfolgreich", "green"], warning: ["Warnung", "amber"], error: ["Fehler", "rose"] };
+
+// eventRow renders an event; with details (guests, facts, log) they open on click.
+function eventRow(ev, compact) {
+  const d = ev.details;
+  const [l, t] = d && d.status ? STATUS[d.status] : (SEV[ev.severity] || SEV.info);
+  const rows = (d && d.rows) || [];
+  const counts = { ok: 0, warning: 0, error: 0 };
+  rows.forEach((r) => { counts[STATUS[r.status] ? r.status : "ok"]++; });
+  const chips = rows.length > 1 ? `<span class="flex" style="margin-top:4px">${Object.entries(counts).filter(([, n]) => n).map(([k, n]) => pill(`${n} ${{ ok: "erfolgreich", warning: "Warnung", error: "fehlgeschlagen" }[k]}`, STATUS[k][1])).join("")}</span>` : "";
+  const head = `<span class="when" title="${fmtTime(ev.ts, true)}">${fmtTime(ev.ts)}</span>${pill(l, t)}<div class="grow"><div class="title"><b>${esc(ev.source)}:</b> ${esc(ev.title)}</div>${ev.body ? `<div class="body">${esc(ev.body)}</div>` : ""}${chips}</div>`;
+  if (!d || compact || !(rows.length || (d.facts || []).length || (d.log || []).length)) return `<div class="row">${head}</div>`;
+  return `<details class="row ev-details"><summary class="flex" style="align-items:flex-start;flex-wrap:nowrap">${head}<span class="ev-open">${icon("chevron-down")}</span></summary>
+    <div class="ev-body">
+      ${(d.facts || []).length ? `<table class="kv">${d.facts.map((f) => `<tr><td>${esc(f.label)}</td><td>${esc(f.value)}</td></tr>`).join("")}</table>` : ""}
+      ${rows.length ? `<div class="ev-sub">${esc(d.rows_title || "Einträge")}</div><div class="table-wrap"><table class="resp ev-table"><thead><tr><th>Status</th><th>Gast</th><th>Dauer</th><th>Daten</th><th>Hinweis</th></tr></thead><tbody>
+        ${rows.map((r) => { const [rl, rt] = STATUS[r.status] || STATUS.ok; return `<tr><td data-l="Status">${pill(rl, rt)}</td><td data-l="Gast"><span class="tag mono">${esc(r.kind || "")}</span> <b>${esc(r.id)}</b> ${esc(r.name || "")}</td>
+          <td data-l="Dauer" class="nowrap">${esc(r.duration || (r.time ? fmtTime(r.time) : ""))}</td><td data-l="Daten" class="nowrap">${esc(r.size || "")}</td><td data-l="Hinweis" class="${r.status === "ok" ? "muted" : "bad"} small">${esc(r.info || "")}</td></tr>`; }).join("")}
+        </tbody></table></div>` : ""}
+      ${(d.log || []).length ? `<div class="ev-sub">Auszug aus dem Protokoll</div><pre class="log">${d.log.map(esc).join("\n")}</pre>` : ""}
+      ${d.link ? `<div><a class="btn gray sm" href="${esc(d.link)}" data-go>Ansehen</a></div>` : ""}
+    </div></details>`;
 }
 
 // ---------- Verbindungen ----------
@@ -967,7 +1069,7 @@ PAGES["/kopierjobs"] = async (el, token) => {
       ${jobs.map((j) => { const rot = j.id.startsWith("pk95r-"); const rem = j.remote ? remotes[j.remote] : null; return `<tr>
         <td data-l="Job"><div class="t-main">${esc(j.comment || j.id)}</div><div class="t-sub mono">${esc(j.id)}</div>${rot ? pill("Wechselplatte", "blue") : ""}</td>
         <td data-l="Von">${j.remote ? `<span class="small">${esc(rem ? (rem.comment || "").replace("PK95 ProxBackup: ", "") || rem.host : j.remote)}</span> / ` : ""}<b>${esc(j["remote-store"])}</b></td>
-        <td data-l="Nach"><b>${esc(j.store)}</b></td>
+        <td data-l="Nach"><b>${esc(j.store)}</b>${j["transfer-last"] ? `<div class="t-sub">${esc(transferText(j["transfer-last"]))}</div>` : ""}</td>
         <td data-l="Zeitplan" class="small">${esc(j.schedule || (j["run-on-mount"] ? "beim Anstecken" : "von Hand"))}${j["next-run"] ? `<div class="t-sub">nächster: ${fmtTime(j["next-run"])}</div>` : ""}</td>
         <td data-l="Letzter Lauf">${j["last-run-upid"] && !j["last-run-endtime"] ? pill("Läuft", "blue", true, true) : j["last-run-endtime"] ? `${taskPill({ endtime: 1, status: j["last-run-state"] })}<div class="t-sub">${fmtTime(j["last-run-endtime"])}</div>` : '<span class="muted small">nie</span>'}</td>
         <td class="act"><div class="row-actions">${j["last-run-upid"] ? `<button class="ib gray" type="button" title="Protokoll" aria-label="Protokoll" data-log="${esc(j["last-run-upid"])}">${icon("terminal")}</button>` : ""}
@@ -1009,6 +1111,7 @@ function syncForm(srv, job, done) {
       { name: "source_store", label: "Quelle: Datastore", type: "select", options: [["", "Lade …"]] },
       { name: "store", label: "Ziel-Datastore", type: "select", options: [["", "Lade …"]] },
       { name: "schedule", label: "Zeitplan", value: job?.schedule ?? "daily", mono: true, hint: "z. B. daily, 03:00, mon..fri 23:00 – leer = nur von Hand" },
+      { name: "transfer_last", label: "Was kopieren?", type: "select", value: job?.["transfer-last"] || 0, options: TRANSFER_OPTIONS, hint: "Pro VM bzw. Container." },
       { name: "comment", label: "Beschreibung", value: job?.comment || "", wide: true },
       { name: "remove_vanished", label: "Am Ziel löschen, was an der Quelle gelöscht wurde", type: "checkbox", value: job?.["remove-vanished"], wide: true, hint: "Aus: Das Ziel behält auch ältere Sicherungen (eigene Aufbewahrung am Ziel einstellen)." },
     ],
@@ -1025,6 +1128,7 @@ function syncForm(srv, job, done) {
       await Promise.all([fill(qs('[name="source_store"]', d), srcServer, job?.["remote-store"]), fill(qs('[name="store"]', d), srv.id, job?.store)]);
     },
     submit: async (v) => {
+      v.transfer_last = Number(v.transfer_last);
       if (edit) await PUT(`/api/pbs/${srv.id}/sync/${enc(job.id)}`, v); else await POST(`/api/pbs/${srv.id}/sync`, v);
       toast("Gespeichert."); done();
     },
@@ -1134,7 +1238,8 @@ PAGES["/wechselplatten"] = async (el, token) => {
         <div class="panel-head"><div><div class="panel-title">${esc(x.name)}</div>
           <div class="muted small">${x.rhythm === "weekly" ? `Wechsel wöchentlich am ${["", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][x.swap_day]}` : "Wechsel täglich"}
           · Quelle <b>${esc(x.source_name)}</b> / ${esc(x.source_store)} · Platten an <b>${esc(x.server_name)}</b>
-          · ${x.time ? "Kopie täglich um " + esc(x.time) : ""}${x.time && x.run_on_mount ? " und " : ""}${x.run_on_mount ? "beim Anstecken" : ""}</div></div>
+          · ${x.time ? "Kopie täglich um " + esc(x.time) : ""}${x.time && x.run_on_mount ? " und " : ""}${x.run_on_mount ? "beim Anstecken" : ""}
+          · kopiert ${transferText(x.transfer_last)} je VM/CT${x.keep_last === 1 && !x.keep_daily && !x.keep_weekly && !x.keep_monthly ? ", auf der Platte bleibt nur die neueste" : ""}</div></div>
           <div class="actions"><button class="btn gray sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${x.id}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Satz entfernen" aria-label="Satz entfernen" data-del="${x.id}">${icon("trash")}</button></div></div>
@@ -1147,6 +1252,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
           const cls = d.state === "ready" ? "ready" : d.state === "error" ? "error" : d.present ? "present" : "";
           return `<div class="disk ${cls}"><div class="disk-head"><span class="disk-ic">${icon("disk")}</span><div class="grow"><div class="disk-name">${esc(d.label)}</div><div class="disk-meta mono">${esc(d.store)}</div><div style="margin-top:6px">${pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running")}</div></div></div>
             ${d.total ? usageBar(d.used, d.total) : ""}
+            <div data-live="${esc(d.label)}" hidden><div class="flex small"><span class="grow" data-live-text></span><b class="mono" data-live-pct></b></div><div class="pbar"><span></span></div></div>
             <table class="kv"><tr><td>Letzte Kopie</td><td>${d.last_ok ? fmtTime(d.last_ok, true) + ` <span class="muted">(${fmtAgo(d.last_ok)})</span>` : "noch keine"}</td></tr>
               ${d.last_fail > d.last_ok ? `<tr><td>Fehler</td><td class="bad">${fmtTime(d.last_fail)} ${esc(d.last_error || "")}</td></tr>` : ""}
               ${d.stale ? `<tr><td>Hinweis</td><td class="bad">lange nicht angesteckt</td></tr>` : ""}
@@ -1166,6 +1272,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
         <li><span>„Fertig – abziehen“ erscheint, optional kommt eine Benachrichtigung. Platte abziehen und außer Haus bringen.</span></li></ol></div>
        <div class="panel"><div class="panel-head"><div class="panel-title">Platte an dieser VM</div></div><p class="muted" style="font-size:14px">Steckt die Platte am Proxmox-Host, reicht die Appliance den <b>USB-Anschluss</b> an diese VM durch (nicht das Gerät). So erscheint jede Platte, die später in diesem Anschluss steckt, automatisch – ideal zum Wechseln. Voraussetzung: Proxmox VE ist unter Verbindungen eingetragen.</p>
         <div class="mt"><button class="btn gray" type="button" data-usb2>${icon("usb")} USB-Anschluss durchreichen</button></div></div></div>`;
+    drawRunning();
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => rotationForm(null, draw));
     qsa("[data-usb], [data-usb2]", el).forEach((b) => b.onclick = passthroughDialog);
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => rotationForm(rots.find((x) => x.id === b.dataset.edit), draw));
@@ -1188,10 +1295,13 @@ PAGES["/wechselplatten"] = async (el, token) => {
   every(10000, token, draw);
 };
 
+const TRANSFER_OPTIONS = [[1, "Nur die neueste Sicherung"], [2, "Die neuesten 2"], [3, "Die neuesten 3"], [7, "Die neuesten 7"], [14, "Die neuesten 14"], [0, "Alle Sicherungen"]];
+const transferText = (n) => (!n ? "alle Sicherungen" : n === 1 ? "nur die neueste Sicherung" : `die neuesten ${n} Sicherungen`);
+
 function rotationForm(x, done) {
   const edit = !!x;
   const local = state.servers.find((s) => s.local)?.id || state.servers[0]?.id;
-  x = x || { rhythm: "daily", swap_day: 5, time: "22:30", run_on_mount: true, unmount_on_done: true, keep_last: 7, keep_weekly: 4, keep_monthly: 0, keep_daily: 0, server_id: local, source_server: local };
+  x = x || { rhythm: "daily", swap_day: 5, time: "22:30", run_on_mount: true, unmount_on_done: true, transfer_last: 1, keep_last: 1, keep_weekly: 0, keep_monthly: 0, keep_daily: 0, server_id: local, source_server: local };
   formDialog({
     title: edit ? `${x.name} bearbeiten` : "Wechselplatten-Satz anlegen", ic: "disk",
     fields: [
@@ -1204,7 +1314,9 @@ function rotationForm(x, done) {
       { name: "time", label: "Täglich kopieren um", type: "time", value: x.time, hint: "Leer = nur beim Anstecken kopieren." },
       { name: "run_on_mount", label: "Beim Anstecken sofort kopieren", type: "checkbox", value: x.run_on_mount, wide: true },
       { name: "unmount_on_done", label: "Nach der Kopie aushängen", type: "checkbox", value: x.unmount_on_done, wide: true, hint: "Dann kann die Platte gefahrlos abgezogen werden." },
-      { type: "html", wide: true, html: `<div class="section-title">Aufbewahrung auf jeder Platte</div><div class="hint">Was nach der Kopie auf der Platte bleibt. 0 = Regel nicht verwenden; alles 0 = nichts löschen.</div>` },
+      { name: "transfer_last", label: "Was auf die Platte kopieren?", type: "select", wide: true, value: x.transfer_last ?? 0, options: TRANSFER_OPTIONS,
+        hint: "Pro VM bzw. Container. „Nur die neueste“ spart Zeit und Platz: ältere Stände bleiben nur auf dem Backup-Server." },
+      { type: "html", wide: true, html: `<div class="section-title">Aufbewahrung auf jeder Platte</div><div class="hint">Was nach der Kopie auf der Platte bleibt. „Letzte = 1“: Die Platte enthält nur die neueste Sicherung, ältere werden nach der Kopie entfernt. 0 = Regel nicht verwenden; alles 0 = nichts löschen.</div>` },
       { name: "keep_last", label: "Letzte", type: "number", min: 0, value: x.keep_last },
       { name: "keep_daily", label: "Täglich", type: "number", min: 0, value: x.keep_daily },
       { name: "keep_weekly", label: "Wöchentlich", type: "number", min: 0, value: x.keep_weekly },
@@ -1213,6 +1325,12 @@ function rotationForm(x, done) {
     onMount: async (d) => {
       const form = qs("form", d);
       const show = () => { qs('[data-field="swap_day"]', d).hidden = formValues(form).rhythm !== "weekly"; };
+      // "only the newest": the disk should then hold just that one, too.
+      qs('[name="transfer_last"]', d).addEventListener("change", (e) => {
+        if (e.target.value !== "1") return;
+        const set = (n, v) => { qs(`[name="${n}"]`, d).value = v; };
+        set("keep_last", 1); set("keep_daily", 0); set("keep_weekly", 0); set("keep_monthly", 0);
+      });
       qsa('[name="rhythm"]', d).forEach((r) => r.onchange = show);
       show();
       if (edit && x.disks.length) qs('[name="server_id"]', d).disabled = true;
@@ -1227,6 +1345,7 @@ function rotationForm(x, done) {
     },
     submit: async (v) => {
       v.swap_day = Number(v.swap_day);
+      v.transfer_last = Number(v.transfer_last);
       if (edit) { if (x.disks.length) v.server_id = x.server_id; await PUT(`/api/rotations/${x.id}`, v); }
       else await POST("/api/rotations", v);
       toast("Gespeichert."); done();
@@ -1532,7 +1651,9 @@ PAGES["/ereignisse"] = async (el, token) => {
     if (token !== pageToken) return;
     list = append ? list.concat(r.events) : r.events;
     more = r.more;
-    qs("[data-list]", el).innerHTML = list.length ? `<div class="panel flush"><div class="rows">${list.map(eventRow).join("")}</div></div>${more ? `<div style="text-align:center;margin:12px"><button class="btn gray" type="button" data-more>Ältere laden</button></div>` : ""}` : empty("Keine Ereignisse", "", "", "bell");
+    const open = new Set(qsa("details.ev-details[open]", el).map((x) => x.dataset.id));
+    qs("[data-list]", el).innerHTML = list.length ? `<div class="panel flush"><div class="rows">${list.map((e) => eventRow(e, false)).join("")}</div></div>${more ? `<div style="text-align:center;margin:12px"><button class="btn gray" type="button" data-more>Ältere laden</button></div>` : ""}` : empty("Keine Ereignisse", "", "", "bell");
+    qsa("details.ev-details", el).forEach((x, i) => { x.dataset.id = list[i]?.id; if (open.has(String(list[i]?.id))) x.open = true; });
     const m = qs("[data-more]", el);
     if (m) m.onclick = () => run(m, () => load(true));
   };
@@ -1551,7 +1672,7 @@ PAGES["/einstellungen"] = async (el) => {
     <div class="panel"><div class="panel-head"><div class="panel-title">Benachrichtigungen</div></div>
       <form class="form" data-notify novalidate><div class="form-error" hidden></div>
         <div class="form-grid">
-          ${field({ name: "min_severity", label: "Melden ab", type: "select", value: n.min_severity, options: [["info", "Info (auch „Platte kann gewechselt werden“)"], ["warning", "Warnung"], ["critical", "Nur Kritisch"]], wide: true })}
+          ${field({ name: "min_severity", label: "Melden ab", type: "select", value: n.min_severity, options: [["info", "Alles – auch erfolgreiche Sicherungen und „Platte kann gewechselt werden“"], ["warning", "Nur Warnungen und Fehler"], ["critical", "Nur Fehler"]], wide: true })}
         </div>
         <div class="section"><div class="form-grid">
           ${field({ name: "mail_enabled", label: "Per E-Mail", type: "checkbox", value: n.mail_enabled, wide: true })}
@@ -1569,7 +1690,15 @@ PAGES["/einstellungen"] = async (el) => {
           ${field({ name: "hook_url", label: "URL", value: n.hook_url, mono: true, placeholder: "https://ntfy.sh/mein-thema", wide: true })}
           ${field({ name: "hook_token", label: "Token (optional)", type: "password", placeholder: set.has_hook_token ? "unverändert" : "" })}
         </div></div>
-        <div class="flex"><button class="btn" type="submit">Speichern</button><button class="btn gray" type="button" data-test>Testnachricht senden</button></div>
+        <div class="section"><div class="section-title">So sieht die Mail aus</div>
+          <div class="hint">Grün bei Erfolg, Gelb bei Warnungen (z. B. einzelne VMs nicht gesichert), Rot bei Fehlern – jeweils mit der Liste der gesicherten VMs und Container.</div>
+          <div class="flex"><span class="small muted">Vorschau:</span>
+            <a class="btn gray sm" href="/api/settings/preview?status=ok" target="_blank" rel="noopener"><span class="dot green"></span> Erfolg</a>
+            <a class="btn gray sm" href="/api/settings/preview?status=warning" target="_blank" rel="noopener"><span class="dot amber"></span> Warnung</a>
+            <a class="btn gray sm" href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a></div></div>
+        <div class="flex"><button class="btn" type="submit">Speichern</button>
+          <select data-test-status aria-label="Art der Testnachricht" style="width:auto;min-width:0"><option value="ok">Test: Erfolg</option><option value="warning">Test: Warnung</option><option value="error">Test: Fehler</option></select>
+          <button class="btn gray" type="button" data-test>Testnachricht senden</button></div>
       </form></div>
     <div>
       <div class="panel"><div class="panel-head"><div class="panel-title">Appliance</div></div>
@@ -1578,7 +1707,17 @@ PAGES["/einstellungen"] = async (el) => {
           <tr><td>Adressen</td><td class="mono">${(sys.ips || []).map(esc).join("<br>") || "—"}</td></tr>
           <tr><td>Backup-Server</td><td>${sys.local_pbs ? "Proxmox Backup Server ist in dieser VM installiert (Weboberfläche: Port 8007, Anmeldung root)" : "kein lokaler PBS"}</td></tr>
           <tr><td>Angemeldet</td><td>${esc(sys.user)}</td></tr></table>
-        ${sys.local_pbs ? `<div class="mt"><a class="btn gray" href="https://${esc(location.hostname)}:8007" target="_blank" rel="noopener">${icon("external")} PBS-Oberfläche öffnen</a></div>` : ""}</div>
+        ${sys.local_pbs && (sys.ips || []).length ? `<div class="mt"><a class="btn gray" href="https://${esc(sys.ips[0])}:8007" target="_blank" rel="noopener">${icon("external")} PBS-Oberfläche öffnen</a></div>` : ""}</div>
+      <div class="panel"><div class="panel-head"><div class="panel-title">Zugriff & Reverse Proxy</div></div>
+        <form class="form" data-access novalidate><div class="form-error" hidden></div>
+          ${set.seen_proxy && set.seen_proxy.url ? `<div class="callout" style="margin:0"><div class="ct"><div class="ch">Reverse Proxy erkannt</div><div class="cb">${esc(set.seen_proxy.url)} über ${esc(set.seen_proxy.proxy_ip)}</div></div>
+            <div class="flex"><button class="btn gray sm" type="button" data-adopt>Übernehmen</button></div></div>` : ""}
+          <div class="form-grid">
+            ${field({ name: "public_url", label: "Adresse der Oberfläche", value: set.access.public_url, placeholder: set.public_url, mono: true, wide: true, hint: "Für die Links in Mails und Push-Nachrichten. Leer = automatisch (jetzt: " + set.public_url + ")." })}
+            ${field({ name: "trusted_proxies", label: "IP des Reverse Proxys", value: (set.access.trusted_proxies || []).join(", "), mono: true, wide: true, placeholder: "z. B. 10.10.250.95", hint: "Dann gilt die Login-Sperre für die echte Adresse des Aufrufers statt für den Proxy. Du kommst gerade von " + set.client_ip + (set.client_ip !== set.remote_ip ? " (über " + set.remote_ip + ")" : "") + "." })}
+          </div>
+          <div class="hint">Proxy-Ziel: <code>https://${esc((sys.ips || [])[0] || "IP")}:443</code> (Zertifikatsprüfung aus, selbst signiert) oder <code>http://${esc((sys.ips || [])[0] || "IP")}:80</code>; der Proxy muss dann <code>X-Forwarded-Proto: https</code> mitschicken. Websockets sind nicht nötig.</div>
+          <div><button class="btn" type="submit">Speichern</button></div></form></div>
       <div class="panel"><div class="panel-head"><div class="panel-title">SSH-Schlüssel der Appliance</div></div>
         <p class="panel-intro">Für NFS/SMB-Freigaben auf einem externen PBS. Auf dem PBS eintragen:</p>${codeBlock(`mkdir -p /root/.ssh && echo '${sys.ssh_key}' >> /root/.ssh/authorized_keys`)}</div>
       <div class="panel"><div class="panel-head"><div class="panel-title">Passwort ändern</div></div>
@@ -1591,7 +1730,12 @@ PAGES["/einstellungen"] = async (el) => {
   const nf = qs("[data-notify]", el);
   const nv = () => { const v = formValues(nf); v.smtp_port = Number(v.smtp_port) || 587; return { notify: v }; };
   nf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(nf, null); await PUT("/api/settings", nv()); toast("Gespeichert."); } catch (err) { showErrors(nf, err); } };
-  qs("[data-test]", el).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test", nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
+  qs("[data-test]", el).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test?status=" + qs("[data-test-status]", el).value, nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
+  const af = qs("[data-access]", el);
+  const av = () => { const v = formValues(af); return { public_url: v.public_url.trim(), trusted_proxies: v.trusted_proxies.split(/[\s,]+/).filter(Boolean) }; };
+  af.onsubmit = async (e) => { e.preventDefault(); try { showErrors(af, null); await PUT("/api/settings/access", av()); toast("Gespeichert."); render(); } catch (err) { showErrors(af, err); } };
+  const adopt = qs("[data-adopt]", el);
+  if (adopt) adopt.onclick = () => { qs('[name="public_url"]', af).value = set.seen_proxy.url; qs('[name="trusted_proxies"]', af).value = set.seen_proxy.proxy_ip; af.requestSubmit(); };
   const pf = qs("[data-pw]", el);
   pf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(pf, null); await POST("/api/account/password", formValues(pf)); pf.reset(); toast("Passwort geändert. Andere Sitzungen wurden abgemeldet."); } catch (err) { showErrors(pf, err); } };
 };

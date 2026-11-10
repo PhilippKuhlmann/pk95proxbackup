@@ -54,6 +54,8 @@ CREATE TABLE events (
 );
 CREATE INDEX events_ts ON events (ts);
 `,
+	// 2: structured details of events (JSON: guests, facts, log excerpt).
+	`ALTER TABLE events ADD COLUMN details TEXT NOT NULL DEFAULT '';`,
 }
 
 // ErrNotFound is returned when an object does not exist.
@@ -281,12 +283,13 @@ func (s *Store) PruneSessions() error {
 
 // Event is an entry of the event log.
 type Event struct {
-	ID       int64  `json:"id"`
-	TS       int64  `json:"ts"`
-	Severity string `json:"severity"` // info, warning, critical
-	Source   string `json:"source"`
-	Title    string `json:"title"`
-	Body     string `json:"body"`
+	ID       int64           `json:"id"`
+	TS       int64           `json:"ts"`
+	Severity string          `json:"severity"` // info, warning, critical
+	Source   string          `json:"source"`
+	Title    string          `json:"title"`
+	Body     string          `json:"body"`
+	Details  json.RawMessage `json:"details,omitempty"`
 }
 
 // AddEvent appends to the event log.
@@ -294,7 +297,7 @@ func (s *Store) AddEvent(e Event) (Event, error) {
 	if e.TS == 0 {
 		e.TS = time.Now().Unix()
 	}
-	res, err := s.db.Exec("INSERT INTO events (ts, severity, source, title, body) VALUES (?, ?, ?, ?, ?)", e.TS, e.Severity, e.Source, e.Title, e.Body)
+	res, err := s.db.Exec("INSERT INTO events (ts, severity, source, title, body, details) VALUES (?, ?, ?, ?, ?, ?)", e.TS, e.Severity, e.Source, e.Title, e.Body, string(e.Details))
 	if err != nil {
 		return e, err
 	}
@@ -304,7 +307,7 @@ func (s *Store) AddEvent(e Event) (Event, error) {
 
 // Events lists the newest events, optionally only from a minimum severity, before an id (paging).
 func (s *Store) Events(ctx context.Context, minSeverity string, before int64, limit int) ([]Event, error) {
-	q := "SELECT id, ts, severity, source, title, body FROM events WHERE 1=1"
+	q := "SELECT id, ts, severity, source, title, body, details FROM events WHERE 1=1"
 	args := []any{}
 	switch minSeverity {
 	case "warning":
@@ -326,8 +329,12 @@ func (s *Store) Events(ctx context.Context, minSeverity string, before int64, li
 	out := []Event{}
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.ID, &e.TS, &e.Severity, &e.Source, &e.Title, &e.Body); err != nil {
+		var details string
+		if err := rows.Scan(&e.ID, &e.TS, &e.Severity, &e.Source, &e.Title, &e.Body, &details); err != nil {
 			return nil, err
+		}
+		if details != "" {
+			e.Details = json.RawMessage(details)
 		}
 		out = append(out, e)
 	}
