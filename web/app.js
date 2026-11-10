@@ -1768,7 +1768,7 @@ PAGES["/restoretests"] = async (el, token) => {
   const draw = async () => {
     const r = await GET("/api/restoretests");
     if (token !== pageToken) return;
-    const plans = r.plans, runs = r.runs, act = r.active;
+    const plans = r.plans || [], runs = r.runs || [], act = r.active;
     const cl = (id) => (state.clusters.find((c) => c.id === id) || {}).name || id;
     el.innerHTML = pageHead("Restore-Tests", "Spielt regelmäßig die neueste Sicherung jedes Servers testweise zurück, startet sie abgeschottet vom Netzwerk, prüft ob das System hochkommt und löscht sie wieder. So weißt du, dass die Sicherungen im Ernstfall funktionieren.",
       `<button class="btn" type="button" data-add>${icon("plus")} Plan anlegen</button>`) +
@@ -1787,7 +1787,7 @@ PAGES["/restoretests"] = async (el, token) => {
         </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Plan", "Zum Beispiel: jeden Samstag um 02:00 alle Server aus dem Hauptspeicher auf pve1 testen.", `<button class="btn sm" type="button" data-add2>${icon("plus")} Plan anlegen</button>`, "shield")}</div>`}</div>
       <div class="panel flush"><div class="panel-head"><div class="panel-title">Verlauf</div></div>
         ${runs.filter((x) => x.status !== "running").length ? `<div class="rows">${runs.filter((x) => x.status !== "running").map((x) => {
-          const n = (st) => x.results.filter((y) => y.status === st).length;
+          const n = (st) => (x.results || []).filter((y) => y.status === st).length;
           return `<div class="row" style="cursor:pointer;align-items:center" data-show="${esc(x.id)}"><span class="when">${fmtTime(x.start, true)}</span>${rtPill(x.status)}
             <div class="grow"><div class="title"><b>${esc(x.plan_name)}</b> <span class="muted small">${x.end ? "Dauer " + fmtDur(x.start, x.end) : ""} · ${esc(x.by)}</span></div>
             <div class="flex" style="margin-top:4px">${n("ok") ? pill(n("ok") + " erfolgreich", "green") : ""}${n("warning") ? pill(n("warning") + " Hinweis", "amber") : ""}${n("error") ? pill(n("error") + " Fehler", "rose") : ""}${n("skipped") ? pill(n("skipped") + " übersprungen", "amber") : ""}${x.error ? `<span class="small bad">${esc(x.error)}</span>` : ""}</div></div>${icon("chevron-down")}</div>`;
@@ -1823,7 +1823,7 @@ PAGES["/restoretests"] = async (el, token) => {
 
 function rtTable(x, live) {
   return `<div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>Status</th><th>Sicherung vom</th><th>Dauer</th><th>Ergebnis</th>${live ? "" : "<th>Bild</th>"}</tr></thead><tbody>
-    ${x.results.map((r) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${r.type === "ct" ? "CT" : "VM"}</span> ${esc(r.vmid)} ${esc(r.name || "")}</div>${r.test_id ? `<div class="t-sub">Test-ID ${r.test_id}${r.disk_bytes ? " · " + fmtBytes(r.disk_bytes) : ""}</div>` : ""}</td>
+    ${(x.results || []).map((r) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${r.type === "ct" ? "CT" : "VM"}</span> ${esc(r.vmid)} ${esc(r.name || "")}</div>${r.test_id ? `<div class="t-sub">Test-ID ${r.test_id}${r.disk_bytes ? " · " + fmtBytes(r.disk_bytes) : ""}</div>` : ""}</td>
       <td data-l="Status">${rtPill(r.status)}${r.phase ? `<div class="t-sub">${esc(r.phase)} …</div>` : ""}</td>
       <td data-l="Sicherung vom" class="small nowrap">${fmtTime(r.backup_time, true)}</td>
       <td data-l="Dauer" class="small nowrap">${r.restore_secs ? "Restore " + fmtSecs(r.restore_secs) : ""}${r.boot_secs ? "<br>Start " + fmtSecs(r.boot_secs) : ""}</td>

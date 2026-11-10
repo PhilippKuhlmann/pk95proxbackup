@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -106,5 +107,12 @@ func TestRestoreTestSkipsWithoutSpace(t *testing.T) {
 	}
 	if run.Status != "warning" {
 		t.Fatalf("a skipped guest makes the run yellow: %s", run.Status)
+	}
+}
+
+func TestRunCopyNeverNil(t *testing.T) {
+	b, _ := json.Marshal(core.CopyRunForTest(&core.RestoreTestRun{ID: "x"}))
+	if !strings.Contains(string(b), `"results":[]`) {
+		t.Fatalf("results must be a list: %s", b)
 	}
 }

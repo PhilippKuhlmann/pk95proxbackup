@@ -7,3 +7,6 @@ var UnescapeWorkerIDForTest = unescapeWorkerID
 
 // ReportBackupsForTest exposes reportBackups.
 func (c *Core) ReportBackupsForTest(ctx context.Context, ov *Overview) { c.reportBackups(ctx, ov) }
+
+// CopyRunForTest exposes copyRun.
+var CopyRunForTest = copyRun

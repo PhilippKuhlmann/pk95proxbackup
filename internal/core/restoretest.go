@@ -183,7 +183,7 @@ func (c *Core) RestoreTestRuns() []RestoreTestRun {
 
 func copyRun(r *RestoreTestRun) RestoreTestRun {
 	cp := *r
-	cp.Results = append([]RestoreTestResult(nil), r.Results...)
+	cp.Results = append([]RestoreTestResult{}, r.Results...) // never nil: the UI expects a list
 	return cp
 }
 
