@@ -50,6 +50,7 @@ type Archive struct {
 	Start      int64         `json:"start"`
 	End        int64         `json:"end"`
 	CopySecs   int64         `json:"copy_secs"`
+	Copied     string        `json:"copied,omitempty"` // "487,49 GiB mit durchschnittlich 96 MiB/s"
 	VerifySecs int64         `json:"verify_secs"`
 	Error      string        `json:"error,omitempty"`
 	Problems   []string      `json:"problems,omitempty"`
@@ -356,7 +357,13 @@ func (c *Core) runArchive(ctx context.Context, id string, check bool) {
 			failed("Kopie", err)
 			return
 		}
-		c.updateArchive(id, func(x *Archive) { x.CopySecs = int64(time.Since(t0).Seconds()) })
+		copied := ""
+		if lines, err := pbs.TaskLog(ctx, upid); err == nil {
+			if f, ok := copiedFact(prox.ParseSyncSummary(lines)); ok {
+				copied = f.Value
+			}
+		}
+		c.updateArchive(id, func(x *Archive) { x.CopySecs, x.Copied = int64(time.Since(t0).Seconds()), copied })
 	}
 	// 4. Read everything back.
 	var verifySecs int64
@@ -533,9 +540,10 @@ func (c *Core) archiveEvent(id string, check bool, status, errMsg string, proble
 		det.Facts = append(det.Facts, notify.Fact{Label: "Festplatte belegt", Value: fmt.Sprintf("%d %% (%s von %s)", a.Used*100/a.Total, fmtBytes(a.Used), fmtBytes(a.Total))})
 	}
 	if !check {
-		det.Facts = append(det.Facts, notify.Fact{Label: "Erstellt am", Value: fmtWhen(a.End)})
-		if a.CopySecs > 0 {
-			det.Facts = append(det.Facts, notify.Fact{Label: "Dauer der Kopie", Value: fmtSecsDE(a.CopySecs)})
+		det.Facts = append(det.Facts, notify.Fact{Label: "Beginn", Value: fmtWhen(a.Start)}, notify.Fact{Label: "Fertig", Value: fmtWhen(a.End)},
+			notify.Fact{Label: "Dauer", Value: durationText(a.End-a.Start, a.CopySecs)})
+		if a.Copied != "" {
+			det.Facts = append(det.Facts, notify.Fact{Label: "Kopiert", Value: a.Copied})
 		}
 		if a.Verify && status == "ok" {
 			det.Facts = append(det.Facts, notify.Fact{Label: "Prüfung", Value: "alle Daten wurden zurückgelesen und sind lesbar"})
@@ -574,18 +582,6 @@ func (c *Core) archiveEvent(id string, check bool, status, errMsg string, proble
 
 // archiveSource names the archive copies in events and mails.
 const archiveSource = "Archiv-Sicherung"
-
-// fmtSecsDE renders a duration for readers: "1 Std. 12 Min.", "4 Min.", "35 Sek.".
-func fmtSecsDE(s int64) string {
-	switch {
-	case s < 60:
-		return fmt.Sprintf("%d Sek.", s)
-	case s < 3600:
-		return fmt.Sprintf("%d Min.", (s+30)/60)
-	default:
-		return fmt.Sprintf("%d Std. %d Min.", s/3600, (s%3600+30)/60)
-	}
-}
 
 // ForgetArchive removes the archive from the list. With forgetStore the removable datastore
 // is also taken out of the Backup Server's configuration (the data on the disk stays).

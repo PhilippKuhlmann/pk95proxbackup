@@ -106,6 +106,7 @@ func (c *Core) reportBackupRun(ctx context.Context, tasks []TaskInfo) {
 	var nodes []string
 	storage, mode := "", ""
 	start, end := tasks[0].StartTime, int64(0)
+	var transferred int64
 	taskFailed := false
 	for _, t := range tasks {
 		nodes = append(nodes, t.Node)
@@ -125,7 +126,8 @@ func (c *Core) reportBackupRun(ctx context.Context, tasks []TaskInfo) {
 			storage, mode = r.Storage, r.Mode
 		}
 		for _, g := range r.Guests {
-			row := notify.Row{Kind: "VM", ID: g.VMID, Name: g.Name, Duration: g.Duration, Size: g.Transferred}
+			row := notify.Row{Kind: "VM", ID: g.VMID, Name: g.Name, Duration: clockDuration(g.Duration), Size: g.Transferred}
+			transferred += prox.ParseSize(g.Transferred)
 			if g.Type == "lxc" {
 				row.Kind = "CT"
 			}
@@ -171,7 +173,11 @@ func (c *Core) reportBackupRun(ctx context.Context, tasks []TaskInfo) {
 	d.Facts = []notify.Fact{
 		{Label: "System", Value: cl.Name},
 		{Label: "Beginn", Value: fmtWhen(start)},
+		{Label: "Fertig", Value: fmtWhen(end)},
 		{Label: "Dauer", Value: humanDuration(end - start)},
+	}
+	if transferred > 0 {
+		d.Facts = append(d.Facts, notify.Fact{Label: "Datenmenge", Value: fmtBytes(transferred)})
 	}
 	if storage != "" {
 		d.Facts = append(d.Facts, notify.Fact{Label: "Gesichert nach", Value: storage})
@@ -344,4 +350,19 @@ func fmtBytes(n int64) string {
 		return strings.Replace(fmt.Sprintf("%.0f %s", f, units[i]), ".", ",", 1)
 	}
 	return strings.Replace(fmt.Sprintf("%.1f %s", f, units[i]), ".", ",", 1)
+}
+
+// clockDuration turns vzdump's "00:06:41" into "6 Min. 41 s" (other text stays as it is).
+func clockDuration(s string) string {
+	p := strings.Split(s, ":")
+	if len(p) != 3 {
+		return s
+	}
+	h, e1 := strconv.Atoi(p[0])
+	m, e2 := strconv.Atoi(p[1])
+	sec, e3 := strconv.Atoi(p[2])
+	if e1 != nil || e2 != nil || e3 != nil {
+		return s
+	}
+	return humanDuration(int64(h*3600 + m*60 + sec))
 }

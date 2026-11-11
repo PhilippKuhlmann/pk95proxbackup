@@ -219,9 +219,9 @@ func (s *Server) testNotify(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sampleMessage(status string) notify.Message {
 	now := time.Now()
 	rows := []notify.Row{
-		{Kind: "VM", ID: "100", Name: "dc01", Status: "ok", Duration: "00:01:05", Size: "32.00 GiB"},
-		{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Duration: "00:06:41", Size: "420.00 GiB"},
-		{Kind: "CT", ID: "110", Name: "pihole", Status: "ok", Duration: "00:00:21", Size: "4.00 GiB"},
+		{Kind: "VM", ID: "100", Name: "dc01", Status: "ok", Duration: "1 Min. 5 s", Size: "32.00 GiB"},
+		{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Duration: "6 Min. 41 s", Size: "420.00 GiB"},
+		{Kind: "CT", ID: "110", Name: "pihole", Status: "ok", Duration: "21 s", Size: "4.00 GiB"},
 	}
 	sev := "info"
 	title := "Testnachricht: Datensicherung erfolgreich – alle 3 Server wurden gesichert"
@@ -249,14 +249,16 @@ func (s *Server) sampleMessage(status string) notify.Message {
 			{Kind: "VM", ID: "101", Name: "fileserver", Status: "ok", Time: now.Add(-6 * time.Hour).Unix(), Size: "420 GiB"},
 			{Kind: "CT", ID: "110", Name: "pihole", Status: "ok", Time: now.Add(-6 * time.Hour).Unix(), Size: "4.0 GiB"}}
 		d = &notify.Details{Status: "ok", RowsTitle: "Diese Server sind auf der Festplatte gesichert", Link: "/wechselplatten", Rows: rows,
-			Facts: []notify.Fact{{Label: "Festplatte", Value: "„USB1“"}, {Label: "Gesichert am", Value: now.Format("02.01.2006 um 15:04 Uhr")},
-				{Label: "Enthält", Value: "3 Server"}, {Label: "Festplatte belegt", Value: "24 % (456 GiB von 1,8 TiB)"}, {Label: "Beim nächsten Wechsel", Value: "„USB2“ anschließen"}}}
+			Facts: []notify.Fact{{Label: "Festplatte", Value: "„USB1“"}, {Label: "Beginn", Value: now.Add(-89 * time.Minute).Format("02.01.2006 um 15:04 Uhr")},
+				{Label: "Fertig", Value: now.Format("02.01.2006 um 15:04 Uhr")}, {Label: "Dauer", Value: "1 Std. 29 Min. (davon Kopie 1 Std. 27 Min.)"},
+				{Label: "Kopiert", Value: "487,49 GiB mit durchschnittlich 96 MiB/s"}, {Label: "Enthält", Value: "3 Server"}, {Label: "Festplatte belegt", Value: "24 % (456 GiB von 1,8 TiB)"}}}
 		return s.C.Message("info", "USB-Sicherung", "Testnachricht: USB-Sicherung fertig – Festplatte „USB1“ kann abgezogen werden",
-			"Alle Daten wurden erfolgreich auf die Festplatte „USB1“ gesichert. Sie können die Festplatte jetzt abziehen und an einem sicheren Ort aufbewahren, am besten außer Haus. Beim nächsten Wechsel bitte die Festplatte „USB2“ anschließen.", d)
+			"Alle Daten wurden erfolgreich auf die Festplatte „USB1“ gesichert. Sie können die Festplatte jetzt abziehen und an einem sicheren Ort aufbewahren, am besten außer Haus.", d)
 	}
 	d.Rows = rows
 	d.Facts = []notify.Fact{{Label: "System", Value: "PVE (Beispiel)"}, {Label: "Beginn", Value: now.Add(-9 * time.Minute).Format("02.01.2006 um 15:04 Uhr")},
-		{Label: "Dauer", Value: "8 Min. 7 s"}, {Label: "Gesichert nach", Value: "pbs-backup"}}
+		{Label: "Fertig", Value: now.Format("02.01.2006 um 15:04 Uhr")}, {Label: "Dauer", Value: "8 Min. 7 s"}, {Label: "Datenmenge", Value: "456 GiB"},
+		{Label: "Gesichert nach", Value: "pbs-backup"}}
 	return s.C.Message(sev, "Datensicherung", title, body, d)
 }
 

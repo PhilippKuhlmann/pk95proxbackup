@@ -75,4 +75,18 @@ func TestBackupRunReport(t *testing.T) {
 	if len(d.Log) == 0 {
 		t.Fatal("no log excerpt for the error")
 	}
+	facts := map[string]string{}
+	for _, f := range d.Facts {
+		facts[f.Label] = f.Value
+	}
+	for _, k := range []string{"Beginn", "Fertig", "Dauer"} {
+		if facts[k] == "" {
+			t.Errorf("report misses %q: %v", k, facts)
+		}
+	}
+	for _, r := range d.Rows {
+		if strings.Contains(r.Duration, ":") {
+			t.Errorf("duration not readable: %q", r.Duration)
+		}
+	}
 }

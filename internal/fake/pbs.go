@@ -176,6 +176,7 @@ func (p *PBS) runSync(j *job) string {
 				return j.state, nil
 			}
 			n := 0
+			var bytes int64
 			if src := p.stores[j.params["remote-store"]]; src != nil {
 				have := map[string]bool{}
 				for _, s := range dst.snaps {
@@ -209,11 +210,16 @@ func (p *PBS) runSync(j *job) string {
 					if !have[s.Type+s.ID+strconv.FormatInt(s.Time, 10)] {
 						dst.snaps = append(dst.snaps, s)
 						n++
+						bytes += s.Size / 3
 					}
 				}
 			}
 			j.end, j.state = time.Now().Unix(), "OK"
-			return "OK", []string{"sync group … done", "Finished syncing " + strconv.Itoa(n) + " snapshots"}
+			summary := "Summary: sync job found no new data to pull"
+			if n > 0 {
+				summary = "Summary: sync job pulled " + strconv.FormatFloat(float64(bytes)/float64(gib), 'f', 2, 64) + " GiB in " + strconv.Itoa(n*4096) + " chunks (average rate: 96.106 MiB/s)"
+			}
+			return "OK", []string{"sync group … done", "Finished syncing " + strconv.Itoa(n) + " snapshots", summary}
 		})
 }
 

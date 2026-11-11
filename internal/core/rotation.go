@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -221,6 +222,8 @@ type diskRuntime struct {
 	Phase      string `json:"phase,omitempty"` // mounting, syncing, pruning, gc, unmounting
 	PhaseSince int64  `json:"phase_since,omitempty"`
 	DoneAt     int64  `json:"done_at"` // aftercare finished: disk can be swapped
+	CopyStart  int64  `json:"copy_start,omitempty"`
+	CopyUPID   string `json:"copy_upid,omitempty"`
 	LastDay    string `json:"last_day,omitempty"`
 	Remind     int64  `json:"remind,omitempty"`
 }
@@ -487,7 +490,12 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 		return
 	}
 	ok := j.LastRunState == "OK" || strings.HasPrefix(j.LastRunState, "WARNINGS")
+	copyStart := j.LastRunEnd
+	if st, err := pbs.TaskStatus(ctx, j.LastRunUPID); err == nil && st.StartTime > 0 {
+		copyStart = st.StartTime
+	}
 	c.mu.Lock()
+	rt.CopyStart, rt.CopyUPID = copyStart, j.LastRunUPID
 	if ok {
 		rt.LastOK = j.LastRunEnd
 		rt.LastError = ""
@@ -547,21 +555,28 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	// What is on the disk now (read before it is unmounted).
 	rows := c.diskContents(ctx, pbs, d.Store)
 	det := &notify.Details{Status: "ok", RowsTitle: "Diese Server sind auf der Festplatte gesichert", Rows: rows, Link: "/wechselplatten"}
-	det.Facts = []notify.Fact{
-		{Label: "Festplatte", Value: "„" + d.Label + "“"},
-		{Label: "Gesichert am", Value: fmtWhen(rt.LastOK)},
-		{Label: "Enthält", Value: fmt.Sprintf("%d Server", len(rows))},
+	c.mu.Lock()
+	copyStart, copyEnd, copyUPID := rt.CopyStart, rt.LastOK, rt.CopyUPID
+	c.mu.Unlock()
+	if copyStart == 0 || copyStart > copyEnd {
+		copyStart = copyEnd
 	}
-	if us, err := pbs.Usage(ctx); err == nil {
-		for _, u := range us {
-			if u.Store == d.Store && u.Total > 0 {
-				det.Facts = append(det.Facts, notify.Fact{Label: "Festplatte belegt", Value: fmt.Sprintf("%d %% (%s von %s)", u.Used*100/u.Total, fmtBytes(u.Used), fmtBytes(u.Total))})
+	det.Facts = []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Beginn", Value: fmtWhen(copyStart)}}
+	var copied *notify.Fact
+	if copyUPID != "" {
+		if lines, err := pbs.TaskLog(ctx, copyUPID); err == nil {
+			if f, ok := copiedFact(prox.ParseSyncSummary(lines)); ok {
+				copied = &f
 			}
 		}
 	}
-	next := c.nextDisk(r, d)
-	if next != "" {
-		det.Facts = append(det.Facts, notify.Fact{Label: "Beim nächsten Wechsel", Value: "„" + next + "“ anschließen"})
+	var later []notify.Fact
+	if us, err := pbs.Usage(ctx); err == nil {
+		for _, u := range us {
+			if u.Store == d.Store && u.Total > 0 {
+				later = append(later, notify.Fact{Label: "Festplatte belegt", Value: fmt.Sprintf("%d %% (%s von %s)", u.Used*100/u.Total, fmtBytes(u.Used), fmtBytes(u.Total))})
+			}
+		}
 	}
 	if r.UnmountOnDone {
 		c.setPhase(key, rt, "unmounting")
@@ -580,15 +595,20 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		c.mu.Unlock()
 	}
 	c.saveRuntime(key, rt)
+	finished := time.Now().Unix()
+	det.Facts = append(det.Facts, notify.Fact{Label: "Fertig", Value: fmtWhen(finished)},
+		notify.Fact{Label: "Dauer", Value: durationText(finished-copyStart, copyEnd-copyStart)})
+	if copied != nil {
+		det.Facts = append(det.Facts, *copied)
+	}
+	det.Facts = append(det.Facts, notify.Fact{Label: "Enthält", Value: fmt.Sprintf("%d Server", len(rows))})
+	det.Facts = append(det.Facts, later...)
 	canPull := !r.UnmountOnDone || rt.DoneAt > 0
 	title := "USB-Sicherung auf „" + d.Label + "“ fertig"
 	msg := "Alle Daten wurden erfolgreich auf die Festplatte „" + d.Label + "“ gesichert."
 	if r.UnmountOnDone && canPull {
 		title = "USB-Sicherung fertig – Festplatte „" + d.Label + "“ kann abgezogen werden"
 		msg += " Sie können die Festplatte jetzt abziehen und an einem sicheren Ort aufbewahren, am besten außer Haus."
-	}
-	if next != "" {
-		msg += " Beim nächsten Wechsel bitte die Festplatte „" + next + "“ anschließen."
 	}
 	if len(problems) > 0 {
 		det.Status, det.Log = "warning", problems
@@ -835,28 +855,42 @@ var _ = log.Printf
 // rotationSource names the USB rotation in events and mails (readers are customers).
 const rotationSource = "USB-Sicherung"
 
-// nextDisk suggests the disk to plug in next: the one whose last copy is the oldest.
-func (c *Core) nextDisk(r Rotation, cur RotDisk) string {
-	best, bestTS := "", int64(-1)
-	for _, d := range r.Disks {
-		if d.Key == cur.Key {
-			continue
-		}
-		rt := c.runtime(rtKey(r, d))
-		c.mu.Lock()
-		ts := rt.LastOK
-		c.mu.Unlock()
-		if bestTS < 0 || ts < bestTS {
-			best, bestTS = d.Label, ts
-		}
-	}
-	return best
-}
-
 // fmtWhen renders a time for readers: "10.11.2026 um 05:44 Uhr".
 func fmtWhen(ts int64) string {
 	if ts == 0 {
 		return "noch nie"
 	}
 	return time.Unix(ts, 0).Format("02.01.2006 um 15:04 Uhr")
+}
+
+// durationText is the total time, with the copy part when the rest (cleaning up, freeing
+// space, unmounting) took noticeably long: "1 Std. 29 Min. (davon Kopie 1 Std. 27 Min.)".
+func durationText(total, copySecs int64) string {
+	if total < 0 {
+		total = 0
+	}
+	t := humanDuration(total)
+	if copySecs > 0 && total-copySecs >= 60 {
+		t += " (davon Kopie " + humanDuration(copySecs) + ")"
+	}
+	return t
+}
+
+// copiedFact describes how much a sync task copied: "487,49 GiB mit durchschnittlich 96 MiB/s".
+func copiedFact(s prox.SyncSummary) (notify.Fact, bool) {
+	switch {
+	case !s.Found:
+		return notify.Fact{}, false
+	case s.NoNew:
+		return notify.Fact{Label: "Kopiert", Value: "nichts Neues – der neueste Stand war schon auf der Festplatte"}, true
+	}
+	v := strings.Replace(s.Amount, ".", ",", 1)
+	if r := strings.Fields(s.Rate); len(r) == 2 {
+		if f, err := strconv.ParseFloat(r[0], 64); err == nil {
+			v += fmt.Sprintf(" mit durchschnittlich %.0f %s", f, r[1])
+		}
+	} else if s.Rate != "" {
+		v += " mit durchschnittlich " + s.Rate
+	}
+	return notify.Fact{Label: "Kopiert", Value: v}, true
 }

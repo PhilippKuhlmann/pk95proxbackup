@@ -1452,7 +1452,7 @@ function archivePanel(list) {
         <tr><td>${a.imported ? "Eingelesen" : "Erstellt"}</td><td>${a.end ? fmtTime(a.end, true) : busy ? "läuft seit " + fmtTime(a.start) : "—"}</td></tr>
         <tr><td>Inhalt</td><td>${names.length ? `${names.length} Server${a.latest ? ", je die neueste Sicherung" : a.imported ? `, neueste vom ${fmtTime(Math.max(...a.contents.map((x) => x.time)), true)}` : ""}<div class="t-sub">${esc(names.join(", "))}</div>` : '<span class="muted">—</span>'}</td></tr>
         ${a.location ? `<tr><td>Aufbewahrt</td><td>${esc(a.location)}</td></tr>` : ""}
-        ${a.copy_secs ? `<tr><td>Dauer</td><td>Kopie ${fmtSecs(a.copy_secs)}${a.verify_secs ? `, Prüfung ${fmtSecs(a.verify_secs)}` : ""}</td></tr>` : ""}
+        ${a.copy_secs ? `<tr><td>Dauer</td><td>${a.end > a.start ? fmtSecs(a.end - a.start) + " – " : ""}Kopie ${fmtSecs(a.copy_secs)}${a.verify_secs ? `, Prüfung ${fmtSecs(a.verify_secs)}` : ""}${a.copied ? `<div class="t-sub">${esc(a.copied)}</div>` : ""}</td></tr>` : ""}
         <tr><td>Geprüft</td><td>${last ? `${fmtTime(last.at, true)} ${last.ok ? '<span class="ok">lesbar</span>' : '<span class="bad">' + esc(last.error || "Fehler") + "</span>"}` : a.verify && a.status === "ok" ? `beim Erstellen <span class="ok">lesbar</span>` : '<span class="muted">noch nie</span>'}</td></tr>
         ${a.note ? `<tr><td>Notiz</td><td>${esc(a.note)}</td></tr>` : ""}
         ${a.error ? `<tr><td>Fehler</td><td class="bad">${esc(a.error)}</td></tr>` : ""}

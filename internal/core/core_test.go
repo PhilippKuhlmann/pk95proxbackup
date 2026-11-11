@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"pk95proxbackup/internal/core"
 	"pk95proxbackup/internal/fake"
 	"pk95proxbackup/internal/hostexec"
+	"pk95proxbackup/internal/notify"
 	"pk95proxbackup/internal/prox"
 	"pk95proxbackup/internal/store"
 )
@@ -152,8 +154,26 @@ func TestRotationCopyCycle(t *testing.T) {
 	evs, _ := c.St.Events(ctx, "", 0, 20)
 	found := false
 	for _, e := range evs {
-		if strings.Contains(e.Title, "kann abgezogen werden") && strings.Contains(e.Body, "Beim nächsten Wechsel bitte die Festplatte „Platte B (ungerade Tage)“ anschließen") {
+		if strings.Contains(e.Title, "kann abgezogen werden") {
+			if strings.Contains(e.Body, "nächsten Wechsel") || strings.Contains(string(e.Details), "nächsten Wechsel") {
+				t.Errorf("no hint which disk comes next: %s", e.Body)
+			}
 			found = true
+			// How long it took and how much was copied.
+			facts := map[string]string{}
+			var d notify.Details
+			_ = json.Unmarshal(e.Details, &d)
+			for _, f := range d.Facts {
+				facts[f.Label] = f.Value
+			}
+			for _, k := range []string{"Beginn", "Fertig", "Dauer", "Kopiert"} {
+				if facts[k] == "" {
+					t.Errorf("mail misses %q: %v", k, facts)
+				}
+			}
+			if !strings.Contains(facts["Kopiert"], "GiB mit durchschnittlich 96 MiB/s") {
+				t.Errorf("copied: %q", facts["Kopiert"])
+			}
 		}
 	}
 	if !found {
