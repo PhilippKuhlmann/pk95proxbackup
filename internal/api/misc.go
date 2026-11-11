@@ -33,7 +33,22 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		ov = s.C.CachedOverview(r.Context())
 	}
 	evs, _ := s.C.St.Events(r.Context(), "", 0, 8)
-	writeJSON(w, http.StatusOK, map[string]any{"overview": ov, "events": evs})
+	out := map[string]any{"overview": ov, "events": evs}
+	// The newest finished restore test, for the status line of the dashboard.
+	for _, run := range s.C.RestoreTestRuns() {
+		if run.Status == "running" {
+			continue
+		}
+		okN := 0
+		for _, x := range run.Results {
+			if x.Status == "ok" {
+				okN++
+			}
+		}
+		out["restore_test"] = map[string]any{"plan": run.PlanName, "status": run.Status, "end": run.End, "ok": okN, "total": len(run.Results)}
+		break
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) running(w http.ResponseWriter, r *http.Request) {

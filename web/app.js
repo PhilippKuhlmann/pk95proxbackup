@@ -598,45 +598,81 @@ PAGES["/"] = async (el, token) => {
         <li><span><b>In Proxmox VE eintragen</b> und einen <a href="/jobs" data-go>Sicherungsjob</a> anlegen.</span></li>
         <li><span><b>Wechselplatten</b> einrichten, damit eine Kopie außer Haus liegt.</span></li></ol></div>`;
     }
+    // Only good news that asks for an action stays a callout; problems go into the status line.
     for (const x of rots) {
       const ready = x.disks.filter((d) => d.state === "ready");
       if (ready.length) callouts += callout("green", `${x.name}: Platte kann gewechselt werden`, esc(x.hint), `<a class="btn gray sm" href="/wechselplatten" data-go>Ansehen</a>`);
-      else if (x.overdue) callouts += callout("yellow", `${x.name}: Kopie überfällig`, `Letzte Kopie auf eine Wechselplatte: ${esc(fmtTime(x.last_copy, true))}. ${esc(x.hint)}`, `<a class="btn gray sm" href="/wechselplatten" data-go>Ansehen</a>`);
     }
-    for (const s of servers.filter((s) => !s.online)) callouts += callout("red", `${s.name} nicht erreichbar`, esc(s.error || ""));
-    for (const c of clusters.filter((c) => !c.online)) callouts += callout("red", `${c.name} nicht erreichbar`, esc(c.error || ""));
-    for (const s of shares.filter((s) => !s.mounted)) callouts += callout("red", `Freigabe ${s.name} ist nicht eingehängt`, esc(s.error || s.source), `<a class="btn gray sm" href="/freigaben" data-go>Freigaben</a>`);
+    const rt = r.restore_test;
+    const issues = [];
+    const issue = (tone, text, href) => issues.push({ tone, text, href });
+    for (const s of servers.filter((s) => !s.online)) issue("error", `${s.name} ist nicht erreichbar`, "/verbindungen");
+    for (const c of clusters.filter((c) => !c.online)) issue("error", `${c.name} ist nicht erreichbar`, "/verbindungen");
+    for (const s of shares.filter((s) => !s.mounted)) issue("error", `Freigabe ${s.name} ist nicht eingehängt`, "/freigaben");
+    if (failed.length) issue("error", `${failed.length} ${failed.length === 1 ? "Aufgabe ist" : "Aufgaben sind"} in den letzten 24 Stunden fehlgeschlagen`, "/aufgaben");
+    if (rt && rt.status === "error") issue("error", "Der letzte Restore-Test ist fehlgeschlagen", "/restoretests");
+    if (notBacked) issue("warning", `${notBacked} ${notBacked === 1 ? "VM bzw. Container ist" : "VMs und Container sind"} in keinem Sicherungsjob`, "/sicherungen");
+    for (const x of rots.filter((x) => x.overdue && !x.disks.some((d) => d.state === "ready"))) issue("warning", `${x.name}: USB-Kopie überfällig (zuletzt ${fmtAgo(x.last_copy)})`, "/wechselplatten");
+    for (const d of stores.filter((d) => d.total && d.used / d.total >= 0.9)) issue("warning", `Datastore ${d.store} ist zu ${pct(d.used, d.total)} % voll`, "/datastores");
+    if (rt && rt.status === "warning") issue("warning", `Letzter Restore-Test: ${rt.ok} von ${rt.total} Servern in Ordnung`, "/restoretests");
+    const errors = issues.filter((i) => i.tone === "error").length;
+    const tone = errors ? "error" : issues.length ? "warning" : "ok";
+    const headline = tone === "ok" ? "Alles in Ordnung" : errors ? `${errors} ${errors === 1 ? "Problem" : "Probleme"}${issues.length > errors ? ` und ${issues.length - errors} ${issues.length - errors === 1 ? "Hinweis" : "Hinweise"}` : ""}` : `${issues.length} ${issues.length === 1 ? "Hinweis" : "Hinweise"}`;
+    const okTasks = tasks.filter((t) => (t.type === "vzdump" || t.type === "backup") && t.endtime && t.status === "OK");
+    const lastBackup = okTasks.reduce((a, t) => Math.max(a, t.endtime), 0);
+    const lastCopy = rots.reduce((a, x) => Math.max(a, x.last_copy || 0), 0);
+    const fact = (label, value, sub) => `<div class="hero-fact"><dt>${esc(label)}</dt><dd>${value}</dd>${sub ? `<div class="hero-fact-sub">${sub}</div>` : ""}</div>`;
+    const hero = `<section class="hero ${tone}" aria-live="polite">
+        <div class="hero-main">
+          <span class="hero-ic">${icon(tone === "ok" ? "check" : tone === "error" ? "x" : "warn")}</span>
+          <div class="hero-text"><h2>${esc(headline)}</h2>
+            ${tone === "ok" ? `<p>Server erreichbar, Sicherungen ohne Fehler, Kopien aktuell. Sie müssen nichts tun.</p>` :
+              `<ul class="hero-list">${issues.map((i) => `<li><a href="${i.href}" data-go><span class="sdot ${i.tone}"></span><span>${esc(i.text)}</span>${icon("arrow-right")}</a></li>`).join("")}</ul>`}</div>
+        </div>
+        <dl class="hero-facts">
+          ${fact("Letzte Sicherung", lastBackup ? esc(fmtAgo(lastBackup)) : "—", lastBackup ? esc(fmtTime(lastBackup, true)) : "")}
+          ${fact("Letzte USB-Kopie", rots.length ? esc(fmtAgo(lastCopy)) : "—", rots.length ? (lastCopy ? esc(fmtTime(lastCopy, true)) : "noch keine") : "kein Satz eingerichtet")}
+          ${fact("Letzter Restore-Test", rt ? esc(fmtAgo(rt.end)) : "—", rt ? `${rt.ok} von ${rt.total} in Ordnung` : `<a href="/restoretests" data-go>einrichten</a>`)}
+        </dl>
+      </section>`;
+    const tile = (cls, href, ic, value, label, sub) => `<a class="tile ${cls}" href="${href}" data-go><span class="ti">${icon(ic)}</span><span class="tx"><span class="tv">${value}</span><span class="tl">${esc(label)}</span>${sub ? `<span class="ts">${esc(sub)}</span>` : ""}</span></a>`;
+    const usedAll = stores.reduce((a, d) => a + (d.used || 0), 0);
+    const diskState = { ready: ["Kann abgezogen werden", "green"], running: ["Kopiert …", "blue"], error: ["Fehler", "error"], idle: ["Angesteckt", "blue"], absent: ["Nicht angesteckt", ""] };
 
-    el.innerHTML = pageHead("Übersicht", `Stand ${fmtTime(ov.built)} · aktualisiert sich alle 30 Sekunden`, `<button class="btn gray" type="button" data-refresh>${icon("refresh")} Aktualisieren</button>`) +
-      callouts +
-      `<div class="tiles">
-        <a class="tile ${servers.some((s) => !s.online) ? "red" : "green"}" href="/verbindungen" data-go><span class="ti">${icon("server")}</span><span class="tx"><span class="tv">${servers.filter((s) => s.online).length}/${servers.length}</span><span class="tl">Backup-Server online</span></span></a>
-        <a class="tile" href="/datastores" data-go><span class="ti">${icon("database")}</span><span class="tx"><span class="tv">${stores.length}</span><span class="tl">Datastores · ${fmtBytes(stores.reduce((a, d) => a + (d.used || 0), 0))} belegt</span></span></a>
-        <a class="tile ${notBacked ? "amber" : "green"}" href="/sicherungen" data-go><span class="ti">${icon("archive")}</span><span class="tx"><span class="tv">${guests - notBacked}/${guests}</span><span class="tl">VMs & CTs in einem Job</span></span></a>
-        <a class="tile" href="/aufgaben" data-go><span class="ti">${icon("check")}</span><span class="tx"><span class="tv">${backups24.length}</span><span class="tl">Sicherungsläufe in 24 Std.</span></span></a>
-        <a class="tile ${failed.length ? "red" : "green"}" href="/aufgaben" data-go><span class="ti">${icon("warn")}</span><span class="tx"><span class="tv">${failed.length}</span><span class="tl">Fehler in 24 Std.</span></span></a>
-        <a class="tile" href="/wechselplatten" data-go><span class="ti">${icon("disk")}</span><span class="tx"><span class="tv">${disksIn}</span><span class="tl">Wechselplatten angesteckt</span></span></a>
+    el.innerHTML = `<div class="dash">` + pageHead("Übersicht", `Stand ${fmtTime(ov.built)} · aktualisiert sich alle 30 Sekunden`, `<button class="btn gray" type="button" data-refresh>${icon("refresh")} Aktualisieren</button>`) +
+      callouts + hero +
+      `<div class="tiles six">
+        ${tile(servers.some((s) => !s.online) ? "red" : "green", "/verbindungen", "server", `${servers.filter((s) => s.online).length}<small>/${servers.length}</small>`, "Backup-Server online")}
+        ${tile("", "/datastores", "database", stores.length, "Datastores", usedAll ? fmtBytes(usedAll) + " belegt" : "")}
+        ${tile(notBacked ? "amber" : "green", "/sicherungen", "archive", `${guests - notBacked}<small>/${guests}</small>`, "VMs & CTs im Job", notBacked ? `${notBacked} ohne Job` : "alle erfasst")}
+        ${tile("", "/aufgaben", "check", backups24.length, "Sicherungsläufe", "letzte 24 Std.")}
+        ${tile(failed.length ? "red" : "green", "/aufgaben", "warn", failed.length, "Fehler", "letzte 24 Std.")}
+        ${tile(disksIn ? "blue" : "", "/wechselplatten", "disk", disksIn, "USB-Platten", "angesteckt")}
       </div>
-      <div class="grid">
-        <div class="panel flush"><div class="panel-head"><div class="panel-title">Datastores</div><a class="btn gray sm" href="/datastores" data-go>Alle</a></div>
-          ${stores.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Datastore</th><th>Belegung</th><th class="num">Frei</th></tr></thead><tbody>
-          ${stores.map((d) => `<tr><td data-l="Datastore"><div class="t-main">${esc(d.store)} ${d["mount-status"] === "notmounted" ? pill("ausgehängt") : d["mount-status"] === "mounted" ? pill("USB", "blue") : ""}</div><div class="t-sub">${esc(d.server)}</div></td>
-            <td data-l="Belegung" style="min-width:160px">${d.total ? usageBar(d.used, d.total) : `<span class="muted small">${d.error ? esc(d.error) : "nicht eingehängt"}</span>`}</td>
-            <td class="num" data-l="Frei">${d.total ? fmtBytes(d.avail) : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Datastore", "", `<a class="btn sm" href="/datastores" data-go>Datastore anlegen</a>`, "database")}</div>`}
+      <div class="dash-cols">
+        <div class="dash-col">
+          <div class="panel flush"><div class="panel-head"><div class="panel-title">Datastores</div><a class="btn gray sm" href="/datastores" data-go>Alle</a></div>
+            ${stores.length ? `<div class="table-wrap"><table class="resp dash-table"><thead><tr><th>Datastore</th><th>Belegung</th><th class="num">Frei</th></tr></thead><tbody>
+            ${stores.map((d) => `<tr><td data-l="Datastore"><div class="t-main">${esc(d.store)} ${d["mount-status"] === "notmounted" ? pill("ausgehängt") : d["mount-status"] === "mounted" ? pill("USB", "blue") : ""}</div><div class="t-sub">${esc(d.server)}</div></td>
+              <td data-l="Belegung" class="bar-cell">${d.total ? usageBar(d.used, d.total) : `<span class="muted small">${d.error ? esc(d.error) : "nicht eingehängt"}</span>`}</td>
+              <td class="num" data-l="Frei">${d.total ? fmtBytes(d.avail) : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Datastore", "", `<a class="btn sm" href="/datastores" data-go>Datastore anlegen</a>`, "database")}</div>`}
+          </div>
+          <div class="panel flush"><div class="panel-head"><div class="panel-title">Letzte Aufgaben</div><a class="btn gray sm" href="/aufgaben" data-go>Alle</a></div>
+            <div class="rows">${tasks.slice(0, 8).map((t) => `<button class="row task-row" type="button" data-task="${esc(t.source)}|${esc(t.upid)}"><div class="grow"><div class="title">${esc(taskLabel(t.type))} <span class="muted">${esc(t.id || "")}</span></div><div class="t-sub">${esc(t.server)}${t.node ? " · " + esc(t.node) : ""} · ${esc(fmtTime(t.starttime))}</div></div>${taskPill(t)}</button>`).join("") || `<div class="row muted">Keine Aufgaben.</div>`}</div>
+          </div>
         </div>
-        <div class="panel flush"><div class="panel-head"><div class="panel-title">Wechselplatten</div><a class="btn gray sm" href="/wechselplatten" data-go>Verwalten</a></div>
-          <div class="rows">${rots.length ? rots.map((x) => `<div class="row"><div class="grow"><div class="title"><b>${esc(x.name)}</b> <span class="muted small">${x.rhythm === "weekly" ? "wöchentlich" : "täglich"}</span></div>
-            <div class="flex mt">${x.disks.map((d) => `<span class="pill ${d.state === "ready" ? "green" : d.state === "error" ? "rose" : d.state === "running" ? "blue pulse" : d.present ? "blue" : ""}"><span class="d"></span>${esc(d.label)}</span>`).join("")}</div>
-            <div class="body">${esc(x.hint)}</div></div><div class="small muted nowrap">Letzte Kopie<br><b class="ink-2">${esc(fmtAgo(x.last_copy))}</b></div></div>`).join("") :
-            `<div style="padding:0 16px 16px">${empty("Kein Wechselplatten-Satz", "Zwei oder mehr USB-Platten, die täglich oder wöchentlich getauscht werden: eine liegt immer außer Haus.", `<a class="btn sm" href="/wechselplatten" data-go>Einrichten</a>`, "disk")}</div>`}</div>
+        <div class="dash-col">
+          <div class="panel flush"><div class="panel-head"><div class="panel-title">Wechselplatten</div><a class="btn gray sm" href="/wechselplatten" data-go>Verwalten</a></div>
+            ${rots.length ? rots.map((x) => `<div class="rot-sum"><div class="rot-sum-head"><div><b>${esc(x.name)}</b> <span class="muted small">${x.rhythm === "weekly" ? "wöchentlich" : "täglich"}</span></div><div class="small muted">Letzte Kopie <b class="ink-2">${esc(fmtAgo(x.last_copy))}</b></div></div>
+              <ul class="disk-list">${x.disks.map((d) => { const [l, t] = diskState[d.state] || diskState.absent; return `<li><span class="sdot ${t}${d.state === "running" ? " pulse" : ""}"></span><span class="grow">${esc(d.label)}</span><span class="small muted">${esc(l)}</span></li>`; }).join("")}</ul>
+              <div class="small muted">${esc(x.hint)}</div></div>`).join("") :
+              `<div style="padding:0 16px 16px">${empty("Kein Wechselplatten-Satz", "Zwei oder mehr USB-Platten, die täglich oder wöchentlich getauscht werden: eine liegt immer außer Haus.", `<a class="btn sm" href="/wechselplatten" data-go>Einrichten</a>`, "disk")}</div>`}
+          </div>
+          <div class="panel flush"><div class="panel-head"><div class="panel-title">Ereignisse</div><a class="btn gray sm" href="/ereignisse" data-go>Alle</a></div>
+            <div class="rows">${(r.events || []).map(eventItem).join("") || `<div class="row muted">Noch keine Ereignisse.</div>`}</div>
+          </div>
         </div>
-        <div class="panel flush"><div class="panel-head"><div class="panel-title">Letzte Aufgaben</div><a class="btn gray sm" href="/aufgaben" data-go>Alle</a></div>
-          <div class="rows">${tasks.slice(0, 9).map((t) => `<div class="row" style="cursor:pointer" data-task="${esc(t.source)}|${esc(t.upid)}"><span class="when">${fmtTime(t.starttime)}</span><div class="grow"><div class="title">${esc(taskLabel(t.type))} <span class="muted">${esc(t.id || "")}</span></div><div class="t-sub">${esc(t.server)}${t.node ? " · " + esc(t.node) : ""}</div></div>${taskPill(t)}</div>`).join("") || `<div class="row muted">Keine Aufgaben.</div>`}</div>
-        </div>
-        <div class="panel flush"><div class="panel-head"><div class="panel-title">Ereignisse</div><a class="btn gray sm" href="/ereignisse" data-go>Alle</a></div>
-          <div class="rows">${(r.events || []).map((e) => eventRow(e, true)).join("") || `<div class="row muted">Noch keine Ereignisse.</div>`}</div>
-        </div>
-      </div>`;
+      </div></div>`;
     qs("[data-refresh]", el).onclick = (e) => run(e.currentTarget, () => draw(true));
     qsa("[data-task]", el).forEach((row) => row.onclick = () => { const [s, u] = row.dataset.task.split("|"); showTask(s, u, "Aufgabe"); });
   };
@@ -646,6 +682,12 @@ PAGES["/"] = async (el, token) => {
 };
 
 const SEV = { info: ["Info", "blue"], warning: ["Warnung", "amber"], critical: ["Kritisch", "rose"] };
+
+// eventItem is the short form of an event for the dashboard: status dot, title, source and age.
+function eventItem(ev) {
+  const st = ev.details && ev.details.status ? ev.details.status : { critical: "error", warning: "warning" }[ev.severity] || "ok";
+  return `<a class="row ev-item" href="/ereignisse" data-go title="${esc(ev.body || "")}"><span class="sdot ${st}"></span><div class="grow"><div class="title">${esc(ev.title)}</div><div class="t-sub">${esc(ev.source)} · ${esc(fmtAgo(ev.ts))}</div></div></a>`;
+}
 const STATUS = { ok: ["Erfolgreich", "green"], warning: ["Warnung", "amber"], error: ["Fehler", "rose"] };
 
 // eventRow renders an event; with details (guests, facts, log) they open on click.
