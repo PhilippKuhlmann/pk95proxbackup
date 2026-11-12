@@ -105,6 +105,7 @@ type Core struct {
 	health      healthRuntime
 	update      updateRuntime
 	selfBackup  selfBackupRuntime
+	plan        planRuntime
 }
 
 // New creates the core.

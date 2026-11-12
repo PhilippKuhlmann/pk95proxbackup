@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UnescapeWorkerIDForTest exposes unescapeWorkerID to the external tests.
 var UnescapeWorkerIDForTest = unescapeWorkerID
@@ -17,3 +20,6 @@ func SetExecForTest(f func(string, []string, []string) error) func() {
 	execProgram = f
 	return func() { execProgram = old }
 }
+
+// CheckPlanForTest exposes checkPlan.
+func (c *Core) CheckPlanForTest(r Rotation, st RotationState, now time.Time) { c.checkPlan(r, st, now) }

@@ -681,6 +681,8 @@ PAGES["/"] = async (el, token) => {
     if (rt && rt.status === "error") issue("error", "Der letzte Restore-Test ist fehlgeschlagen", "/restoretests");
     if (notBacked) issue("warning", `${notBacked} ${notBacked === 1 ? "VM bzw. Container ist" : "VMs und Container sind"} in keinem Sicherungsjob`, "/sicherungen");
     for (const x of rots.filter((x) => x.overdue && !x.disks.some((d) => d.state === "ready"))) issue("warning", `${x.name}: USB-Kopie überfällig (zuletzt ${fmtAgo(x.last_copy)})`, "/wechselplatten");
+    for (const x of rots.filter((x) => x.check_plan && x.plan_late && (x.plan_state === "swap" || x.plan_state === "missing")))
+      issue("warning", `${x.name}: heute ist „${x.plan_today}“ dran – ${x.plan_state === "swap" ? "es steckt die falsche Platte" : "nicht angesteckt"}`, "/wechselplatten");
     for (const d of stores.filter((d) => d.total && d.used / d.total >= 0.9)) issue("warning", `Datastore ${d.store} ist zu ${pct(d.used, d.total)} % voll`, "/datastores");
     if (rt && rt.status === "warning") issue("warning", `Letzter Restore-Test: ${rt.ok} von ${rt.total} Servern in Ordnung`, "/restoretests");
     for (const d of (r.disk_health || {}).issues || []) {
@@ -740,7 +742,7 @@ PAGES["/"] = async (el, token) => {
         <div class="dash-col">
           <div class="panel flush"><div class="panel-head"><div class="panel-title">Wechselplatten</div><a class="btn gray sm" href="/wechselplatten" data-go>Verwalten</a></div>
             ${rots.length ? rots.map((x) => `<div class="rot-sum"><div class="rot-sum-head"><div><b>${esc(x.name)}</b> <span class="muted small">${x.rhythm === "weekly" ? "wöchentlich" : "täglich"}</span></div><div class="small muted">Letzte Kopie <b class="ink-2">${esc(fmtAgo(x.last_copy))}</b></div></div>
-              <ul class="disk-list">${x.disks.map((d) => { const [l, t] = diskState[d.state] || diskState.absent; return `<li><span class="sdot ${t}${d.state === "running" ? " pulse" : ""}"></span><span class="grow">${esc(d.label)}</span><span class="small muted">${esc(l)}</span></li>`; }).join("")}</ul>
+              <ul class="disk-list">${x.disks.map((d) => { const [l, t] = diskState[d.state] || diskState.absent; return `<li><span class="sdot ${t}${d.state === "running" ? " pulse" : ""}"></span><span class="grow">${esc(d.label)}${d.today ? ` <span class="today-tag">heute dran</span>` : ""}</span><span class="small muted">${esc(l)}</span></li>`; }).join("")}</ul>
               <div class="small muted">${esc(x.hint)}</div></div>`).join("") :
               `<div style="padding:0 16px 16px">${empty("Kein Wechselplatten-Satz", "Zwei oder mehr USB-Platten, die täglich oder wöchentlich getauscht werden: eine liegt immer außer Haus.", `<a class="btn sm" href="/wechselplatten" data-go>Einrichten</a>`, "disk")}</div>`}
           </div>
@@ -1373,27 +1375,28 @@ PAGES["/wechselplatten"] = async (el, token) => {
           · Quelle <b>${esc(x.source_name)}</b> / ${esc(x.source_store)} · Platten an <b>${esc(x.server_name)}</b>
           · ${x.time ? "Kopie täglich um " + esc(x.time) : ""}${x.time && x.run_on_mount ? " und " : ""}${x.run_on_mount ? "beim Anstecken" : ""}
           · kopiert ${transferText(x.transfer_last)} je VM/CT${x.keep_last === 1 && !x.keep_daily && !x.keep_weekly && !x.keep_monthly ? ", auf der Platte bleibt nur die neueste" : ""}</div></div>
-          <div class="actions"><button class="btn gray sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>
+          <div class="actions"><button class="btn gray sm" type="button" data-plan="${x.id}">${icon("calendar")} Wechselplan</button><button class="btn gray sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${x.id}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Satz entfernen" aria-label="Satz entfernen" data-del="${x.id}">${icon("trash")}</button></div></div>
         ${x.error ? callout("red", "Backup-Server nicht erreichbar", esc(x.error)) : ""}
         ${x.overdue ? callout("yellow", "Kopie überfällig", `Letzte erfolgreiche Kopie: ${esc(fmtTime(x.last_copy, true))}.`) : ""}
-        <div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
-          <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? " · Platten werden nach der Kopie ausgehängt" : ""}</div></div></div>
+        ${planCallout(x)}
+        ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : `<div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
+          <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? " · Platten werden nach der Kopie ausgehängt" : ""}</div></div></div>`}
         ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte Kopie</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
           const [l, t] = DISK_STATE[d.state] || DISK_STATE.absent;
           const cls = d.state === "ready" ? "ready" : d.state === "error" ? "error" : d.present ? "present" : "";
           const problem = d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
           return `<tr class="disk-row ${cls}">
-            <td data-l="Platte"><div class="disk-cell"><span class="disk-ic">${icon("disk")}</span><div><div class="t-main">${esc(d.label)}</div><div class="t-sub mono">${esc(d.store)}</div></div></div></td>
+            <td data-l="Platte"><div class="disk-cell"><span class="disk-ic">${icon("disk")}</span><div><div class="t-main">${esc(d.label)}${d.today ? ` <span class="today-tag">heute dran</span>` : ""}</div><div class="t-sub"><span class="mono">${esc(d.store)}</span>${d.plan ? ` · ${esc(d.plan)}` : ""}</div></div></div></td>
             <td data-l="Status">${pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running")}${d.stale ? `<div class="t-sub warnc">lange nicht angesteckt</div>` : ""}</td>
             <td data-l="Letzte Kopie" class="nowrap">${d.last_ok ? `${esc(fmtAgo(d.last_ok))}<div class="t-sub">${esc(fmtTime(d.last_ok, true))}</div>` : '<span class="muted">noch keine</span>'}${problem ? `<div class="t-sub bad">${esc(problem)}</div>` : ""}</td>
             <td data-l="Belegung" class="bar-cell">${d.total ? usageBar(d.used, d.total) : '<span class="muted small">—</span>'}
               <div data-live="${esc(d.label)}" hidden><div class="flex small"><span class="grow" data-live-text></span><b class="mono" data-live-pct></b></div><div class="pbar"><span></span></div></div></td>
             <td data-l="Zustand">${healthCell(d.health)}</td>
             <td class="act"><div class="row-actions">
-              ${d.present && !d.running && !d.phase ? `<button class="btn sm" type="button" data-run="${x.id}|${d.key}">${icon("play")} Kopieren</button>` : ""}
-              ${d.mounted && !d.running ? `<button class="btn gray sm" type="button" data-eject="${x.id}|${d.key}">${icon("eject")} Aushängen</button>` : ""}
+              ${d.present && !d.running && !d.phase ? `<button class="btn sm" type="button" title="Jetzt kopieren" data-run="${x.id}|${d.key}">${icon("play")}<span class="lbl">Kopieren</span></button>` : ""}
+              ${d.mounted && !d.running ? `<button class="btn gray sm" type="button" title="Aushängen – danach kann die Platte abgezogen werden" data-eject="${x.id}|${d.key}">${icon("eject")}<span class="lbl">Aushängen</span></button>` : ""}
               <button class="ib red" type="button" title="Aus dem Satz nehmen" aria-label="Aus dem Satz nehmen" data-rmdisk="${x.id}|${d.key}|${esc(d.label)}">${icon("x")}</button></div></td></tr>`; }).join("")}</tbody></table></div>` :
           empty("Noch keine Platte im Satz", "Platte anstecken und „Platte hinzufügen“ wählen. Für einen sinnvollen Wechsel mindestens zwei Platten.", `<button class="btn sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>`, "disk")}
       </div>`).join("") :
@@ -1411,6 +1414,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
     qsa("[data-usb], [data-usb2]", el).forEach((b) => b.onclick = passthroughDialog);
     bindArchives(el, archives, draw);
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => rotationForm(rots.find((x) => x.id === b.dataset.edit), draw));
+    qsa("[data-plan]", el).forEach((b) => b.onclick = () => planForm(rots.find((x) => x.id === b.dataset.plan), draw));
     qsa("[data-adddisk]", el).forEach((b) => b.onclick = () => addDiskForm(rots.find((x) => x.id === b.dataset.adddisk), draw));
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
       const x = rots.find((y) => y.id === b.dataset.del);
@@ -1432,6 +1436,68 @@ PAGES["/wechselplatten"] = async (el, token) => {
 
 const TRANSFER_OPTIONS = [[1, "Nur die neueste Sicherung"], [2, "Die neuesten 2"], [3, "Die neuesten 3"], [7, "Die neuesten 7"], [14, "Die neuesten 14"], [0, "Alle Sicherungen"]];
 const transferText = (n) => (!n ? "alle Sicherungen" : n === 1 ? "nur die neueste Sicherung" : `die neuesten ${n} Sicherungen`);
+
+// planCallout says which disk is due today according to the swap plan.
+function planCallout(x) {
+  if (!x.plan_today && !x.plan_next) return "";
+  const last = ` · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}`;
+  if (!x.plan_today) return `<div class="callout" style="margin:0 0 16px"><div class="ct"><div class="ch">Heute ist laut Wechselplan keine Platte dran</div><div class="cb">Als Nächstes: ${esc(x.plan_next)}${last}</div></div></div>`;
+  const tone = x.plan_state === "ok" ? "green" : x.plan_late || x.check_plan ? "yellow" : "";
+  const what = x.plan_state === "ok" ? "steckt" : x.plan_state === "swap" ? `angesteckt ist „${x.disks.filter((d) => d.present).map((d) => d.label).join("“, „")}“ – bitte tauschen` : "noch nicht angesteckt";
+  return `<div class="callout ${tone}" style="margin:0 0 16px"><div class="ct"><div class="ch">Heute dran: „${esc(x.plan_today)}“ – ${esc(what)}</div>
+    <div class="cb">${x.plan_next ? "Danach: " + esc(x.plan_next) : ""}${last}${x.check_plan ? " · Eine falsche Platte wird gemeldet." : ""}</div></div></div>`;
+}
+
+const DAY_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const WEEK_OPTS = [["", "jede Woche"], ["1", "1. im Monat"], ["2", "2. im Monat"], ["3", "3. im Monat"], ["4", "4. im Monat"], ["5", "5. im Monat"], ["odd", "ungerade KW"], ["even", "gerade KW"]];
+
+// planForm assigns the disks of a set to weekdays.
+function planForm(x, done) {
+  const row = (d) => `<tr data-key="${esc(d.key)}">
+      <td><input type="text" class="plan-label" value="${esc(d.label)}" aria-label="Name der Platte" maxlength="40"></td>
+      <td><div class="daypick">${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(d.days || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div></td>
+      <td><select class="plan-week" aria-label="Welche Woche">${WEEK_OPTS.map(([v, l]) => `<option value="${v}" ${(d.week || "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></td></tr>`;
+  const n = x.disks.length;
+  formDialog({
+    title: `Wechselplan für ${x.name}`, ic: "calendar", button: "Speichern", cls: "xwide",
+    text: "Welche Platte an welchem Tag dran ist. Maßgeblich ist der Tag, an dem kopiert wird. Für mehrere Platten am selben Wochentag (z. B. Freitag 1–5) die Woche wählen: „1. im Monat“ ist der erste Freitag des Monats.",
+    fields: [
+      { type: "html", name: "plan", wide: true, html: `<div class="flex" style="margin-bottom:10px"><span class="small muted">Vorlage:</span>
+          <button class="btn gray sm" type="button" data-tpl="row">Der Reihe nach Mo–Fr</button>
+          ${n >= 5 ? `<button class="btn gray sm" type="button" data-tpl="fri">Mo–Do + ${n - 4} ${n - 4 === 1 ? "Freitag" : "Freitage"}</button>` : ""}
+          <button class="btn gray sm" type="button" data-tpl="none">Leeren</button></div>
+        <div class="table-wrap"><table class="plan-table"><thead><tr><th>Platte</th><th>Wochentage</th><th>Woche</th></tr></thead><tbody>${x.disks.map(row).join("")}</tbody></table></div>
+        <div class="err" hidden></div>` },
+      { name: "check_plan", label: "Melden, wenn die falsche Platte steckt", type: "checkbox", value: x.check_plan, wide: true,
+        hint: "Beim Anstecken einer Platte, die heute nicht dran ist, und zur Kopierzeit, wenn die geplante Platte fehlt – je einmal am Tag per Mail, Telegram oder Push." },
+    ],
+    onMount: (d) => {
+      const rows = qsa("tbody tr", d);
+      const setRow = (tr, days, week, label) => {
+        qsa('input[type="checkbox"]', tr).forEach((c) => { c.checked = days.includes(+c.value); });
+        qs(".plan-week", tr).value = week;
+        if (label) qs(".plan-label", tr).value = label;
+      };
+      qsa("[data-tpl]", d).forEach((b) => b.onclick = () => {
+        const t = b.dataset.tpl;
+        rows.forEach((tr, i) => {
+          if (t === "none") return setRow(tr, [], "");
+          if (t === "row") return setRow(tr, i < 5 ? [i + 1] : [], "", i < 5 ? ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag"][i] : "");
+          if (i < 4) return setRow(tr, [i + 1], "", ["Montag", "Dienstag", "Mittwoch", "Donnerstag"][i]);
+          const k = i - 3;
+          setRow(tr, k <= 5 ? [5] : [], k <= 5 ? String(k) : "", k <= 5 ? "Freitag " + k : "");
+        });
+      });
+    },
+    submit: async (v, d) => {
+      const disks = qsa("tbody tr", d).map((tr) => ({ key: tr.dataset.key, label: qs(".plan-label", tr).value.trim(),
+        days: qsa('input[type="checkbox"]:checked', tr).map((c) => +c.value), week: qs(".plan-week", tr).value }));
+      await PUT(`/api/rotations/${x.id}/plan`, { check_plan: v.check_plan, disks });
+      toast("Wechselplan gespeichert.");
+      done();
+    },
+  });
+}
 
 function rotationForm(x, done) {
   const edit = !!x;

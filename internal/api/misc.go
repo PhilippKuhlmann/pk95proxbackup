@@ -570,7 +570,7 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 			fail(w, err)
 			return
 		}
-		req.ID, req.Disks = cur.ID, cur.Disks
+		req.ID, req.Disks, req.CheckPlan = cur.ID, cur.Disks, cur.CheckPlan
 		if req.ServerID != cur.ServerID && len(cur.Disks) > 0 {
 			fieldErrs(w, map[string]string{"server_id": "Der Server lässt sich nur ändern, solange keine Platte im Satz ist."})
 			return
@@ -596,6 +596,39 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 	}
 	s.C.RequestRefresh()
 	writeJSON(w, http.StatusOK, map[string]any{"id": req.ID})
+}
+
+func (s *Server) saveRotationPlan(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CheckPlan bool `json:"check_plan"`
+		Disks     []struct {
+			Key   string `json:"key"`
+			Label string `json:"label"`
+			Days  []int  `json:"days"`
+			Week  string `json:"week"`
+		} `json:"disks"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	plan := map[string]core.RotDisk{}
+	for _, d := range req.Disks {
+		if len([]rune(strings.TrimSpace(d.Label))) > 40 {
+			fieldErrs(w, map[string]string{"plan": "Namen höchstens 40 Zeichen."})
+			return
+		}
+		plan[d.Key] = core.RotDisk{Label: d.Label, Days: d.Days, Week: d.Week}
+	}
+	_, msg, err := s.C.SetPlan(r.PathValue("id"), req.CheckPlan, plan)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if msg != "" {
+		fieldErrs(w, map[string]string{"plan": msg})
+		return
+	}
+	ok(w)
 }
 
 func (s *Server) deleteRotation(w http.ResponseWriter, r *http.Request) {

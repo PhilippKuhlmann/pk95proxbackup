@@ -176,6 +176,7 @@ func (s *Server) routes() {
 	a("POST /api/rotations", s.saveRotation)
 	a("PUT /api/rotations/{id}", s.saveRotation)
 	a("DELETE /api/rotations/{id}", s.deleteRotation)
+	a("PUT /api/rotations/{id}/plan", s.saveRotationPlan)
 	a("POST /api/rotations/{id}/disks", s.addRotationDisk)
 	a("DELETE /api/rotations/{id}/disks/{key}", s.removeRotationDisk)
 	a("POST /api/rotations/{id}/disks/{key}/{action}", s.rotationDiskAction)

@@ -13,7 +13,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Datastore benutzen darf, und trägt den Speicher in Proxmox VE ein.
 - **Wechselplatten (USB):** Sätze aus zwei oder mehr Platten, die täglich oder wöchentlich getauscht werden – am PBS
   oder per USB-Durchreichung an dieser VM. Kopieren beim Anstecken und/oder zur Uhrzeit, aufräumen, aushängen,
-  Meldung „kann abgezogen werden“, Erinnerung, wenn eine Platte lange nicht dran war.
+  Meldung „kann abgezogen werden“, Erinnerung, wenn eine Platte lange nicht dran war. Mit **Wechselplan** bekommt
+  jede Platte ihre Wochentage – auch „1. bis 5. Freitag im Monat“ oder gerade/ungerade Kalenderwoche (Vorlage
+  „Mo–Do + Freitag 1–5“) –, die Liste zeigt „heute dran“, und auf Wunsch meldet die Appliance eine falsche Platte.
 - **Archiv-Platten (USB):** einmalige Sicherung auf eine eigene Platte zum Mitnehmen oder Einlagern über Jahre –
   nur die neueste Sicherung je Server, auf Wunsch nur ausgewählte Server, danach vollständig geprüft und ausgehängt.
   Später anstecken und „Prüfen“ liest alles erneut; zum Wiederherstellen erscheint die Platte als Quelle.

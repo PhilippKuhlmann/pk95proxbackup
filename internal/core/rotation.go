@@ -38,6 +38,8 @@ type Rotation struct {
 	KeepWeekly   int       `json:"keep_weekly"`
 	KeepMonthly  int       `json:"keep_monthly"`
 	Disks        []RotDisk `json:"disks"`
+	// CheckPlan reports a disk that is plugged in on the wrong day (see the swap plan).
+	CheckPlan bool `json:"check_plan"`
 }
 
 // RotDisk is one disk of a rotation set.
@@ -46,6 +48,10 @@ type RotDisk struct {
 	Store string `json:"store"` // removable datastore on the target server
 	Label string `json:"label"` // e.g. "Montag", "Woche A"
 	Added int64  `json:"added"`
+	// Swap plan: weekdays (1 = Monday … 7 = Sunday) and which of them ("" every week,
+	// "1"–"5" the n-th in the month, "odd"/"even" calendar weeks).
+	Days []int  `json:"days,omitempty"`
+	Week string `json:"week,omitempty"`
 }
 
 // SyncJobID is the PBS sync job that copies onto the disk.
@@ -292,6 +298,8 @@ type DiskState struct {
 	Stale     bool         `json:"stale"`
 	Error     string       `json:"error,omitempty"`
 	Health    *HealthBrief `json:"health,omitempty"`
+	Plan      string       `json:"plan,omitempty"` // "Montag", "1. Freitag im Monat"
+	Today     bool         `json:"today,omitempty"`
 }
 
 // RotationState is the shown state of a rotation set.
@@ -304,7 +312,13 @@ type RotationState struct {
 	Overdue    bool        `json:"overdue"`
 	NextSwap   string      `json:"next_swap"`
 	Hint       string      `json:"hint"`
-	Error      string      `json:"error,omitempty"`
+	// Swap plan: the disk due today, the next one, and whether the right one is plugged in
+	// ("" no plan today, ok, swap, missing).
+	PlanToday string `json:"plan_today,omitempty"`
+	PlanNext  string `json:"plan_next,omitempty"`
+	PlanState string `json:"plan_state,omitempty"`
+	PlanLate  bool   `json:"plan_late,omitempty"` // the copy time has passed
+	Error     string `json:"error,omitempty"`
 }
 
 type pbsFacts struct {
@@ -430,6 +444,18 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 		}
 		st.Overdue = len(r.Disks) > 0 && ref > 0 && now.Sub(time.Unix(ref, 0)) > grace
 		st.NextSwap, st.Hint = swapHint(r, st, now)
+		if ps := r.planState(st, now); r.HasPlan() {
+			st.PlanToday, st.PlanNext, st.PlanState, st.PlanLate = ps.Today, ps.Next, ps.State, ps.PastTime
+			for i := range st.Disks {
+				st.Disks[i].Plan = st.Disks[i].RotDisk.PlanText()
+				st.Disks[i].Today = ps.TodayKey != "" && st.Disks[i].Key == ps.TodayKey
+			}
+			if ps.Today != "" {
+				st.NextSwap = "heute „" + ps.Today + "“"
+			} else if ps.Next != "" {
+				st.NextSwap = ps.Next
+			}
+		}
 		out = append(out, st)
 	}
 	return out
@@ -745,6 +771,7 @@ func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, no
 				}
 			}
 		}
+		c.checkPlan(r, st, now)
 		c.remind(r, st, now)
 	}
 }

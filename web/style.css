@@ -621,8 +621,19 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
 .preview-links a:hover { color: var(--accent); }
 @media (max-width: 1100px) { .settings-cols { grid-template-columns: minmax(0, 1fr); } .settings-side { position: static; } }
 .disk-table .row-actions { flex-wrap: nowrap; justify-content: flex-end; }
-.disk-table td:nth-child(2) { min-width: 150px; }
-.disk-table td:nth-child(5) { min-width: 160px; }
+.disk-table .btn .lbl { margin-left: 2px; }
+.disk-cell .t-sub { white-space: nowrap; }
+.disk-table .bar-cell { min-width: 100px; }
+@media (min-width: 721px) {
+  .disk-table th, .disk-table td { padding-left: 10px; padding-right: 10px; }
+  .disk-table th:first-child, .disk-table td:first-child { padding-left: 16px; }
+  .disk-table th:last-child, .disk-table td:last-child { padding-right: 16px; }
+}
+@media (min-width: 721px) and (max-width: 1400px) {
+  .disk-table .btn .lbl { display: none; }
+  .disk-table .btn.sm { padding-left: 8px; padding-right: 8px; }
+}
+.disk-table td:nth-child(5) { min-width: 130px; }
 .disk-table td:nth-child(5) .t-sub { white-space: normal; }
 @media (max-width: 720px) {
   .disk-table .disk-row td:first-child { box-shadow: none; }
@@ -634,3 +645,20 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
   .disk-table .row-actions { justify-content: flex-start; margin-top: 6px; }
   .tabbar { margin-left: 0; margin-right: 0; }
 }
+
+/* ---- Wechselplan ---- */
+.today-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--r); font-size: 11px; font-weight: 600; line-height: 18px; background: var(--c50); color: var(--c700); vertical-align: 1px; }
+:root[data-theme="dark"] .today-tag { background: rgba(51, 145, 240, 0.18); color: #93c5fd; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .today-tag { background: rgba(51, 145, 240, 0.18); color: #93c5fd; } }
+.plan-table { width: 100%; border-collapse: collapse; }
+.plan-table th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 6px 8px; }
+.plan-table td { padding: 6px 8px; border-top: 1px solid var(--line-soft); vertical-align: middle; }
+.plan-table .plan-label { min-width: 120px; }
+.plan-table .plan-week { min-width: 130px; }
+.daypick { display: inline-flex; border: 1px solid var(--control, var(--line)); border-radius: var(--r); overflow: hidden; }
+.daypick label { position: relative; cursor: pointer; }
+.daypick input { position: absolute; opacity: 0; pointer-events: none; }
+.daypick span { display: block; min-width: 34px; padding: 7px 0; text-align: center; font-size: 13px; font-weight: 500; color: var(--ink-2); border-left: 1px solid var(--control, var(--line)); user-select: none; }
+.daypick label:first-child span { border-left: 0; }
+.daypick input:checked + span { background: var(--c600); color: #fff; }
+.daypick input:focus-visible + span { outline: 2px solid var(--c500); outline-offset: -2px; }
