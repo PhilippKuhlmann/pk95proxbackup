@@ -299,3 +299,18 @@ func TestSelfBackupRoundTrip(t *testing.T) {
 		t.Fatal("staging must be cleaned up")
 	}
 }
+
+func TestDiskLabel(t *testing.T) {
+	for _, c := range []struct{ vendor, model, want string }{
+		{"INTEL SS", "INTEL_SSDSC2KB960G8", "INTEL SSDSC2KB960G8"},
+		{"unknown", "SanDisk Extreme Pro 500GB", "SanDisk Extreme Pro 500GB"},
+		{"ATA", "WDC_WD30EZRX-00D8PB0", "WDC WD30EZRX-00D8PB0"},
+		{"Seagate", "Expansion HDD", "Seagate Expansion HDD"},
+		{"QEMU", "QEMU HARDDISK", "QEMU HARDDISK"},
+		{"", "", "sdz"},
+	} {
+		if got := core.DiskLabel(core.DiskHealth{Vendor: c.vendor, Model: c.model, Disk: "/dev/sdz"}); got != c.want {
+			t.Errorf("DiskLabel(%q, %q) = %q, want %q", c.vendor, c.model, got, c.want)
+		}
+	}
+}

@@ -448,12 +448,13 @@ func healthFacts(h DiskHealth) []notify.Fact {
 	return f
 }
 
-// DiskLabel names a disk by vendor and model.
+// DiskLabel names a disk by vendor and model ("WDC WD30EZRX-00D8PB0", "SanDisk Extreme Pro 500GB").
 func DiskLabel(h DiskHealth) string {
-	name := strings.TrimSpace(h.Vendor + " " + h.Model)
-	// "ATA" is the bus, not the maker.
-	if h.Vendor == "" || strings.EqualFold(h.Vendor, "ATA") || strings.HasPrefix(strings.ToUpper(h.Model), strings.ToUpper(h.Vendor)) {
-		name = h.Model
+	model := strings.Join(strings.Fields(strings.ReplaceAll(h.Model, "_", " ")), " ")
+	vendor := strings.TrimSpace(h.Vendor)
+	name := model
+	if f := strings.Fields(strings.ToUpper(vendor)); len(f) > 0 && f[0] != "ATA" && f[0] != "UNKNOWN" && !strings.HasPrefix(strings.ToUpper(model), f[0]) {
+		name = vendor + " " + model
 	}
 	if name == "" {
 		name = strings.TrimPrefix(h.Disk, "/dev/")
