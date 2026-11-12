@@ -60,6 +60,8 @@ type PBS struct {
 	users     map[string]bool
 	// foreign holds datastores on disks of other servers: "<uuid>/<path>" → snapshots.
 	foreign map[string][]prox.Snapshot
+	smart   map[string]map[string]any // disk → answer of /disks/smart
+	blobs   map[string][]byte         // store/type/id/time/file → content
 }
 
 // AddForeign puts a datastore of another server onto a partition (read in with reuse-datastore).
@@ -69,7 +71,8 @@ func (p *PBS) AddForeign(uuid, path string, snaps []prox.Snapshot) {
 
 // NewPBS creates an empty server.
 func NewPBS(node string, root int64) *PBS {
-	return &PBS{node: node, root: root, stores: map[string]*store{}, jobs: map[string]*job{}, remotes: map[string]prox.Remote{}, usedExtra: map[string]int64{}, users: map[string]bool{}, foreign: map[string][]prox.Snapshot{}}
+	return &PBS{node: node, root: root, stores: map[string]*store{}, jobs: map[string]*job{}, remotes: map[string]prox.Remote{}, usedExtra: map[string]int64{}, users: map[string]bool{}, foreign: map[string][]prox.Snapshot{},
+		smart: map[string]map[string]any{}, blobs: map[string][]byte{}}
 }
 
 // AddStore adds a datastore (removable when uuid is set).
@@ -367,6 +370,11 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			data(w, s.snaps)
 		case "download-decoded":
+			if b, ok := p.blob(seg[2], f.Get("backup-type"), f.Get("backup-id"), f.Get("backup-time"), f.Get("file-name")); ok {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				_, _ = w.Write(b)
+				return
+			}
 			// the guest configuration stored with a backup
 			name := map[string]string{"250": "alt-fileserver", "251": "alter-mailserver", "200": "erp", "201": "mailserver", "210": "webshop"}[f.Get("backup-id")]
 			if name == "" {
@@ -512,6 +520,8 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		p.remotes[seg[2]] = prox.Remote{Name: seg[2], Host: f.Get("host"), AuthID: f.Get("auth-id"), Fingerprint: f.Get("fingerprint"), Comment: f.Get("comment")}
 		data(w, nil)
+	case path == "/nodes/localhost/disks/smart":
+		p.serveSmart(w, f.Get("disk"))
 	case path == "/nodes/localhost/disks/list":
 		data(w, p.disks)
 	case path == "/nodes/localhost/disks/wipedisk":

@@ -84,6 +84,14 @@ type Core struct {
 	// ReportHTML renders the restore test report; images returns the picture of a result
 	// as content type and data (set by the API).
 	ReportHTML func(run RestoreTestRun, images func(file string) (string, []byte)) []byte
+	// Restart stops the program so that it starts again (set by the app; nil = not possible).
+	Restart func()
+	// InstallBinary replaces the program with a downloaded release (nil = swap the file on
+	// disk; the demo sets a simulation).
+	InstallBinary func(ctx context.Context, bin []byte, version string) error
+	// UploadSelfBackup stores the encrypted configuration in a datastore (nil = with
+	// proxmox-backup-client; the demo sets a simulation).
+	UploadSelfBackup func(ctx context.Context, srv PBSServer, store string, data []byte) error
 
 	mu      sync.Mutex
 	rotBusy map[string]bool
@@ -94,6 +102,9 @@ type Core struct {
 	ovAt        time.Time
 	ovMu        sync.Mutex
 	refresh     chan struct{}
+	health      healthRuntime
+	update      updateRuntime
+	selfBackup  selfBackupRuntime
 }
 
 // New creates the core.

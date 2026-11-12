@@ -53,6 +53,7 @@ const ICONS = {
 "moon": "M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z",
 "sun": "M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z",
 "usb": "M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 002.25-2.25V6.75a2.25 2.25 0 00-2.25-2.25H6.75A2.25 2.25 0 004.5 6.75v10.5a2.25 2.25 0 002.25 2.25zm.75-12h9v9h-9v-9z",
+"heart": "M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z",
 "disk": "M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"
 };
 
@@ -135,6 +136,38 @@ const POST = (p, b) => api("POST", p, b ?? {});
 const PUT = (p, b) => api("PUT", p, b ?? {});
 const DEL = (p) => api("DELETE", p);
 const enc = encodeURIComponent;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// upload posts a form with files (multipart) and returns the JSON answer like api().
+async function upload(path, fd) {
+  let res;
+  try { res = await fetch(path, { method: "POST", headers: { "X-PK95": "1" }, credentials: "same-origin", body: fd }); }
+  catch (e) { throw new Error("Appliance nicht erreichbar."); }
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* empty */ }
+  if (!res.ok) throw Object.assign(new Error(data.error || `Fehler ${res.status}`), { fields: data.fields || null, status: res.status });
+  return data;
+}
+
+// waitForRestart shows a blocking note while the appliance restarts and reloads the page once
+// it answers again (with the expected version, if given).
+async function waitForRestart(title, wantVersion) {
+  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("refresh")}</span><div class="grow"><div class="dlg-title">${esc(title)}</div>
+    <p class="dlg-text">Die Seite lädt neu, sobald die Appliance wieder antwortet. Das dauert meist unter einer Minute.</p></div><span class="spinner"></span></div>`);
+  d.dataset.busy = "1";
+  d.addEventListener("cancel", (e) => e.preventDefault());
+  const t0 = Date.now();
+  let down = false;
+  while (Date.now() - t0 < 240000) {
+    await sleep(2000);
+    try {
+      const r = await fetch("/api/session", { credentials: "same-origin", cache: "no-store" });
+      const s = await r.json();
+      if (wantVersion ? s.version === wantVersion : down || Date.now() - t0 > 10000) break;
+    } catch (e) { down = true; }
+  }
+  location.reload();
+}
 
 // ---------- toasts ----------
 function toast(text, kind = "ok") {
@@ -319,6 +352,7 @@ const NAV = [
   { head: "Speicher" },
   { path: "/datastores", label: "Datastores", icon: "database" },
   { path: "/wechselplatten", label: "Wechselplatten", icon: "disk" },
+  { path: "/festplatten", label: "Festplatten", icon: "heart" },
   { path: "/freigaben", label: "NFS & SMB", icon: "folder" },
   { path: "/kopierjobs", label: "Kopierjobs", icon: "sync" },
   { head: "Verwaltung" },
@@ -562,14 +596,46 @@ function setupPage() {
       ${field({ name: "code", label: "Einrichtungscode", placeholder: "ABCD-EFGH", mono: true })}
       ${field({ name: "username", label: "Benutzername für dich", value: "admin", autocomplete: "username" })}
       ${field({ name: "password", label: "Passwort", type: "password", hint: "Mindestens 10 Zeichen.", autocomplete: "new-password" })}
-      <button class="btn block" type="submit">Konto anlegen und starten</button></form>`, "Danach verbindest du Proxmox VE und den Backup-Server.");
+      <button class="btn block" type="submit">Konto anlegen und starten</button>
+      <p class="small muted" style="margin-top:14px;text-align:center">Ersatz für eine ausgefallene Appliance? <button class="link-btn" type="button" data-restore>Aus einer Sicherung wiederherstellen</button></p></form>`, "Danach verbindest du Proxmox VE und den Backup-Server.");
   qs("[data-theme-icon]").onclick = setTheme;
+  qs("[data-restore]").onclick = setupRestorePage;
   const form = qs("form");
   qs("input", form).focus();
   form.onsubmit = async (e) => {
     e.preventDefault();
     try { const r = await POST("/api/setup", formValues(form)); state.user = r.user; state.setup = false; app.innerHTML = ""; history.replaceState({}, "", "/verbindungen"); render(); }
     catch (err) { showErrors(form, err); }
+  };
+}
+
+function setupRestorePage() {
+  app.innerHTML = sheet("Wiederherstellen", `<form novalidate>
+      <p class="muted" style="font-size:14px">Die Sicherungsdatei (<b>.pk95cfg</b>) stammt aus Einstellungen → Sicherung der Appliance → „Als Datei laden“. Liegt sie nur auf einer Wechselplatte: zuerst ein Konto anlegen, die Platte unter Wechselplatten einlesen und dann unter Einstellungen wiederherstellen.</p>
+      <div class="form-error" hidden></div>
+      ${field({ name: "code", label: "Einrichtungscode", placeholder: "ABCD-EFGH", mono: true, hint: "Steht auf der Konsole der VM." })}
+      <div class="field" data-field="file"><label class="fl" for="f-cfgfile">Sicherungsdatei</label><input type="file" id="f-cfgfile" accept=".pk95cfg,application/octet-stream"><span class="err" hidden></span></div>
+      ${field({ name: "password", label: "Wiederherstellungs-Passwort", type: "password", autocomplete: "off" })}
+      <button class="btn block" type="submit">Wiederherstellen</button>
+      <p class="small muted" style="margin-top:14px;text-align:center"><button class="link-btn" type="button" data-back>Doch neu einrichten</button></p></form>`, "Verbindungen, Pläne, Konten und die Konfiguration des Backup-Servers kommen zurück.");
+  qs("[data-theme-icon]").onclick = setTheme;
+  qs("[data-back]").onclick = setupPage;
+  const form = qs("form");
+  qs("input", form).focus();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = qs('button[type="submit"]', form);
+    try {
+      showErrors(form, null);
+      const f = qs("#f-cfgfile", form).files[0];
+      if (!f) throw Object.assign(new Error("Bitte die Sicherungsdatei wählen."), { fields: { file: "Bitte die Sicherungsdatei (.pk95cfg) wählen." } });
+      const v = formValues(form);
+      const fd = new FormData();
+      fd.append("code", v.code); fd.append("password", v.password); fd.append("file", f);
+      btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Wird geprüft …`;
+      const r = await upload("/api/setup/restore", fd);
+      waitForRestart(`Konfiguration von ${r.host} (${fmtTime(r.created)}) wird eingespielt …`);
+    } catch (err) { showErrors(form, err); btn.disabled = false; btn.textContent = "Wiederherstellen"; }
   };
 }
 
@@ -603,6 +669,7 @@ PAGES["/"] = async (el, token) => {
       const ready = x.disks.filter((d) => d.state === "ready");
       if (ready.length) callouts += callout("green", `${x.name}: Platte kann gewechselt werden`, esc(x.hint), `<a class="btn gray sm" href="/wechselplatten" data-go>Ansehen</a>`);
     }
+    if (r.update && r.update.available) callouts += callout("", `Version ${r.update.latest} ist verfügbar`, `Installiert ist ${esc(r.update.current)}. Das Update dauert etwa eine Minute; laufende Sicherungen in Proxmox laufen weiter.`, `<a class="btn sm" href="/einstellungen" data-go>Ansehen</a>`);
     const rt = r.restore_test;
     const issues = [];
     const issue = (tone, text, href) => issues.push({ tone, text, href });
@@ -615,6 +682,14 @@ PAGES["/"] = async (el, token) => {
     for (const x of rots.filter((x) => x.overdue && !x.disks.some((d) => d.state === "ready"))) issue("warning", `${x.name}: USB-Kopie überfällig (zuletzt ${fmtAgo(x.last_copy)})`, "/wechselplatten");
     for (const d of stores.filter((d) => d.total && d.used / d.total >= 0.9)) issue("warning", `Datastore ${d.store} ist zu ${pct(d.used, d.total)} % voll`, "/datastores");
     if (rt && rt.status === "warning") issue("warning", `Letzter Restore-Test: ${rt.ok} von ${rt.total} Servern in Ordnung`, "/restoretests");
+    for (const d of (r.disk_health || {}).issues || []) {
+      if (d.status === "error") issue("error", `Festplatte ${d.label} bald tauschen: ${d.problem}`, "/festplatten");
+      else issue("warning", `Festplatte ${d.label}: ${d.problem}`, "/festplatten");
+    }
+    for (const a of r.stale_archives || []) issue("warning", `Archiv-Platte „${a.name}“ zuletzt angesteckt ${fmtAgo(a.last_seen)} – einmal prüfen`, "/wechselplatten");
+    const sb = r.selfbackup || {};
+    if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen");
+    else if (sb.enabled && sb.last_error) issue("warning", "Konfiguration der Appliance nicht gesichert: " + sb.last_error, "/einstellungen");
     const errors = issues.filter((i) => i.tone === "error").length;
     const tone = errors ? "error" : issues.length ? "warning" : "ok";
     const headline = tone === "ok" ? "Alles in Ordnung" : errors ? `${errors} ${errors === 1 ? "Problem" : "Probleme"}${issues.length > errors ? ` und ${issues.length - errors} ${issues.length - errors === 1 ? "Hinweis" : "Hinweise"}` : ""}` : `${issues.length} ${issues.length === 1 ? "Hinweis" : "Hinweise"}`;
@@ -1313,6 +1388,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
             <table class="kv"><tr><td>Letzte Kopie</td><td>${d.last_ok ? fmtTime(d.last_ok, true) + ` <span class="muted">(${fmtAgo(d.last_ok)})</span>` : "noch keine"}</td></tr>
               ${d.last_fail > d.last_ok ? `<tr><td>Fehler</td><td class="bad">${fmtTime(d.last_fail)} ${esc(d.last_error || "")}</td></tr>` : ""}
               ${d.stale ? `<tr><td>Hinweis</td><td class="bad">lange nicht angesteckt</td></tr>` : ""}
+              ${healthLine(d.health)}
               ${d.error ? `<tr><td>Problem</td><td class="bad">${esc(d.error)}</td></tr>` : ""}</table>
             <div class="disk-foot">
               <button class="btn sm" type="button" data-run="${x.id}|${d.key}" ${d.present && !d.running && !d.phase ? "" : "disabled"}>${icon("play")} Jetzt kopieren</button>
@@ -1484,7 +1560,7 @@ function archivePanel(list) {
       : a.imported && a.status === "ok" ? ["Eingelesen", "green"] : ARCH_STATUS[a.status] || ARCH_STATUS.error;
     const cls = busy ? "present" : a.status === "error" ? "error" : pull ? "ready" : a.present ? "present" : "";
     const last = (a.checks || []).slice(-1)[0];
-    const age = a.end ? Math.floor((Date.now() / 1000 - a.end) / 86400) : 0;
+    const unseen = a.last_seen ? Math.floor((Date.now() / 1000 - a.last_seen) / 86400) : 0;
     const names = (a.contents || []).map((x) => `${guestKind(x.type)} ${x.id}${x.name ? " " + x.name : ""}`);
     return `<div class="disk ${cls}"><div class="disk-head"><span class="disk-ic">${icon("archive")}</span><div class="grow"><div class="disk-name">${esc(a.name)}</div>
         <div class="disk-meta mono">${esc(a.store)} · ${esc(a.server_name || a.server_id)}</div>
@@ -1499,7 +1575,8 @@ function archivePanel(list) {
         ${a.note ? `<tr><td>Notiz</td><td>${esc(a.note)}</td></tr>` : ""}
         ${a.error ? `<tr><td>Fehler</td><td class="bad">${esc(a.error)}</td></tr>` : ""}
         ${(a.problems || []).length && a.status !== "error" ? `<tr><td>Hinweise</td><td class="bad">${esc(a.problems.join(" · "))}</td></tr>` : ""}
-        ${!busy && a.status === "ok" && age >= 365 ? `<tr><td>Tipp</td><td>Älter als ein Jahr: Platte einmal anstecken und prüfen lassen.</td></tr>` : ""}</table>
+        ${healthLine(a.health)}
+        ${!busy && a.status === "ok" && !a.present && unseen >= 365 ? `<tr><td>Tipp</td><td class="warnc">Seit ${unseen >= 730 ? Math.floor(unseen / 365) + " Jahren" : "über einem Jahr"} nicht angesteckt: Platte einmal anstecken und „Prüfen“ wählen – die Festplatte wird dabei auch auf Fehler untersucht.</td></tr>` : ""}</table>
       <div class="disk-foot">
         <button class="btn sm" type="button" data-acheck="${a.id}" ${a.present && !busy && !a.missing && a.status !== "error" ? "" : "disabled"} title="Einhängen, alle Sicherungen zurücklesen, aushängen">${icon("shield")} Prüfen</button>
         ${!busy && a.mounted ? `<button class="btn gray sm" type="button" data-aeject="${a.id}">${icon("eject")} Aushängen</button>` : ""}
@@ -2320,6 +2397,66 @@ PAGES["/ereignisse"] = async (el, token) => {
   every(30000, token, () => load(false));
 };
 
+// ---------- Festplatten ----------
+const HEALTH = { ok: ["In Ordnung", "green"], warning: ["Beobachten", "amber"], error: ["Bald tauschen", "rose"], unknown: ["Keine Werte", ""] };
+const DISK_KIND = { hdd: "Festplatte", ssd: "SSD", nvme: "NVMe-SSD", usb: "USB-Platte" };
+const fmtYears = (h) => h < 0 ? "—" : h < 8766 ? `${Math.round(h / 730)} Monate` : `${(h / 8766).toFixed(1).replace(".", ",")} Jahre`;
+
+// healthLine is the short health of a rotation or archive disk.
+function healthLine(h) {
+  if (!h) return "";
+  const [l, t] = HEALTH[h.status] || HEALTH.unknown;
+  const what = h.status === "unknown" ? esc(h.note || "keine SMART-Werte") : (h.problems || []).length ? `<span class="${h.status === "error" ? "bad" : ""}">${esc(h.problems.join(" "))}</span>` : "keine Fehler";
+  return `<tr><td>Zustand</td><td>${pill(l, t)} <span class="small">${what}</span><div class="t-sub">SMART geprüft ${esc(fmtAgo(h.last_check))}${h.hours > 0 ? ` · ${fmtYears(h.hours)} in Betrieb` : ""}</div></td></tr>`;
+}
+
+PAGES["/festplatten"] = async (el, token) => {
+  const draw = (disks) => {
+    if (token !== pageToken) return;
+    const n = (st) => disks.filter((d) => d.status === st).length;
+    const groups = new Map();
+    for (const d of disks) {
+      const k = d.host + (d.source.startsWith("pve:") ? " (Proxmox VE)" : "");
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(d);
+    }
+    const state1 = (d) => {
+      if (d.status === "unknown") return `<span class="muted small">${esc(d.note || "Keine SMART-Werte")}</span>`;
+      const p = (d.problems || []).map((x) => `<div class="${d.status === "error" ? "bad" : "warnc"} small">${esc(x)}</div>`).join("");
+      const s = d.smart || {};
+      const facts = [s.reallocated >= 0 ? `${s.reallocated} ersetzte Sektoren` : "", s.wearout >= 0 ? `Lebensdauer ${s.wearout} %` : ""].filter(Boolean).join(" · ");
+      return p || `<span class="small">Keine Fehler</span>${facts ? `<div class="t-sub">${esc(facts)}</div>` : ""}`;
+    };
+    const row = (d) => {
+      const [l, t] = HEALTH[d.status] || HEALTH.unknown;
+      const s = d.smart || {};
+      return `<tr class="${d.present ? "" : "dim"}">
+        <td data-l="Zustand">${pill(l, t, true)}${d.present ? "" : `<div class="t-sub">nicht angeschlossen</div>`}</td>
+        <td data-l="Platte"><div class="t-main">${esc(d.label)}</div><div class="t-sub mono">${esc(d.disk.replace("/dev/", ""))} · ${esc(fmtBytes(d.size))}${d.serial ? " · " + esc(d.serial) : ""}</div></td>
+        <td data-l="Verwendung"><span class="small">${esc(d.use || (d.virtual ? "Virtuelle Platte" : DISK_KIND[d.type] || d.type || "—"))}</span></td>
+        <td data-l="Befund">${state1(d)}</td>
+        <td data-l="In Betrieb" class="nowrap">${s.power_on_hours >= 0 ? esc(fmtYears(s.power_on_hours)) + `<div class="t-sub">${s.power_on_hours.toLocaleString("de-DE")} Std.</div>` : "—"}</td>
+        <td data-l="Temperatur" class="nowrap">${s.temperature >= 0 ? `<span class="${s.temperature >= 60 ? "bad" : ""}">${s.temperature} °C</span>` : "—"}</td>
+        <td data-l="Geprüft" class="nowrap small">${d.virtual ? "—" : esc(fmtAgo(d.last_check))}${d.present ? "" : `<div class="t-sub">gesehen ${esc(fmtAgo(d.last_seen))}</div>`}</td>
+        <td class="act">${d.present ? "" : `<button class="ib red" type="button" title="Aus der Liste entfernen" aria-label="Aus der Liste entfernen" data-forget="${esc(d.id)}">${icon("trash")}</button>`}</td></tr>`;
+    };
+    const bad = n("error"), warn = n("warning");
+    const order = [...groups.keys()].sort((a, b) => (a.includes("(Proxmox VE)") - b.includes("(Proxmox VE)")) || a.localeCompare(b, "de"));
+    el.innerHTML = pageHead("Festplatten", "SMART-Werte aller Platten der Backup-Server und Proxmox-VE-Knoten. Geprüft wird täglich und gleich nach dem Einstecken.", `<button class="btn gray" type="button" data-check>${icon("refresh")} Jetzt prüfen</button>`) +
+      (bad ? callout("red", `${bad} ${bad === 1 ? "Platte sollte" : "Platten sollten"} bald ersetzt werden`, "Unlesbare oder schwebende Sektoren bzw. ein nicht bestandener Selbsttest: Die Platte kann jederzeit ausfallen. Liegt eine Wechselplatte darauf, aus dem Satz nehmen und eine neue hinzufügen.") : "") +
+      (!bad && warn ? callout("yellow", `${warn} ${warn === 1 ? "Platte zeigt" : "Platten zeigen"} erste Verschleißspuren`, "Noch kein Grund zur Sorge, aber im Blick behalten. Wächst die Zahl der ersetzten Sektoren, kommt eine neue Meldung.") : "") +
+      (disks.length ? order.map((host) => [host, groups.get(host)]).map(([host, list]) => `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(host)}</div><span class="muted small">${list.length} ${list.length === 1 ? "Platte" : "Platten"}</span></div>
+        <div class="table-wrap"><table class="resp health-table"><thead><tr><th>Zustand</th><th>Platte</th><th>Verwendung</th><th>Befund</th><th>In Betrieb</th><th>Temp.</th><th>Geprüft</th><th></th></tr></thead><tbody>${list.map(row).join("")}</tbody></table></div></div>`).join("") :
+        `<div class="panel">${empty("Noch keine Platte geprüft", "Die erste Prüfung läuft wenige Minuten nach dem Start. Mit „Jetzt prüfen“ geht es sofort.", "", "heart")}</div>`) +
+      `<p class="muted small">Virtuelle Platten der Appliance haben keine SMART-Werte – die echten Platten darunter prüft sie über Proxmox VE (Recht Sys.Audit). Manche USB-Gehäuse geben keine Werte weiter.</p>`;
+    qs("[data-check]", el).onclick = (e) => run(e.currentTarget, async () => { const r = await POST("/api/health/check"); draw(r.disks); }, "Alle Platten geprüft.");
+    qsa("[data-forget]", el).forEach((b) => b.onclick = () => run(b, async () => { await DEL("/api/health?id=" + enc(b.dataset.forget)); draw((await GET("/api/health")).disks); }));
+  };
+  el.innerHTML = pageHead("Festplatten", "Lade …");
+  draw((await GET("/api/health")).disks);
+  every(60000, token, async () => draw((await GET("/api/health")).disks));
+};
+
 // ---------- Einstellungen ----------
 PAGES["/einstellungen"] = async (el) => {
   const [sys, set] = await Promise.all([GET("/api/system"), GET("/api/settings")]);
@@ -2367,6 +2504,8 @@ PAGES["/einstellungen"] = async (el) => {
           <button class="btn gray" type="button" data-test>Testnachricht senden</button></div>
       </form></div>
     <div>
+      <div class="panel" id="aktualisierung"><div class="panel-head"><div class="panel-title">Aktualisierung</div></div><div data-update></div></div>
+      <div class="panel" id="selbstsicherung"><div class="panel-head"><div class="panel-title">Sicherung der Appliance</div></div><div data-selfbackup></div></div>
       <div class="panel"><div class="panel-head"><div class="panel-title">Appliance</div></div>
         <table class="kv"><tr><td>Version</td><td>PK95 ProxBackup ${esc(sys.version)}</td></tr>
           <tr><td>Hostname</td><td class="mono">${esc(sys.hostname)}</td></tr>
@@ -2421,6 +2560,151 @@ PAGES["/einstellungen"] = async (el) => {
   if (adopt) adopt.onclick = () => { qs('[name="public_url"]', af).value = set.seen_proxy.url; qs('[name="trusted_proxies"]', af).value = set.seen_proxy.proxy_ip; af.requestSubmit(); };
   const pf = qs("[data-pw]", el);
   pf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(pf, null); await POST("/api/account/password", formValues(pf)); pf.reset(); toast("Passwort geändert. Andere Sitzungen wurden abgemeldet."); } catch (err) { showErrors(pf, err); } };
+  updatePanel(qs("[data-update]", el));
+  selfBackupPanel(qs("[data-selfbackup]", el));
+  if (location.hash) { const t = qs(location.hash, el); if (t) t.scrollIntoView({ block: "start" }); }
 };
+
+// notesHTML renders release notes (Markdown headings and lists only).
+function notesHTML(md) {
+  let html = "", list = false;
+  for (const raw of String(md || "").split("\n")) {
+    const line = raw.trim();
+    const item = /^[-*] (.*)/.exec(line);
+    if (item) { if (!list) { html += "<ul>"; list = true; } html += `<li>${esc(item[1])}</li>`; continue; }
+    if (list) { html += "</ul>"; list = false; }
+    if (!line) continue;
+    const h = /^#+ (.*)/.exec(line);
+    html += h ? `<b>${esc(h[1])}</b>` : `<div>${esc(line)}</div>`;
+  }
+  return html + (list ? "</ul>" : "");
+}
+
+const UPDATE_STEPS = [["downloading", "Laden"], ["verifying", "Prüfsumme"], ["installing", "Probelauf und Einsetzen"], ["restarting", "Neustart"]];
+
+async function updatePanel(box) {
+  const draw = (u) => {
+    if (!box.isConnected) return;
+    const busy = UPDATE_STEPS.some(([k]) => k === u.phase);
+    const step = UPDATE_STEPS.findIndex(([k]) => k === u.phase);
+    box.innerHTML = `<table class="kv">
+        <tr><td>Installiert</td><td>PK95 ProxBackup ${esc(u.current)}</td></tr>
+        <tr><td>Neueste Version</td><td>${u.latest ? esc(u.latest) + " " + (u.available ? pill("neu", "blue") : pill("aktuell", "green")) + (u.published ? `<div class="t-sub">veröffentlicht ${esc(fmtTime(u.published))}</div>` : "") : '<span class="muted">noch nicht nachgesehen</span>'}</td></tr>
+        <tr><td>Nachgesehen</td><td>${u.checked ? esc(fmtAgo(u.checked)) : "nie"}${u.error ? `<div class="t-sub bad">${esc(u.error)}</div>` : ""}</td></tr></table>
+      ${u.available && u.notes ? `<div class="mt"><div class="fl">Was ist neu in ${esc(u.latest)}</div><div class="notes">${notesHTML(u.notes)}</div></div>` : ""}
+      ${busy ? `<div class="mt phase-line"><span class="spinner"></span><span>Update auf ${esc(u.latest)} läuft …</span></div>
+        <div class="steps-mini mt">${UPDATE_STEPS.map(([k, l], i) => `<span class="${i < step ? "done" : i === step ? "on" : ""}">${i < step ? "✓ " : ""}${esc(l)}</span>`).join("<span>›</span>")}</div>` : ""}
+      ${u.phase === "failed" ? `<div class="mt">${callout("red", "Update nicht installiert", esc(u.phase_error || ""))}</div>` : ""}
+      ${u.available && !u.can_install ? `<div class="mt">${callout("yellow", "Von hier aus nicht möglich", esc(u.reason || ""))}</div>` : ""}
+      <div class="flex mt">
+        ${u.available ? `<button class="btn" type="button" data-install ${busy || !u.can_install ? "disabled" : ""}>${icon("download")} Auf ${esc(u.latest)} aktualisieren</button>` : ""}
+        <button class="btn gray" type="button" data-check ${busy ? "disabled" : ""}>${icon("refresh")} Nach Updates suchen</button>
+        ${u.url ? `<a class="btn gray" href="${esc(u.url)}" target="_blank" rel="noopener">${icon("external")} Release</a>` : ""}</div>
+      <label class="check mt"><input type="checkbox" data-auto ${u.auto_check ? "checked" : ""}><span class="ct"><span>Zweimal täglich nach Updates suchen</span>
+        <small>Fragt nur bei GitHub nach der neuesten Version; übertragen wird dabei allein die installierte Versionsnummer. Installiert wird nur auf Klick.</small></span></label>`;
+    const ib = qs("[data-install]", box);
+    if (ib) ib.onclick = async () => {
+      const ok = await confirmDialog({ title: `Auf Version ${u.latest} aktualisieren?`, text: "Die Appliance lädt das Programm, prüft die Prüfsumme, testet es und startet neu. Die Oberfläche ist dabei etwa eine Minute nicht erreichbar; Sicherungen, die Proxmox gerade schreibt, laufen weiter. Startet die neue Version nicht, kehrt die Appliance von selbst zur jetzigen zurück.", button: "Jetzt aktualisieren", tone: "", ic: "download" });
+      if (!ok) return;
+      await run(ib, async () => { draw(await POST("/api/update/install")); poll(u.latest); });
+    };
+    qs("[data-check]", box).onclick = (e) => run(e.currentTarget, async () => { const r = await POST("/api/update/check"); draw(r); toast(r.available ? `Version ${r.latest} ist verfügbar.` : "Die Appliance ist auf dem neuesten Stand."); });
+    qs("[data-auto]", box).onchange = async (e) => { try { draw(await PUT("/api/update", { auto_check: e.target.checked })); } catch (err) { toastErr(err); } };
+    if (busy) poll(u.latest);
+  };
+  let polling = false;
+  const poll = async (version) => {
+    if (polling) return;
+    polling = true;
+    while (box.isConnected) {
+      await sleep(1500);
+      let u;
+      try { u = await GET("/api/update"); } catch (e) { break; }
+      if (u.current === version) { polling = false; state.version = u.current; draw(u); toast(`Version ${version} ist installiert.`); return; }
+      if (u.phase === "restarting") break;
+      draw(u);
+      if (!UPDATE_STEPS.some(([k]) => k === u.phase)) { polling = false; return; }
+    }
+    if (box.isConnected) waitForRestart(`Update auf ${version} wird installiert …`, version);
+  };
+  try { draw(await GET("/api/update")); } catch (e) { box.innerHTML = `<p class="bad small">${esc(e.message)}</p>`; }
+}
+
+async function selfBackupPanel(box) {
+  const draw = (sb) => {
+    if (!box.isConnected) return;
+    if (!sb.has_key) {
+      box.innerHTML = `<p class="panel-intro">Verbindungen, Pläne, Konten und die Konfiguration des Backup-Servers werden einmal täglich verschlüsselt in den Datastore geschrieben – und wandern so auch auf die Wechselplatten. Fällt die VM aus, ist eine neue Appliance in wenigen Minuten wieder eingerichtet.</p>
+        <form class="form" data-sbset novalidate><div class="form-error" hidden></div><div class="form-grid">
+          ${field({ name: "password", label: "Wiederherstellungs-Passwort", type: "password", autocomplete: "new-password", hint: "Mindestens 12 Zeichen. Ohne dieses Passwort lässt sich die Sicherung nicht öffnen – im Passwort-Manager oder ausgedruckt beim Notfallordner aufbewahren, nicht nur auf dieser Appliance.", wide: true })}
+          ${field({ name: "repeat", label: "Passwort wiederholen", type: "password", autocomplete: "new-password", wide: true })}
+        </div><div class="flex"><button class="btn" type="submit">${icon("lock")} Festlegen und Sicherung einschalten</button>
+          <button class="btn gray" type="button" data-sbrestore>${icon("restore")} Aus Sicherung wiederherstellen</button></div></form>`;
+      const f = qs("[data-sbset]", box);
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        try { showErrors(f, null); const v = formValues(f); draw(await PUT("/api/selfbackup", { enabled: true, password: v.password, repeat: v.repeat })); toast("Eingeschaltet – die erste Sicherung läuft."); setTimeout(reload, 2500); }
+        catch (err) { showErrors(f, err); }
+      };
+    } else {
+      const ok = sb.last_ok && !sb.last_error;
+      box.innerHTML = `<table class="kv">
+          <tr><td>Status</td><td>${sb.enabled ? pill("Täglich", "green", true) : pill("Ausgeschaltet", "amber", true)}${sb.running ? " " + pill("Läuft", "blue", true, true) : ""}</td></tr>
+          <tr><td>Letzte Sicherung</td><td>${sb.last_ok ? `${esc(fmtTime(sb.last_ok, true))} <span class="muted">(${esc(fmtAgo(sb.last_ok))})</span>` : '<span class="muted">noch keine</span>'}${sb.last_error ? `<div class="t-sub bad">${esc(sb.last_error)}</div>` : ""}</td></tr>
+          ${(sb.targets || []).length ? `<tr><td>Abgelegt in</td><td>${sb.targets.map(esc).join("<br>")}<div class="t-sub">Gruppe host/pk95proxbackup, die letzten 14 Stände${sb.last_size ? " · " + esc(fmtBytes(sb.last_size)) : ""}</div></td></tr>` : ""}</table>
+        <label class="check mt"><input type="checkbox" data-sbon ${sb.enabled ? "checked" : ""}><span class="ct"><span>Täglich sichern</span><small>Die Wechselplatten-Sätze kopieren die Sicherung automatisch mit.</small></span></label>
+        <div class="flex mt">
+          <button class="btn gray" type="button" data-sbrun ${sb.running ? "disabled" : ""}>${icon("play")} Jetzt sichern</button>
+          <a class="btn gray" href="/api/selfbackup/download" download>${icon("download")} Als Datei laden</a>
+          <button class="btn gray" type="button" data-sbpw>${icon("key")} Passwort ändern</button>
+          <button class="btn gray" type="button" data-sbrestore>${icon("restore")} Wiederherstellen …</button></div>
+        ${!ok && sb.enabled && !sb.running && !sb.last_ok ? `<p class="muted small mt">Die erste Sicherung läuft gleich nach dem Einschalten; Voraussetzung ist ein Datastore auf dieser Appliance.</p>` : ""}`;
+      qs("[data-sbon]", box).onchange = async (e) => { try { draw(await PUT("/api/selfbackup", { enabled: e.target.checked })); } catch (err) { toastErr(err); draw(sb); } };
+      qs("[data-sbrun]", box).onclick = (e) => run(e.currentTarget, async () => draw(await POST("/api/selfbackup/run")), "Konfiguration gesichert.");
+      qs("[data-sbpw]", box).onclick = () => formDialog({ title: "Wiederherstellungs-Passwort ändern", ic: "key",
+        text: "Neue Sicherungen werden mit dem neuen Passwort verschlüsselt. Ältere Stände in den Datastores und auf den Wechselplatten lassen sich weiterhin nur mit dem bisherigen öffnen.",
+        fields: [{ name: "password", label: "Neues Passwort", type: "password", autocomplete: "new-password", hint: "Mindestens 12 Zeichen.", wide: true }, { name: "repeat", label: "Wiederholen", type: "password", autocomplete: "new-password", wide: true }],
+        button: "Ändern", submit: async (v) => { draw(await PUT("/api/selfbackup", { enabled: sb.enabled, password: v.password, repeat: v.repeat })); toast("Passwort geändert."); } });
+    }
+    qs("[data-sbrestore]", box).onclick = () => restoreConfigDialog();
+  };
+  const reload = async () => { try { draw(await GET("/api/selfbackup")); } catch (e) { /* keep */ } };
+  try { draw(await GET("/api/selfbackup")); } catch (e) { box.innerHTML = `<p class="bad small">${esc(e.message)}</p>`; }
+}
+
+// restoreConfigDialog replaces the configuration with a backup from a datastore or a file.
+async function restoreConfigDialog() {
+  let found = [];
+  try { found = (await GET("/api/selfbackup/found")).backups || []; } catch (e) { /* only the file then */ }
+  const opts = found.slice(0, 12).map((b, i) => [String(i), `${fmtTime(b.time, true)} · ${b.store}`, `${b.server_name} · ${fmtBytes(b.size)}`]);
+  formDialog({
+    title: "Konfiguration wiederherstellen", ic: "restore", tone: "red", button: "Wiederherstellen und neu starten",
+    text: "Ersetzt alle Einstellungen dieser Appliance – Verbindungen, Pläne, Konten – und die Konfiguration des lokalen Backup-Servers durch den Stand der Sicherung. Danach startet die Appliance neu; angemeldet wird mit den Zugangsdaten aus der Sicherung. Die bisherige Datenbank bleibt als before-restore.db erhalten.",
+    fields: [
+      ...(opts.length ? [{ name: "pick", label: "Sicherung", type: "radio", value: "0", options: [...opts, ["file", "Aus einer Datei", ".pk95cfg von „Als Datei laden“"]] }] :
+        [{ type: "html", name: "nofound", wide: true, html: `<p class="small muted">In den erreichbaren Datastores liegt keine Sicherung. Eine Wechselplatte mit Sicherung lässt sich unter Wechselplatten → „Fremde Platte einlesen“ einbinden – oder die Datei hochladen.</p>` }]),
+      { type: "html", name: "file", wide: true, html: `<div data-filebox ${opts.length ? "hidden" : ""}><label class="fl" for="f-cfgfile">Sicherungsdatei</label><input type="file" id="f-cfgfile" accept=".pk95cfg,application/octet-stream"><span class="err" hidden></span></div>` },
+      { name: "password", label: "Wiederherstellungs-Passwort", type: "password", autocomplete: "off", wide: true },
+    ],
+    onMount: (d) => qsa('[name="pick"]', d).forEach((x) => x.onchange = () => { qs("[data-filebox]", d).hidden = x.value !== "file"; }),
+    submit: async (v, d) => {
+      const useFile = !opts.length || v.pick === "file";
+      let r;
+      if (useFile) {
+        const f = qs("#f-cfgfile", d).files[0];
+        if (!f) throw Object.assign(new Error("Bitte die Sicherungsdatei wählen."), { fields: { file: "Bitte die Sicherungsdatei (.pk95cfg) wählen." } });
+        const fd = new FormData();
+        fd.append("file", f); fd.append("password", v.password);
+        r = await upload("/api/selfbackup/restore", fd);
+      } else {
+        const b = found[+v.pick];
+        r = await POST("/api/selfbackup/restore", { server_id: b.server_id, store: b.store, time: b.time, password: v.password });
+      }
+      d.close();
+      waitForRestart(`Konfiguration von ${r.host} (${fmtTime(r.created)}) wird eingespielt …`);
+      return false;
+    },
+  });
+}
 
 render();

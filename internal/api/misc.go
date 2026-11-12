@@ -48,6 +48,44 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		out["restore_test"] = map[string]any{"plan": run.PlanName, "status": run.Status, "end": run.End, "ok": okN, "total": len(run.Results)}
 		break
 	}
+	// Disks with problems, archive disks that lay unchecked too long.
+	type diskIssue struct {
+		Status  string `json:"status"`
+		Label   string `json:"label"`
+		Host    string `json:"host"`
+		Use     string `json:"use"`
+		Problem string `json:"problem"`
+		Present bool   `json:"present"`
+	}
+	disks := []diskIssue{}
+	counts := map[string]int{}
+	for _, h := range s.C.DiskHealths() {
+		counts[h.Status]++
+		if h.Status == "error" || h.Status == "warning" {
+			p := ""
+			if len(h.Problems) > 0 {
+				p = h.Problems[0]
+			}
+			disks = append(disks, diskIssue{Status: h.Status, Label: core.DiskLabel(h.DiskHealth), Host: h.Host, Use: h.Use, Problem: p, Present: h.Present})
+		}
+	}
+	out["disk_health"] = map[string]any{"counts": counts, "issues": disks}
+	stale := []map[string]any{}
+	if list, err := s.C.Archives(); err == nil {
+		for _, a := range list {
+			if a.Status == "running" {
+				continue
+			}
+			if last := s.C.ArchiveLastSeen(a); last > 0 && time.Since(time.Unix(last, 0)) > core.ArchiveCheckAfter {
+				stale = append(stale, map[string]any{"id": a.ID, "name": a.Name, "last_seen": last})
+			}
+		}
+	}
+	out["stale_archives"] = stale
+	up := s.C.Update()
+	out["update"] = map[string]any{"available": up.Available, "latest": up.Latest, "current": up.Current}
+	sb := s.C.SelfBackup()
+	out["selfbackup"] = map[string]any{"enabled": sb.Enabled, "has_key": sb.HasKey, "last_ok": sb.LastOK, "last_error": sb.LastError}
 	writeJSON(w, http.StatusOK, out)
 }
 

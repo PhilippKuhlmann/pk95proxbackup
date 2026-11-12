@@ -19,6 +19,17 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Später anstecken und „Prüfen“ liest alles erneut; zum Wiederherstellen erscheint die Platte als Quelle.
 - **Fremde Platten einlesen:** USB-Platte mit dem Datastore eines anderen Backup-Servers (Kundenplatte, altes Archiv)
   einbinden, ohne etwas zu löschen – danach wiederherstellen und automatisch per Restore-Test prüfen.
+- **Festplatten (SMART):** alle Platten der Backup-Server und der Proxmox-VE-Knoten werden täglich und gleich nach dem
+  Einstecken geprüft – schwebende oder unlesbare Sektoren, ersetzte Sektoren, Selbsttest, SSD-Verschleiß, Temperatur.
+  Wird eine Platte schlechter, kommt eine Meldung. Archiv-Platten, die über ein Jahr nicht angesteckt waren, erscheinen
+  als Hinweis in der Übersicht.
+- **Update per Klick:** die Appliance sieht zweimal täglich bei GitHub nach (übertragen wird nur die Versionsnummer),
+  prüft die Prüfsumme, testet das neue Programm vor dem Einsetzen und kehrt von selbst zur alten Version zurück, wenn
+  die neue dreimal nicht startet.
+- **Sicherung der Appliance selbst:** Datenbank, SSH-Schlüssel, Zertifikat und die Konfiguration des lokalen PBS
+  (`/etc/proxmox-backup`, Mount-Units) werden täglich mit einem Wiederherstellungs-Passwort verschlüsselt (AES-256-GCM,
+  scrypt) als Gruppe `host/pk95proxbackup` in den Datastore geschrieben und wandern so auf die Wechselplatten. Eine
+  neue Appliance lässt sich bei der Ersteinrichtung aus der Datei oder später aus einem Datastore wiederherstellen.
 - **Überwachung und Benachrichtigung** (E-Mail, Telegram, ntfy, Gotify, Webhook): fehlgeschlagene Aufgaben, Server offline,
   Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig. Telegram: Bot bei @BotFather anlegen,
   ihm schreiben (oder in die Gruppe aufnehmen), „Chat-ID ermitteln“ liest die Chat-ID aus; Screenshots und Berichte
@@ -80,7 +91,19 @@ einem vorhandenen Proxmox Backup Server. PBS wird nur installiert, wenn er fehlt
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/PhilippKuhlmann/pk95proxbackup/main/install/appliance.sh)"
 ```
 
-Erneut ausgeführt, holt das Skript die neueste Version.
+Erneut ausgeführt, holt das Skript die neueste Version. Ab Version 1.5.0 geht das auch in der Oberfläche unter
+Einstellungen → Aktualisierung.
+
+### Ersatz für eine ausgefallene Appliance
+
+1. Neue Appliance installieren (wie oben).
+2. Bei der Ersteinrichtung „Aus einer Sicherung wiederherstellen“ wählen, die Datei (`.pk95cfg`, unter
+   Einstellungen → Sicherung der Appliance → „Als Datei laden“) und das Wiederherstellungs-Passwort angeben.
+3. Gibt es die Datei nicht, aber eine Wechselplatte: Konto anlegen, die Platte unter Wechselplatten →
+   „Fremde Platte einlesen“ einbinden, dann Einstellungen → Sicherung der Appliance → „Wiederherstellen“.
+
+Danach sind Verbindungen, Pläne, Konten und die PBS-Konfiguration zurück; Datastore-Platten und Freigaben müssen
+wieder angeschlossen sein.
 
 ## Erste Schritte
 

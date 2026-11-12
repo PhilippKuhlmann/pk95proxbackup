@@ -252,6 +252,7 @@ func (c *Core) Run(ctx context.Context) {
 	defer tick.Stop()
 	var prev *Overview
 	localTry := time.Time{}
+	go c.afterStart(ctx)
 	for {
 		if time.Since(localTry) > 2*time.Minute {
 			localTry = time.Now()
@@ -264,6 +265,9 @@ func (c *Core) Run(ctx context.Context) {
 		c.reportBackups(ctx, &ov)
 		c.scheduleRotations(ctx, ov.Rotations, time.Now())
 		c.scheduleRestoreTests(time.Now())
+		c.scheduleDiskHealth(time.Now())
+		c.scheduleUpdateCheck(time.Now())
+		c.scheduleSelfBackup(time.Now())
 		prev = &ov
 		_ = c.St.PruneSessions()
 		_ = c.St.PruneEvents(180 * 24 * time.Hour)

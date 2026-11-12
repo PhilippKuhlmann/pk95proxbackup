@@ -80,6 +80,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/login", s.login)
 	m.HandleFunc("POST /api/logout", s.logout)
 	m.HandleFunc("POST /api/setup", s.setup)
+	m.HandleFunc("POST /api/setup/restore", s.setupRestore)
 
 	a := func(pattern string, h http.HandlerFunc) { m.Handle(pattern, s.auth(h)) }
 
@@ -94,6 +95,19 @@ func (s *Server) routes() {
 	a("GET /api/settings/preview", s.previewMail)
 	a("PUT /api/settings/access", s.putAccess)
 	a("POST /api/account/password", s.changePassword)
+	a("GET /api/health", s.listHealth)
+	a("POST /api/health/check", s.checkHealth)
+	a("DELETE /api/health", s.forgetHealth)
+	a("GET /api/update", s.getUpdate)
+	a("PUT /api/update", s.putUpdate)
+	a("POST /api/update/check", s.checkUpdate)
+	a("POST /api/update/install", s.installUpdate)
+	a("GET /api/selfbackup", s.getSelfBackup)
+	a("PUT /api/selfbackup", s.putSelfBackup)
+	a("POST /api/selfbackup/run", s.runSelfBackup)
+	a("GET /api/selfbackup/download", s.downloadSelfBackup)
+	a("GET /api/selfbackup/found", s.foundSelfBackups)
+	a("POST /api/selfbackup/restore", s.restoreSelfBackup)
 
 	// Backup Servers
 	a("POST /api/probe", s.probe)

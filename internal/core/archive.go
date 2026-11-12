@@ -87,6 +87,9 @@ type ArchiveState struct {
 	Mounted    bool   `json:"mounted"`
 	Busy       bool   `json:"busy"`
 	Missing    bool   `json:"missing"` // datastore no longer configured
+	// LastSeen is when the disk was last plugged in, copied or checked.
+	LastSeen int64        `json:"last_seen"`
+	Health   *HealthBrief `json:"health,omitempty"`
 }
 
 var archivePhaseLabel = map[string]string{
@@ -127,9 +130,11 @@ func (c *Core) ArchiveStates(ctx context.Context) []ArchiveState {
 		}
 	}
 	factsBy := map[string]pbsFacts{}
+	hidx := c.healthIndex()
 	out := []ArchiveState{}
 	for _, a := range list {
-		st := ArchiveState{Archive: a, ServerName: names[a.ServerID], SourceName: names[a.SourceServer], Busy: c.ArchiveBusy(a.ID)}
+		st := ArchiveState{Archive: a, ServerName: names[a.ServerID], SourceName: names[a.SourceServer], Busy: c.ArchiveBusy(a.ID),
+			Health: hidx.archive[a.ID], LastSeen: c.ArchiveLastSeen(a)}
 		if st.Status == "running" && !st.Busy {
 			// The appliance was restarted during the copy.
 			st.Status, st.Phase, st.Error = "error", "", "Abgebrochen: Die Appliance wurde während der Sicherung neu gestartet."
@@ -339,6 +344,8 @@ func (c *Core) runArchive(ctx context.Context, id string, check bool) {
 			for _, g := range a.Groups {
 				gf = append(gf, "group:"+g)
 			}
+			// The configuration of the appliance always goes along.
+			gf = append(gf, "group:"+selfBackupType+"/"+selfBackupID)
 			p["group-filter"] = gf
 		}
 		upid, err := pbs.StartTask(ctx, "/pull", p)

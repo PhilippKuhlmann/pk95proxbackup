@@ -346,3 +346,9 @@ func (s *Store) PruneEvents(maxAge time.Duration) error {
 	_, err := s.db.Exec("DELETE FROM events WHERE ts < ?", time.Now().Add(-maxAge).Unix())
 	return err
 }
+
+// Backup writes a consistent copy of the database to path (which must not exist).
+func (s *Store) Backup(path string) error {
+	_, err := s.db.Exec("VACUUM INTO ?", path)
+	return err
+}

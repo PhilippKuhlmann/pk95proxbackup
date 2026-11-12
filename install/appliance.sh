@@ -61,6 +61,11 @@ EOF
   apt-get update -q >/dev/null || true
 fi
 
+# The appliance stores the encrypted backup of its own configuration with proxmox-backup-client.
+if command -v proxmox-backup-manager >/dev/null && ! command -v proxmox-backup-client >/dev/null; then
+  apt-get install -y -q proxmox-backup-client >/dev/null || true
+fi
+
 blue "Lade PK95 ProxBackup (${RELEASE})"
 if [[ -n "${PK95PB_BINARY:-}" ]]; then
   install -m 0755 "$PK95PB_BINARY" /usr/local/bin/pk95proxbackup.new

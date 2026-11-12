@@ -174,6 +174,16 @@ func startTLS(h http.Handler) (*httptest.Server, string) {
 
 // ---- demo setup ----
 
+// Servers are the simulated servers of the last Setup (for tests).
+type Servers struct {
+	Local, Offsite *PBS
+	PVE            *PVE
+	GitHub         *GitHub
+}
+
+// Current holds the servers of the last Setup.
+var Current Servers
+
 // Setup starts the simulated servers and registers them (once) in the store.
 func Setup(c *core.Core) (func(), error) {
 	local := NewPBS("pbs-appliance", 120*gib)
@@ -257,6 +267,42 @@ func Setup(c *core.Core) (func(), error) {
 	pve.tasks.seed("pve2", "vzdump", "112", "ERROR: VM 112 - unable to find configuration file", now.Add(-20*time.Hour), time.Minute)
 	local.tasks.seed("pbs-appliance", "syncjob", "pk95r-demo-a1:backup:usb-a", "OK", now.Add(-26*time.Hour), 18*time.Minute)
 
+	// SMART: disk A is fine, the spare Seagate has replaced sectors, the Intenso adapter
+	// passes no SMART values on, the virtual disk has none.
+	local.SetSmart("sdc", SmartATA("passed", 0, 0, 8760, 34))
+	local.SetSmart("sdd", SmartATA("passed", 8, 0, 21500, 38))
+	pve.AddNodeDisk("pve1", prox.NodeDisk{DevPath: "/dev/nvme0n1", Model: "Samsung SSD 980 PRO 1TB", Serial: "S5GXNF0R123456", Size: 1000 * gib, Type: "nvme", Health: "PASSED", Wearout: "97", Used: "LVM"},
+		PVESmartNVMe(3, 0, 9120, 41))
+	pve.AddNodeDisk("pve1", prox.NodeDisk{DevPath: "/dev/sda", Vendor: "ATA", Model: "WDC WD40EFRX-68N32N0", Serial: "WD-WCC7K1234567", Size: 3726 * gib, Type: "hdd", Health: "PASSED", Wearout: "N/A", Used: "ZFS"},
+		PVESmartATA(0, 0, 34100, 36))
+	pve.AddNodeDisk("pve2", prox.NodeDisk{DevPath: "/dev/sda", Vendor: "ATA", Model: "CT500MX500SSD1", Serial: "2117E5A1B2C3", Size: 465 * gib, Type: "ssd", Health: "PASSED", Wearout: "8", Used: "LVM"},
+		PVESmartATA(0, 0, 27800, 39))
+	pve.AddNodeDisk("pve2", prox.NodeDisk{DevPath: "/dev/sdb", Vendor: "ATA", Model: "ST4000VN008-2DR166", Serial: "ZGY8ABCD", Size: 3726 * gib, Type: "hdd", Health: "PASSED", Wearout: "N/A", Used: "ZFS"},
+		PVESmartATA(0, 0, 15200, 35))
+
+	// Updates: a newer release on a simulated GitHub, installed only in memory.
+	gh := NewGitHub(NextMinor(c.Version))
+	core.GitHubAPI, core.GitHubWeb = gh.URL, gh.URL
+	c.InstallBinary = func(ctx context.Context, _ []byte, version string) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+		c.Version = version
+		return nil
+	}
+	// Configuration backups go into the simulated datastores.
+	byServer := map[string]*PBS{"local": local, "buero": offsite}
+	c.UploadSelfBackup = func(_ context.Context, srv core.PBSServer, st string, b []byte) error {
+		p := byServer[srv.ID]
+		if p == nil || !p.AddBlob(st, "host", "pk95proxbackup", time.Now().Unix(), "pk95proxbackup.conf.blob", b) {
+			return fmt.Errorf("datastore %s nicht erreichbar", st)
+		}
+		return nil
+	}
+
+	Current = Servers{Local: local, Offsite: offsite, PVE: pve, GitHub: gh}
 	tg := Telegram()
 	notify.TelegramAPI = tg.URL
 	ls, lfp := startTLS(local)
@@ -313,7 +359,7 @@ func Setup(c *core.Core) (func(), error) {
 	local.updateDatastore("backup", url.Values{"gc-schedule": {"daily"}, "comment": {"Hauptspeicher (2 TB virtuelle Disk)"}})
 	local.updateDatastore("nas-backup", url.Values{"gc-schedule": {"sun 06:00"}, "comment": {"Synology per NFS"}})
 
-	return func() { ls.Close(); os_.Close(); ps.Close(); tg.Close() }, nil
+	return func() { ls.Close(); os_.Close(); ps.Close(); tg.Close(); gh.Close() }, nil
 }
 
 // ---- runner ----

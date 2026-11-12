@@ -2,6 +2,7 @@ package prox
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -418,6 +419,11 @@ func boolNil(b bool) any {
 // SnapshotFile downloads a decoded file of a snapshot, e.g. "qemu-server.conf.blob" or
 // "pct.conf.blob" (the guest configuration stored with every backup).
 func (p *PBS) SnapshotFile(ctx context.Context, store, ns, typ, id string, t int64, file string) ([]byte, error) {
+	return p.SnapshotFileMax(ctx, store, ns, typ, id, t, file, 1<<20)
+}
+
+// SnapshotFileMax is SnapshotFile for files up to max bytes (larger ones are an error).
+func (p *PBS) SnapshotFileMax(ctx context.Context, store, ns, typ, id string, t int64, file string, max int64) ([]byte, error) {
 	resp, err := p.Stream(ctx, "/admin/datastore/"+url.PathEscape(store)+"/download-decoded", Params{
 		"ns": emptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t, "file-name": file,
 	})
@@ -425,7 +431,11 @@ func (p *PBS) SnapshotFile(ctx context.Context, store, ns, typ, id string, t int
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err == nil && int64(len(b)) > max {
+		return nil, fmt.Errorf("%s ist größer als %d MiB", file, max>>20)
+	}
+	return b, err
 }
 
 // GuestNameFromConfig reads the name of a VM ("name: …") or container ("hostname: …")

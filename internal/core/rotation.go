@@ -279,18 +279,19 @@ func (c *Core) doneBusy(key string) {
 // DiskState is the shown state of one rotation disk.
 type DiskState struct {
 	RotDisk
-	Present   bool   `json:"present"`
-	Mounted   bool   `json:"mounted"`
-	State     string `json:"state"` // absent, idle, running, ready, error
-	Phase     string `json:"phase,omitempty"`
-	LastOK    int64  `json:"last_ok"`
-	LastFail  int64  `json:"last_fail"`
-	LastError string `json:"last_error,omitempty"`
-	Running   bool   `json:"running"`
-	Total     int64  `json:"total"`
-	Used      int64  `json:"used"`
-	Stale     bool   `json:"stale"`
-	Error     string `json:"error,omitempty"`
+	Present   bool         `json:"present"`
+	Mounted   bool         `json:"mounted"`
+	State     string       `json:"state"` // absent, idle, running, ready, error
+	Phase     string       `json:"phase,omitempty"`
+	LastOK    int64        `json:"last_ok"`
+	LastFail  int64        `json:"last_fail"`
+	LastError string       `json:"last_error,omitempty"`
+	Running   bool         `json:"running"`
+	Total     int64        `json:"total"`
+	Used      int64        `json:"used"`
+	Stale     bool         `json:"stale"`
+	Error     string       `json:"error,omitempty"`
+	Health    *HealthBrief `json:"health,omitempty"`
 }
 
 // RotationState is the shown state of a rotation set.
@@ -359,6 +360,7 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 	}
 	out := []RotationState{}
 	for _, r := range rots {
+		hidx := c.healthIndex()
 		st := RotationState{Rotation: r, Disks: []DiskState{}, ServerName: names[r.ServerID], SourceName: names[r.SourceServer]}
 		f, ok := factsBy[r.ServerID]
 		if !ok {
@@ -418,6 +420,7 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 				ref = d.Added
 			}
 			ds.Stale = len(r.Disks) > 1 && now.Sub(time.Unix(ref, 0)) > limit
+			ds.Health = hidx.rotation[r.ID+"/"+d.Key]
 			st.Disks = append(st.Disks, ds)
 		}
 		grace := time.Duration(r.RhythmDays()+1) * 24 * time.Hour

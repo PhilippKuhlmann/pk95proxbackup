@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"pk95proxbackup/internal/api"
@@ -39,11 +40,21 @@ type Config struct {
 	NoTLS    bool
 }
 
+// ErrRestart is returned by Run when the program should start again (after an update or a
+// restored configuration).
+var ErrRestart = errors.New("restart")
+
 // Run starts everything and blocks until ctx is done.
 func Run(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return err
 	}
+	if err := core.ApplyStagedRestore(cfg.DataDir); err != nil {
+		log.Printf("Wiederherstellung einspielen: %v", err)
+	}
+	ctx, stopRun := context.WithCancel(ctx)
+	defer stopRun()
+	var restart atomic.Bool
 	st, err := store.Open(filepath.Join(cfg.DataDir, "pk95proxbackup.db"))
 	if err != nil {
 		return err
@@ -55,6 +66,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	c := core.New(st, cfg.DataDir, cfg.Version, signer)
 	c.SelfUUID = core.ReadSelfUUID
+	c.Restart = func() {
+		restart.Store(true)
+		stopRun()
+	}
 	if cfg.Demo {
 		stop, err := fake.Setup(c)
 		if err != nil {
@@ -122,7 +137,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(sctx)
+	err = srv.Shutdown(sctx)
+	if restart.Load() {
+		return ErrRestart
+	}
+	return err
 }
 
 // ensureSetupCode writes a one-time code while no account exists and shows it on the console.

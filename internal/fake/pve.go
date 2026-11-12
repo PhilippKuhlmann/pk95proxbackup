@@ -37,6 +37,7 @@ type PVE struct {
 	jobN                int
 	// NoPrivs simulates a token without rights (privilege separation, no ACL).
 	NoPrivs bool
+	disks   map[string][]NodeDisk
 }
 
 // NewPVE creates a cluster with the given nodes.
@@ -335,6 +336,10 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		taskLog(w, p.tasks.get(upid))
 	case len(seg) == 4 && seg[2] == "hardware" && seg[3] == "usb":
 		data(w, p.usb[seg[1]])
+	case len(seg) == 4 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "list":
+		p.serveDisks(w, seg[1])
+	case len(seg) == 4 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "smart":
+		p.serveSmart(w, seg[1], f.Get("disk"))
 	case len(seg) == 3 && seg[0] == "nodes" && seg[2] == "network":
 		data(w, []map[string]string{{"iface": "vmbr0", "type": "bridge"}, {"iface": "vmbr1", "type": "bridge"}})
 	case len(seg) == 3 && seg[0] == "nodes" && seg[2] == "status":
