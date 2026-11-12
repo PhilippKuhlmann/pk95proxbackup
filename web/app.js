@@ -538,7 +538,8 @@ async function render() {
       if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
   }
-  const page = PAGES[location.pathname] || PAGES["/"];
+  const sub = Object.keys(PAGES).find((k) => k !== "/" && location.pathname.startsWith(k + "/"));
+  const page = PAGES[location.pathname] || PAGES[sub] || PAGES["/"];
   const el = qs("#page");
   const token = pageToken;
   try { await page(el, token); }
@@ -669,7 +670,7 @@ PAGES["/"] = async (el, token) => {
       const ready = x.disks.filter((d) => d.state === "ready");
       if (ready.length) callouts += callout("green", `${x.name}: Platte kann gewechselt werden`, esc(x.hint), `<a class="btn gray sm" href="/wechselplatten" data-go>Ansehen</a>`);
     }
-    if (r.update && r.update.available) callouts += callout("", `Version ${r.update.latest} ist verfügbar`, `Installiert ist ${esc(r.update.current)}. Das Update dauert etwa eine Minute; laufende Sicherungen in Proxmox laufen weiter.`, `<a class="btn sm" href="/einstellungen" data-go>Ansehen</a>`);
+    if (r.update && r.update.available) callouts += callout("", `Version ${r.update.latest} ist verfügbar`, `Installiert ist ${esc(r.update.current)}. Das Update dauert etwa eine Minute; laufende Sicherungen in Proxmox laufen weiter.`, `<a class="btn sm" href="/einstellungen/aktualisierung" data-go>Ansehen</a>`);
     const rt = r.restore_test;
     const issues = [];
     const issue = (tone, text, href) => issues.push({ tone, text, href });
@@ -688,8 +689,8 @@ PAGES["/"] = async (el, token) => {
     }
     for (const a of r.stale_archives || []) issue("warning", `Archiv-Platte „${a.name}“ zuletzt angesteckt ${fmtAgo(a.last_seen)} – einmal prüfen`, "/wechselplatten");
     const sb = r.selfbackup || {};
-    if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen");
-    else if (sb.enabled && sb.last_error) issue("warning", "Konfiguration der Appliance nicht gesichert: " + sb.last_error, "/einstellungen");
+    if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen/sicherung");
+    else if (sb.enabled && sb.last_error) issue("warning", "Konfiguration der Appliance nicht gesichert: " + sb.last_error, "/einstellungen/sicherung");
     const errors = issues.filter((i) => i.tone === "error").length;
     const tone = errors ? "error" : issues.length ? "warning" : "ok";
     const headline = tone === "ok" ? "Alles in Ordnung" : errors ? `${errors} ${errors === 1 ? "Problem" : "Probleme"}${issues.length > errors ? ` und ${issues.length - errors} ${issues.length - errors === 1 ? "Hinweis" : "Hinweise"}` : ""}` : `${issues.length} ${issues.length === 1 ? "Hinweis" : "Hinweise"}`;
@@ -1379,22 +1380,21 @@ PAGES["/wechselplatten"] = async (el, token) => {
         ${x.overdue ? callout("yellow", "Kopie überfällig", `Letzte erfolgreiche Kopie: ${esc(fmtTime(x.last_copy, true))}.`) : ""}
         <div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
           <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? " · Platten werden nach der Kopie ausgehängt" : ""}</div></div></div>
-        ${x.disks.length ? `<div class="rot-disks">${x.disks.map((d) => {
+        ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte Kopie</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
           const [l, t] = DISK_STATE[d.state] || DISK_STATE.absent;
           const cls = d.state === "ready" ? "ready" : d.state === "error" ? "error" : d.present ? "present" : "";
-          return `<div class="disk ${cls}"><div class="disk-head"><span class="disk-ic">${icon("disk")}</span><div class="grow"><div class="disk-name">${esc(d.label)}</div><div class="disk-meta mono">${esc(d.store)}</div><div style="margin-top:6px">${pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running")}</div></div></div>
-            ${d.total ? usageBar(d.used, d.total) : ""}
-            <div data-live="${esc(d.label)}" hidden><div class="flex small"><span class="grow" data-live-text></span><b class="mono" data-live-pct></b></div><div class="pbar"><span></span></div></div>
-            <table class="kv"><tr><td>Letzte Kopie</td><td>${d.last_ok ? fmtTime(d.last_ok, true) + ` <span class="muted">(${fmtAgo(d.last_ok)})</span>` : "noch keine"}</td></tr>
-              ${d.last_fail > d.last_ok ? `<tr><td>Fehler</td><td class="bad">${fmtTime(d.last_fail)} ${esc(d.last_error || "")}</td></tr>` : ""}
-              ${d.stale ? `<tr><td>Hinweis</td><td class="bad">lange nicht angesteckt</td></tr>` : ""}
-              ${healthLine(d.health)}
-              ${d.error ? `<tr><td>Problem</td><td class="bad">${esc(d.error)}</td></tr>` : ""}</table>
-            <div class="disk-foot">
-              <button class="btn sm" type="button" data-run="${x.id}|${d.key}" ${d.present && !d.running && !d.phase ? "" : "disabled"}>${icon("play")} Jetzt kopieren</button>
-              <button class="btn gray sm" type="button" data-eject="${x.id}|${d.key}" ${d.mounted && !d.running ? "" : "disabled"}>${icon("eject")} Aushängen</button>
-              <span class="grow"></span>
-              <button class="ib red" type="button" title="Aus dem Satz nehmen" aria-label="Aus dem Satz nehmen" data-rmdisk="${x.id}|${d.key}|${esc(d.label)}">${icon("x")}</button></div></div>`; }).join("")}</div>` :
+          const problem = d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
+          return `<tr class="disk-row ${cls}">
+            <td data-l="Platte"><div class="disk-cell"><span class="disk-ic">${icon("disk")}</span><div><div class="t-main">${esc(d.label)}</div><div class="t-sub mono">${esc(d.store)}</div></div></div></td>
+            <td data-l="Status">${pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running")}${d.stale ? `<div class="t-sub warnc">lange nicht angesteckt</div>` : ""}</td>
+            <td data-l="Letzte Kopie" class="nowrap">${d.last_ok ? `${esc(fmtAgo(d.last_ok))}<div class="t-sub">${esc(fmtTime(d.last_ok, true))}</div>` : '<span class="muted">noch keine</span>'}${problem ? `<div class="t-sub bad">${esc(problem)}</div>` : ""}</td>
+            <td data-l="Belegung" class="bar-cell">${d.total ? usageBar(d.used, d.total) : '<span class="muted small">—</span>'}
+              <div data-live="${esc(d.label)}" hidden><div class="flex small"><span class="grow" data-live-text></span><b class="mono" data-live-pct></b></div><div class="pbar"><span></span></div></div></td>
+            <td data-l="Zustand">${healthCell(d.health)}</td>
+            <td class="act"><div class="row-actions">
+              ${d.present && !d.running && !d.phase ? `<button class="btn sm" type="button" data-run="${x.id}|${d.key}">${icon("play")} Kopieren</button>` : ""}
+              ${d.mounted && !d.running ? `<button class="btn gray sm" type="button" data-eject="${x.id}|${d.key}">${icon("eject")} Aushängen</button>` : ""}
+              <button class="ib red" type="button" title="Aus dem Satz nehmen" aria-label="Aus dem Satz nehmen" data-rmdisk="${x.id}|${d.key}|${esc(d.label)}">${icon("x")}</button></div></td></tr>`; }).join("")}</tbody></table></div>` :
           empty("Noch keine Platte im Satz", "Platte anstecken und „Platte hinzufügen“ wählen. Für einen sinnvollen Wechsel mindestens zwei Platten.", `<button class="btn sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>`, "disk")}
       </div>`).join("") :
       empty("Noch kein Wechselplatten-Satz", "Ein Satz sind zwei oder mehr USB-Platten (z. B. „Montag“ bis „Freitag“ oder „Woche A“ und „Woche B“). Jede Platte wird ein eigener Wechsel-Datastore; die Appliance kopiert die Sicherungen darauf, räumt auf, hängt die Platte aus und meldet, wann gewechselt werden kann.", `<button class="btn" type="button" data-add2>${icon("plus")} Satz anlegen</button>`, "disk")) +
@@ -2410,6 +2410,14 @@ function healthLine(h) {
   return `<tr><td>Zustand</td><td>${pill(l, t)} <span class="small">${what}</span><div class="t-sub">SMART geprüft ${esc(fmtAgo(h.last_check))}${h.hours > 0 ? ` · ${fmtYears(h.hours)} in Betrieb` : ""}</div></td></tr>`;
 }
 
+// healthCell is the short health of a rotation disk in its table row.
+function healthCell(h) {
+  if (!h) return '<span class="muted small">noch nicht geprüft</span>';
+  const [l, t] = HEALTH[h.status] || HEALTH.unknown;
+  const sub = h.status === "warning" || h.status === "error" ? (h.problems || [])[0] || "" : h.hours > 0 ? `${fmtYears(h.hours)} in Betrieb` : h.note || "";
+  return `${pill(l, t)}${sub ? `<div class="t-sub ${h.status === "error" ? "bad" : h.status === "warning" ? "warnc" : ""}">${esc(sub)}</div>` : ""}`;
+}
+
 PAGES["/festplatten"] = async (el, token) => {
   const draw = (disks) => {
     if (token !== pageToken) return;
@@ -2458,84 +2466,78 @@ PAGES["/festplatten"] = async (el, token) => {
 };
 
 // ---------- Einstellungen ----------
+const SET_TABS = [
+  ["", "Benachrichtigungen", "bell"], ["sicherung", "Sicherung der Appliance", "shield"], ["aktualisierung", "Aktualisierung", "download"],
+  ["zugriff", "Zugriff", "globe"], ["system", "System", "server"], ["konto", "Konto", "user"],
+];
+
 PAGES["/einstellungen"] = async (el) => {
-  const [sys, set] = await Promise.all([GET("/api/system"), GET("/api/settings")]);
+  const tab = location.pathname.replace(/^\/einstellungen\/?/, "").split("/")[0];
+  const cur = SET_TABS.find((t) => t[0] === tab) || SET_TABS[0];
+  const head = pageHead("Einstellungen") + `<nav class="tabbar" aria-label="Bereiche der Einstellungen">${SET_TABS.map(([k, l, ic]) =>
+    `<a href="/einstellungen${k ? "/" + k : ""}" data-go ${k === cur[0] ? 'aria-current="page"' : ""}>${icon(ic)}<span>${esc(l)}</span>${k === "aktualisierung" ? '<span class="tab-dot" data-update-dot hidden></span>' : ""}</a>`).join("")}</nav>`;
+  el.innerHTML = head + `<div class="settings-body" data-tab></div>`;
+  GET("/api/update").then((u) => { const d = qs("[data-update-dot]", el); if (d && u.available) d.hidden = false; }).catch(() => {});
+  const on = qs('.tabbar [aria-current="page"]', el);
+  if (on) on.scrollIntoView({ block: "nearest", inline: "center" });
+  const box = qs("[data-tab]", el);
+  await SET_PAGES[cur[0]](box);
+};
+
+const SET_PAGES = {};
+
+SET_PAGES[""] = async (box) => {
+  const set = await GET("/api/settings");
   const n = set.notify;
-  el.innerHTML = pageHead("Einstellungen") + `<div class="grid">
-    <div class="panel"><div class="panel-head"><div class="panel-title">Benachrichtigungen</div></div>
-      <form class="form" data-notify novalidate><div class="form-error" hidden></div>
-        <div class="form-grid">
-          ${field({ name: "min_severity", label: "Melden ab", type: "select", value: n.min_severity, options: [["info", "Alles – auch erfolgreiche Sicherungen und „Platte kann gewechselt werden“"], ["warning", "Nur Warnungen und Fehler"], ["critical", "Nur Fehler"]], wide: true })}
-        </div>
-        <div class="section"><div class="form-grid">
-          ${field({ name: "mail_enabled", label: "Per E-Mail", type: "checkbox", value: n.mail_enabled, wide: true })}
-          ${field({ name: "smtp_host", label: "SMTP-Server", value: n.smtp_host, mono: true, placeholder: "smtp.example.org" })}
-          ${field({ name: "smtp_port", label: "Port", type: "number", value: n.smtp_port })}
-          ${field({ name: "smtp_security", label: "Verschlüsselung", type: "select", value: n.smtp_security, options: [["starttls", "STARTTLS (587)"], ["tls", "TLS (465)"], ["none", "keine"]] })}
-          ${field({ name: "smtp_user", label: "Benutzer", value: n.smtp_user })}
-          ${field({ name: "smtp_password", label: "Passwort", type: "password", placeholder: set.has_smtp_password ? "unverändert" : "" })}
-          ${field({ name: "mail_from", label: "Absender", value: n.mail_from, placeholder: "backup@example.org" })}
-          ${field({ name: "mail_to", label: "Empfänger", value: n.mail_to, placeholder: "ich@example.org, …", wide: true })}
-          ${field({ name: "mail_links", label: "Knopf „Details ansehen“ in Mails", type: "checkbox", value: n.mail_links, wide: true, hint: "Nur einschalten, wenn die Empfänger sich an der Appliance anmelden können. Kunden ohne Zugang bekommen alles in der Mail: Details, Screenshots und den Bericht als Anhang." })}
-        </div></div>
-        <div class="section"><div class="form-grid">
-          ${field({ name: "hook_enabled", label: "Per Push (ntfy, Gotify, Webhook)", type: "checkbox", value: n.hook_enabled, wide: true })}
-          ${field({ name: "hook_kind", label: "Art", type: "select", value: n.hook_kind, options: [["ntfy", "ntfy"], ["gotify", "Gotify"], ["json", "Webhook (JSON)"]] })}
-          ${field({ name: "hook_url", label: "URL", value: n.hook_url, mono: true, placeholder: "https://ntfy.sh/mein-thema", wide: true })}
-          ${field({ name: "hook_token", label: "Token (optional)", type: "password", placeholder: set.has_hook_token ? "unverändert" : "" })}
-        </div></div>
-        <div class="section"><div class="form-grid">
-          ${field({ name: "telegram_enabled", label: "Per Telegram", type: "checkbox", value: n.telegram_enabled, wide: true, hint: "Bot bei @BotFather anlegen (/newbot), dem Bot eine Nachricht schreiben oder ihn in die Gruppe aufnehmen – dann „Chat-ID ermitteln“." })}
-          ${field({ name: "telegram_token", label: "Bot-Token", type: "password", mono: true, placeholder: set.has_telegram_token ? "unverändert" : "123456789:AA…", wide: true })}
-          ${field({ name: "telegram_chat", label: "Chat-ID", value: n.telegram_chat, mono: true, placeholder: "z. B. 123456789 oder -100…", button: "Chat-ID ermitteln", wide: true, hint: "Person, Gruppe oder Kanal (@kanalname). Gruppen-IDs beginnen mit einem Minus." })}
-          ${field({ type: "html", name: "telegram_found", wide: true, html: `<div data-tg-chats></div>` })}
-          ${field({ name: "telegram_files", label: "Screenshots und Berichte mitschicken", type: "checkbox", value: n.telegram_files, wide: true, hint: "Bei Restore-Tests: die Bildschirmfotos als Bilder und den Bericht als Datei." })}
-        </div></div>
-        <div class="section"><div class="section-title">So sieht die Mail aus</div>
-          <div class="hint">Grün bei Erfolg, Gelb bei Warnungen (z. B. einzelne VMs nicht gesichert), Rot bei Fehlern – jeweils mit der Liste der gesicherten VMs und Container.</div>
-          <div class="flex"><span class="small muted">Vorschau:</span>
-            <a class="btn gray sm" href="/api/settings/preview?status=ok" target="_blank" rel="noopener"><span class="dot green"></span> Erfolg</a>
-            <a class="btn gray sm" href="/api/settings/preview?status=warning" target="_blank" rel="noopener"><span class="dot amber"></span> Warnung</a>
-            <a class="btn gray sm" href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a>
-            <a class="btn gray sm" href="/api/settings/preview?status=usb" target="_blank" rel="noopener"><span class="dot green"></span> USB fertig</a>
-            <a class="btn gray sm" href="/api/settings/preview?status=restoretest" target="_blank" rel="noopener"><span class="dot green"></span> Restore-Test</a></div></div>
-        <div class="flex"><button class="btn" type="submit">Speichern</button>
-          <select data-test-status aria-label="Art der Testnachricht" style="width:auto;min-width:0"><option value="ok">Test: Erfolg</option><option value="warning">Test: Warnung</option><option value="error">Test: Fehler</option><option value="usb">Test: USB fertig</option><option value="restoretest">Test: Restore-Test (mit Bildern und Bericht)</option></select>
-          <button class="btn gray" type="button" data-test>Testnachricht senden</button></div>
-      </form></div>
-    <div>
-      <div class="panel" id="aktualisierung"><div class="panel-head"><div class="panel-title">Aktualisierung</div></div><div data-update></div></div>
-      <div class="panel" id="selbstsicherung"><div class="panel-head"><div class="panel-title">Sicherung der Appliance</div></div><div data-selfbackup></div></div>
-      <div class="panel"><div class="panel-head"><div class="panel-title">Appliance</div></div>
-        <table class="kv"><tr><td>Version</td><td>PK95 ProxBackup ${esc(sys.version)}</td></tr>
-          <tr><td>Hostname</td><td class="mono">${esc(sys.hostname)}</td></tr>
-          <tr><td>Adressen</td><td class="mono">${(sys.ips || []).map(esc).join("<br>") || "—"}</td></tr>
-          <tr><td>Backup-Server</td><td>${sys.local_pbs ? "Proxmox Backup Server ist in dieser VM installiert (Weboberfläche: Port 8007, Anmeldung root)" : "kein lokaler PBS"}</td></tr>
-          <tr><td>Angemeldet</td><td>${esc(sys.user)}</td></tr></table>
-        ${sys.local_pbs && (sys.ips || []).length ? `<div class="mt"><a class="btn gray" href="https://${esc(sys.ips[0])}:8007" target="_blank" rel="noopener">${icon("external")} PBS-Oberfläche öffnen</a></div>` : ""}</div>
-      <div class="panel"><div class="panel-head"><div class="panel-title">Zugriff & Reverse Proxy</div></div>
-        <form class="form" data-access novalidate><div class="form-error" hidden></div>
-          ${set.seen_proxy && set.seen_proxy.url ? `<div class="callout" style="margin:0"><div class="ct"><div class="ch">Reverse Proxy erkannt</div><div class="cb">${esc(set.seen_proxy.url)} über ${esc(set.seen_proxy.proxy_ip)}</div></div>
-            <div class="flex"><button class="btn gray sm" type="button" data-adopt>Übernehmen</button></div></div>` : ""}
-          <div class="form-grid">
-            ${field({ name: "public_url", label: "Adresse der Oberfläche", value: set.access.public_url, placeholder: set.public_url, mono: true, wide: true, hint: "Für die Links in Mails und Push-Nachrichten. Leer = automatisch (jetzt: " + set.public_url + ")." })}
-            ${field({ name: "trusted_proxies", label: "IP des Reverse Proxys", value: (set.access.trusted_proxies || []).join(", "), mono: true, wide: true, placeholder: "z. B. 192.168.1.2", hint: "Dann gilt die Login-Sperre für die echte Adresse des Aufrufers statt für den Proxy. Du kommst gerade von " + set.client_ip + (set.client_ip !== set.remote_ip ? " (über " + set.remote_ip + ")" : "") + "." })}
-          </div>
-          <div class="hint">Proxy-Ziel: <code>https://${esc((sys.ips || [])[0] || "IP")}:443</code> (Zertifikatsprüfung aus, selbst signiert) oder <code>http://${esc((sys.ips || [])[0] || "IP")}:80</code>; der Proxy muss dann <code>X-Forwarded-Proto: https</code> mitschicken. Websockets sind nicht nötig.</div>
-          <div><button class="btn" type="submit">Speichern</button></div></form></div>
-      <div class="panel"><div class="panel-head"><div class="panel-title">SSH-Schlüssel der Appliance</div></div>
-        <p class="panel-intro">Für NFS/SMB-Freigaben auf einem externen PBS. Auf dem PBS eintragen:</p>${codeBlock(`mkdir -p /root/.ssh && echo '${sys.ssh_key}' >> /root/.ssh/authorized_keys`)}</div>
-      <div class="panel"><div class="panel-head"><div class="panel-title">Passwort ändern</div></div>
-        <form class="form" data-pw novalidate><div class="form-error" hidden></div><div class="form-grid">
-          ${field({ name: "current", label: "Aktuelles Passwort", type: "password", autocomplete: "current-password" })}
-          ${field({ name: "new", label: "Neues Passwort", type: "password", hint: "Mindestens 10 Zeichen.", autocomplete: "new-password" })}
-        </div><div><button class="btn" type="submit">Passwort ändern</button></div></form></div>
-    </div></div>`;
-  bindCopy(el);
-  const nf = qs("[data-notify]", el);
+  box.innerHTML = `<form class="settings-cols" data-notify novalidate>
+    <div class="settings-main">
+      <div class="form-error" hidden></div>
+      <div class="panel"><div class="panel-head"><div class="panel-title">E-Mail</div></div><div class="form-grid">
+        ${field({ name: "mail_enabled", label: "Per E-Mail benachrichtigen", type: "checkbox", value: n.mail_enabled, wide: true })}
+        ${field({ name: "smtp_host", label: "SMTP-Server", value: n.smtp_host, mono: true, placeholder: "smtp.example.org" })}
+        ${field({ name: "smtp_port", label: "Port", type: "number", value: n.smtp_port })}
+        ${field({ name: "smtp_security", label: "Verschlüsselung", type: "select", value: n.smtp_security, options: [["starttls", "STARTTLS (587)"], ["tls", "TLS (465)"], ["none", "keine"]] })}
+        ${field({ name: "smtp_user", label: "Benutzer", value: n.smtp_user })}
+        ${field({ name: "smtp_password", label: "Passwort", type: "password", placeholder: set.has_smtp_password ? "unverändert" : "" })}
+        ${field({ name: "mail_from", label: "Absender", value: n.mail_from, placeholder: "backup@example.org" })}
+        ${field({ name: "mail_to", label: "Empfänger", value: n.mail_to, placeholder: "ich@example.org, …", wide: true })}
+        ${field({ name: "mail_links", label: "Knopf „Details ansehen“ in Mails", type: "checkbox", value: n.mail_links, wide: true, hint: "Nur einschalten, wenn die Empfänger sich an der Appliance anmelden können. Kunden ohne Zugang bekommen alles in der Mail: Details, Screenshots und den Bericht als Anhang." })}
+      </div></div>
+      <div class="panel"><div class="panel-head"><div class="panel-title">Telegram</div></div><div class="form-grid">
+        ${field({ name: "telegram_enabled", label: "Per Telegram benachrichtigen", type: "checkbox", value: n.telegram_enabled, wide: true, hint: "Bot bei @BotFather anlegen (/newbot), dem Bot eine Nachricht schreiben oder ihn in die Gruppe aufnehmen – dann „Chat-ID ermitteln“." })}
+        ${field({ name: "telegram_token", label: "Bot-Token", type: "password", mono: true, placeholder: set.has_telegram_token ? "unverändert" : "123456789:AA…", wide: true })}
+        ${field({ name: "telegram_chat", label: "Chat-ID", value: n.telegram_chat, mono: true, placeholder: "z. B. 123456789 oder -100…", button: "Chat-ID ermitteln", wide: true, hint: "Person, Gruppe oder Kanal (@kanalname). Gruppen-IDs beginnen mit einem Minus." })}
+        ${field({ type: "html", name: "telegram_found", wide: true, html: `<div data-tg-chats></div>` })}
+        ${field({ name: "telegram_files", label: "Screenshots und Berichte mitschicken", type: "checkbox", value: n.telegram_files, wide: true, hint: "Bei Restore-Tests: die Bildschirmfotos als Bilder und den Bericht als Datei." })}
+      </div></div>
+      <div class="panel"><div class="panel-head"><div class="panel-title">Push (ntfy, Gotify, Webhook)</div></div><div class="form-grid">
+        ${field({ name: "hook_enabled", label: "Per Push benachrichtigen", type: "checkbox", value: n.hook_enabled, wide: true })}
+        ${field({ name: "hook_kind", label: "Art", type: "select", value: n.hook_kind, options: [["ntfy", "ntfy"], ["gotify", "Gotify"], ["json", "Webhook (JSON)"]] })}
+        ${field({ name: "hook_token", label: "Token (optional)", type: "password", placeholder: set.has_hook_token ? "unverändert" : "" })}
+        ${field({ name: "hook_url", label: "URL", value: n.hook_url, mono: true, placeholder: "https://ntfy.sh/mein-thema", wide: true })}
+      </div></div>
+    </div>
+    <div class="settings-side">
+      <div class="panel"><div class="panel-head"><div class="panel-title">Was gemeldet wird</div></div>
+        <div class="form-grid">${field({ name: "min_severity", label: "Melden ab", type: "select", value: n.min_severity, options: [["info", "Alles – auch Erfolge und „Platte kann gewechselt werden“"], ["warning", "Nur Warnungen und Fehler"], ["critical", "Nur Fehler"]], wide: true })}</div>
+        <div class="flex mt"><button class="btn" type="submit">Speichern</button></div></div>
+      <div class="panel"><div class="panel-head"><div class="panel-title">Testen</div></div>
+        <p class="panel-intro">Schickt eine Nachricht über alle eingeschalteten Wege – mit den Angaben im Formular, auch ungespeichert.</p>
+        <select data-test-status aria-label="Art der Testnachricht"><option value="ok">Erfolg</option><option value="warning">Warnung</option><option value="error">Fehler</option><option value="usb">USB fertig</option><option value="restoretest">Restore-Test (mit Bildern und Bericht)</option></select>
+        <div class="flex mt"><button class="btn gray" type="button" data-test>${icon("bell")} Testnachricht senden</button></div></div>
+      <div class="panel"><div class="panel-head"><div class="panel-title">So sieht die Mail aus</div></div>
+        <p class="panel-intro">Grün bei Erfolg, Gelb bei Warnungen, Rot bei Fehlern – jeweils mit der Liste der gesicherten VMs und Container.</p>
+        <div class="preview-links">
+          <a href="/api/settings/preview?status=ok" target="_blank" rel="noopener"><span class="dot green"></span> Erfolg</a>
+          <a href="/api/settings/preview?status=warning" target="_blank" rel="noopener"><span class="dot amber"></span> Warnung</a>
+          <a href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a>
+          <a href="/api/settings/preview?status=usb" target="_blank" rel="noopener"><span class="dot green"></span> USB fertig</a>
+          <a href="/api/settings/preview?status=restoretest" target="_blank" rel="noopener"><span class="dot green"></span> Restore-Test</a></div></div>
+    </div></form>`;
+  const nf = qs("[data-notify]", box);
   const nv = () => { const v = formValues(nf); v.smtp_port = Number(v.smtp_port) || 587; return { notify: v }; };
   nf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(nf, null); await PUT("/api/settings", nv()); toast("Gespeichert."); } catch (err) { showErrors(nf, err); } };
-  const tgBtn = qs('[data-fbtn="telegram_chat"]', el), tgBox = qs("[data-tg-chats]", el);
+  const tgBtn = qs('[data-fbtn="telegram_chat"]', box), tgBox = qs("[data-tg-chats]", box);
   tgBtn.onclick = () => run(tgBtn, async () => {
     showErrors(nf, null);
     tgBox.innerHTML = "";
@@ -2552,17 +2554,60 @@ PAGES["/einstellungen"] = async (el) => {
     tgBox.innerHTML = `<div class="fl">Welcher Chat?</div><div class="radio-cards">${r.chats.map((c, i) => `<label class="radio-card"><input type="radio" name="tg_pick" value="${i}"><span><b>${esc(c.title || String(c.id))}</b><small>${esc(kind[c.type] || c.type)} · <span class="mono">${c.id}</span></small></span></label>`).join("")}</div>`;
     qsa('[name="tg_pick"]', tgBox).forEach((x) => x.onchange = () => set1(r.chats[+x.value]));
   });
-  qs("[data-test]", el).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test?status=" + qs("[data-test-status]", el).value, nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
-  const af = qs("[data-access]", el);
+  qs("[data-test]", box).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test?status=" + qs("[data-test-status]", box).value, nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
+};
+
+SET_PAGES.sicherung = async (box) => {
+  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Sicherung der Appliance</div></div><div data-selfbackup></div></div></div>`;
+  await selfBackupPanel(qs("[data-selfbackup]", box));
+};
+
+SET_PAGES.aktualisierung = async (box) => {
+  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Aktualisierung</div></div><div data-update></div></div></div>`;
+  await updatePanel(qs("[data-update]", box));
+};
+
+SET_PAGES.zugriff = async (box) => {
+  const [sys, set] = await Promise.all([GET("/api/system"), GET("/api/settings")]);
+  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Adresse und Reverse Proxy</div></div>
+    <form class="form" data-access novalidate><div class="form-error" hidden></div>
+      ${set.seen_proxy && set.seen_proxy.url ? `<div class="callout" style="margin:0"><div class="ct"><div class="ch">Reverse Proxy erkannt</div><div class="cb">${esc(set.seen_proxy.url)} über ${esc(set.seen_proxy.proxy_ip)}</div></div>
+        <div class="flex"><button class="btn gray sm" type="button" data-adopt>Übernehmen</button></div></div>` : ""}
+      <div class="form-grid">
+        ${field({ name: "public_url", label: "Adresse der Oberfläche", value: set.access.public_url, placeholder: set.public_url, mono: true, wide: true, hint: "Für die Links in Mails und Push-Nachrichten. Leer = automatisch (jetzt: " + set.public_url + ")." })}
+        ${field({ name: "trusted_proxies", label: "IP des Reverse Proxys", value: (set.access.trusted_proxies || []).join(", "), mono: true, wide: true, placeholder: "z. B. 192.168.1.2", hint: "Dann gilt die Login-Sperre für die echte Adresse des Aufrufers statt für den Proxy. Du kommst gerade von " + set.client_ip + (set.client_ip !== set.remote_ip ? " (über " + set.remote_ip + ")" : "") + "." })}
+      </div>
+      <div class="hint">Proxy-Ziel: <code>https://${esc((sys.ips || [])[0] || "IP")}:443</code> (Zertifikatsprüfung aus, selbst signiert) oder <code>http://${esc((sys.ips || [])[0] || "IP")}:80</code>; der Proxy muss dann <code>X-Forwarded-Proto: https</code> mitschicken. Websockets sind nicht nötig.</div>
+      <div><button class="btn" type="submit">Speichern</button></div></form></div></div>`;
+  const af = qs("[data-access]", box);
   const av = () => { const v = formValues(af); return { public_url: v.public_url.trim(), trusted_proxies: v.trusted_proxies.split(/[\s,]+/).filter(Boolean) }; };
   af.onsubmit = async (e) => { e.preventDefault(); try { showErrors(af, null); await PUT("/api/settings/access", av()); toast("Gespeichert."); render(); } catch (err) { showErrors(af, err); } };
-  const adopt = qs("[data-adopt]", el);
+  const adopt = qs("[data-adopt]", box);
   if (adopt) adopt.onclick = () => { qs('[name="public_url"]', af).value = set.seen_proxy.url; qs('[name="trusted_proxies"]', af).value = set.seen_proxy.proxy_ip; af.requestSubmit(); };
-  const pf = qs("[data-pw]", el);
+};
+
+SET_PAGES.system = async (box) => {
+  const sys = await GET("/api/system");
+  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Appliance</div></div>
+      <table class="kv"><tr><td>Version</td><td>PK95 ProxBackup ${esc(sys.version)} <a class="small" href="/einstellungen/aktualisierung" data-go>Aktualisierung</a></td></tr>
+        <tr><td>Hostname</td><td class="mono">${esc(sys.hostname)}</td></tr>
+        <tr><td>Adressen</td><td class="mono">${(sys.ips || []).map(esc).join("<br>") || "—"}</td></tr>
+        <tr><td>Backup-Server</td><td>${sys.local_pbs ? "Proxmox Backup Server ist in dieser VM installiert (Weboberfläche: Port 8007, Anmeldung root)" : "kein lokaler PBS"}</td></tr></table>
+      ${sys.local_pbs && (sys.ips || []).length ? `<div class="mt"><a class="btn gray" href="https://${esc(sys.ips[0])}:8007" target="_blank" rel="noopener">${icon("external")} PBS-Oberfläche öffnen</a></div>` : ""}</div>
+    <div class="panel"><div class="panel-head"><div class="panel-title">SSH-Schlüssel der Appliance</div></div>
+      <p class="panel-intro">Für NFS/SMB-Freigaben auf einem externen PBS. Auf dem PBS eintragen:</p>${codeBlock(`mkdir -p /root/.ssh && echo '${sys.ssh_key}' >> /root/.ssh/authorized_keys`)}</div></div>`;
+  bindCopy(box);
+};
+
+SET_PAGES.konto = async (box) => {
+  const sys = await GET("/api/system");
+  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Passwort ändern</div><span class="muted small">Angemeldet als <b>${esc(sys.user)}</b></span></div>
+    <form class="form" data-pw novalidate><div class="form-error" hidden></div><div class="form-grid">
+      ${field({ name: "current", label: "Aktuelles Passwort", type: "password", autocomplete: "current-password", wide: true })}
+      ${field({ name: "new", label: "Neues Passwort", type: "password", hint: "Mindestens 10 Zeichen. Andere Sitzungen werden danach abgemeldet.", autocomplete: "new-password", wide: true })}
+    </div><div><button class="btn" type="submit">Passwort ändern</button></div></form></div></div>`;
+  const pf = qs("[data-pw]", box);
   pf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(pf, null); await POST("/api/account/password", formValues(pf)); pf.reset(); toast("Passwort geändert. Andere Sitzungen wurden abgemeldet."); } catch (err) { showErrors(pf, err); } };
-  updatePanel(qs("[data-update]", el));
-  selfBackupPanel(qs("[data-selfbackup]", el));
-  if (location.hash) { const t = qs(location.hash, el); if (t) t.scrollIntoView({ block: "start" }); }
 };
 
 // notesHTML renders release notes (Markdown headings and lists only).
