@@ -103,7 +103,7 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 main { margin-left: 256px; padding: 64px 0 40px; min-height: 100vh; }
 .collapsed .sidebar { transform: translateX(-100%); }
 .collapsed main { margin-left: 0; }
-.wrap { max-width: 1440px; }
+.wrap { max-width: 1600px; margin-inline: auto; }
 
 /* ---- page header ---- */
 .page-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 12px 4px; }
@@ -476,7 +476,7 @@ button.radio-card:hover { border-color: var(--c300); background: var(--c50); }
 /* ---- dashboard ----
    One question first (is everything backed up?), then the numbers, then two independent
    columns – each stacks on its own, so a tall panel never leaves a gap next to a short one. */
-.dash { max-width: 1680px; container-type: inline-size; }
+.dash { container-type: inline-size; }
 .sdot { width: 8px; height: 8px; border-radius: 999px; flex: none; background: var(--faint); }
 .sdot.ok, .sdot.green { background: var(--green-dot); }
 .sdot.warning { background: var(--amber-dot); }
