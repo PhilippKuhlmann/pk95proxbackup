@@ -56,7 +56,7 @@ func TestDamagedDiskRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	st = waitDisk(t, c, "rebuilt disk should be ready", func(d core.DiskState) bool { return d.State == "ready" })
-	if st.Damaged != "" || st.RepairFailed || st.LastOK < start {
+	if st.Damaged != "" || st.RepairFailed || st.LastOK < start || st.LastFail != 0 || st.LastError != "" {
 		t.Fatalf("after rebuild: %+v", st)
 	}
 	titles := eventTitles(t, c)

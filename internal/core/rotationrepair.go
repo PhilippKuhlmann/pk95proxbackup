@@ -154,6 +154,8 @@ func (c *Core) rebuildDisk(ctx context.Context, r Rotation, d RotDisk, rt *diskR
 	}
 	c.mu.Lock()
 	rt.Damaged, rt.RepairAt, rt.VerifyNext, rt.DoneAt = "", time.Now().Unix(), true, 0
+	// A new disk: failures of the old one are history.
+	rt.LastFail, rt.LastError = 0, ""
 	rt.DamageSeen = rt.SeenUPID // the old failed run is dealt with
 	c.mu.Unlock()
 	c.saveRuntime(key, rt)

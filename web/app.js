@@ -1389,7 +1389,8 @@ PAGES["/wechselplatten"] = async (el, token) => {
         ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte Kopie</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
           const [l, t] = DISK_STATE[d.state] || DISK_STATE.absent;
           const cls = d.state === "ready" ? "ready" : d.state === "error" ? "error" : d.present ? "present" : "";
-          const problem = d.damaged ? "" : d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
+          const busy = d.running || !!d.phase;
+          const problem = d.damaged || busy ? "" : d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
           return `<tr class="disk-row ${cls}">
             <td data-l="Platte"><div class="disk-cell"><span class="disk-ic">${icon("disk")}</span><div><div class="t-main">${esc(d.label)}${d.today ? ` <span class="today-tag">heute dran</span>` : ""}</div><div class="t-sub"><span class="mono">${esc(d.store)}</span>${d.plan ? ` · ${esc(d.plan)}` : ""}</div></div></div></td>
             <td data-l="Status">${d.damaged && !d.phase ? pill("Beschädigt", "rose", true) : pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running" || !!d.phase)}${d.stale ? `<div class="t-sub warnc">lange nicht angesteckt</div>` : ""}</td>

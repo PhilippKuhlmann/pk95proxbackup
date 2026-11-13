@@ -385,6 +385,10 @@ func (c *Core) checkFailedTasks(ctx context.Context, cur *Overview) {
 		if first || time.Since(time.Unix(t.EndTime, 0)) > 24*time.Hour || (t.Type == "vzdump" && strings.HasPrefix(t.Source, "pve:")) {
 			continue
 		}
+		// A busy disk is let go by the appliance itself (unmountStore); it reports when that fails.
+		if t.Type == "unmount-device" && strings.Contains(t.Status, "target is busy") {
+			continue
+		}
 		d := &notify.Details{Status: "error", Link: "/aufgaben", Facts: []notify.Fact{
 			{Label: "Server", Value: t.Server},
 			{Label: "Aufgabe", Value: TaskLabel(t.Type) + " " + t.ID},

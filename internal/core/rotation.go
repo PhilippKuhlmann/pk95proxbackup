@@ -936,7 +936,7 @@ func (c *Core) PrepareDisk(ctx context.Context, serverID, disk, store, fs string
 	if removable {
 		kind = "Wechsel-Datastore"
 	}
-	c.Event("info", "Platten", "Platte vorbereitet", fmt.Sprintf("%s (%s %s) ist jetzt der %s %s.", disk, strings.TrimSpace(found.Vendor), strings.TrimSpace(found.Model), kind, store))
+	c.Event("info", "Platten", "Platte vorbereitet", fmt.Sprintf("%s (%s) ist jetzt der %s %s.", disk, DiskLabel(DiskHealth{Vendor: strings.TrimSpace(found.Vendor), Model: strings.TrimSpace(found.Model), Disk: disk}), kind, store))
 	return nil
 }
 
