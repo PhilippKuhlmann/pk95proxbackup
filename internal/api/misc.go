@@ -785,6 +785,15 @@ func (s *Server) rotationDiskAction(w http.ResponseWriter, r *http.Request) {
 		err = s.C.RunRotationDisk(ctx, rot, d)
 	case "eject":
 		err = s.C.EjectRotationDisk(ctx, rot, d)
+	case "rebuild":
+		// Formatting and creating the datastore can take a while: in the background.
+		go func() {
+			bctx, bcancel := context.WithTimeout(context.Background(), time.Hour)
+			defer bcancel()
+			if err := s.C.RebuildDisk(bctx, rot, d, false); err != nil {
+				s.C.EventDetails("critical", "USB-Sicherung", "Festplatte „"+d.Label+"“ konnte nicht neu aufgesetzt werden", err.Error(), nil)
+			}
+		}()
 	default:
 		writeErr(w, http.StatusNotFound, "Unbekannte Aktion.")
 		return

@@ -40,6 +40,8 @@ type Rotation struct {
 	Disks        []RotDisk `json:"disks"`
 	// CheckPlan reports a disk that is plugged in on the wrong day (see the swap plan).
 	CheckPlan bool `json:"check_plan"`
+	// AutoRepair formats a damaged disk and copies again (only with SingleCopy).
+	AutoRepair bool `json:"auto_repair"`
 }
 
 // RotDisk is one disk of a rotation set.
@@ -90,6 +92,9 @@ func (r *Rotation) Validate() map[string]string {
 	}
 	if r.Time == "" && !r.RunOnMount {
 		errs["time"] = "Uhrzeit angeben oder „beim Anstecken kopieren“ einschalten."
+	}
+	if r.AutoRepair && !r.SingleCopy() {
+		errs["auto_repair"] = "Nur möglich, wenn auf der Platte nur die neueste Sicherung liegt (kopieren: nur die neueste, Aufbewahrung: Letzte = 1, sonst 0)."
 	}
 	if r.TransferLast < 0 || r.TransferLast > 1000 {
 		errs["transfer_last"] = "0 (alle) bis 1000."
@@ -232,6 +237,12 @@ type diskRuntime struct {
 	CopyUPID   string `json:"copy_upid,omitempty"`
 	LastDay    string `json:"last_day,omitempty"`
 	Remind     int64  `json:"remind,omitempty"`
+	// Damaged is the log line that showed a damaged filesystem on the disk ("" = fine).
+	Damaged      string `json:"damaged,omitempty"`
+	RepairAt     int64  `json:"repair_at,omitempty"`
+	RepairFailed bool   `json:"repair_failed,omitempty"` // still damaged after the last rebuild
+	VerifyNext   bool   `json:"verify_next,omitempty"`   // read everything back after the next copy
+	DamageSeen   string `json:"damage_seen,omitempty"`   // failed run already looked at for damage
 }
 
 func rtKey(r Rotation, d RotDisk) string { return r.ID + "/" + d.Key }
@@ -300,6 +311,10 @@ type DiskState struct {
 	Health    *HealthBrief `json:"health,omitempty"`
 	Plan      string       `json:"plan,omitempty"` // "Montag", "1. Freitag im Monat"
 	Today     bool         `json:"today,omitempty"`
+	// Damaged: files on the disk cannot be read any more (see RebuildDisk).
+	Damaged      string `json:"damaged,omitempty"`
+	RepairFailed bool   `json:"repair_failed,omitempty"`
+	RepairAt     int64  `json:"repair_at,omitempty"`
 }
 
 // RotationState is the shown state of a rotation set.
@@ -413,12 +428,13 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 			}
 			c.mu.Lock()
 			ds.Phase, ds.LastOK, ds.LastFail, ds.LastError = rt.Phase, rt.LastOK, rt.LastFail, rt.LastError
+			ds.Damaged, ds.RepairFailed, ds.RepairAt = rt.Damaged, rt.RepairFailed, rt.RepairAt
 			done := rt.DoneAt
 			c.mu.Unlock()
 			switch {
 			case ds.Running || ds.Phase != "":
 				ds.State = "running"
-			case ds.LastFail > ds.LastOK && ds.Present:
+			case ds.Damaged != "" && ds.Present, ds.LastFail > ds.LastOK && ds.Present:
 				ds.State = "error"
 			case ds.Present && !ds.Mounted && done > 0 && done >= ds.LastOK:
 				ds.State = "ready"
@@ -507,6 +523,24 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 	c.mu.Lock()
 	seen := rt.SeenUPID
 	c.mu.Unlock()
+	failed := j.LastRunState != "OK" && !strings.HasPrefix(j.LastRunState, "WARNINGS")
+	if j.LastRunUPID != "" && j.LastRunUPID == seen && j.LastRunEnd != 0 && failed {
+		// A failure seen before this version looked for damage: look once (no new message).
+		c.mu.Lock()
+		look := rt.Damaged == "" && rt.DamageSeen != j.LastRunUPID
+		rt.DamageSeen = j.LastRunUPID
+		c.mu.Unlock()
+		if look {
+			if lines, err := pbs.TaskLog(ctx, j.LastRunUPID); err == nil {
+				if info := damageOf(lines); info != "" {
+					c.mu.Lock()
+					rt.Damaged = info
+					c.mu.Unlock()
+				}
+			}
+			c.saveRuntime(key, rt)
+		}
+	}
 	if j.LastRunUPID == "" || j.LastRunUPID == seen || j.LastRunEnd == 0 {
 		return
 	}
@@ -528,6 +562,7 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 	if ok {
 		rt.LastOK = j.LastRunEnd
 		rt.LastError = ""
+		rt.Damaged = ""
 	} else {
 		rt.LastFail = j.LastRunEnd
 		rt.LastError = j.LastRunState
@@ -539,12 +574,18 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 			{Label: "Festplatte", Value: "„" + d.Label + "“"},
 			{Label: "Zeitpunkt", Value: fmtWhen(j.LastRunEnd)},
 			{Label: "Fehlermeldung", Value: j.LastRunState}}}
+		title := "USB-Sicherung auf „" + d.Label + "“ fehlgeschlagen"
+		msg := "Die Daten konnten nicht auf die Festplatte „" + d.Label + "“ gesichert werden. " +
+			"Bitte lassen Sie die Festplatte angeschlossen und leiten Sie diese Nachricht an Ihren IT-Betreuer weiter."
 		if lines, err := pbs.TaskLog(ctx, j.LastRunUPID); err == nil {
 			det.Log = taskLogExcerpt(lines)
+			if info := damageOf(lines); info != "" {
+				title = "USB-Sicherung auf „" + d.Label + "“ fehlgeschlagen: Festplatte beschädigt"
+				msg = c.noteDamage(r, d, rt, info)
+				det.Facts = append(det.Facts, notify.Fact{Label: "Befund", Value: info})
+			}
 		}
-		c.EventDetails("critical", rotationSource, "USB-Sicherung auf „"+d.Label+"“ fehlgeschlagen",
-			"Die Daten konnten nicht auf die Festplatte „"+d.Label+"“ gesichert werden. "+
-				"Bitte lassen Sie die Festplatte angeschlossen und leiten Sie diese Nachricht an Ihren IT-Betreuer weiter.", det)
+		c.EventDetails("critical", rotationSource, title, msg, det)
 		return
 	}
 	if c.tryBusy(key) {
@@ -580,6 +621,29 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 			rt.LastGC = time.Now().Unix()
 			c.mu.Unlock()
 		}
+	}
+	// After a rebuild: read everything back from the disk itself.
+	c.mu.Lock()
+	verify := rt.VerifyNext
+	rt.VerifyNext = false
+	c.mu.Unlock()
+	checked := ""
+	if verify {
+		if bad := c.checkRebuilt(ctx, pbs, r, d, rt); bad != "" {
+			c.mu.Lock()
+			rt.RepairFailed, rt.Damaged = true, bad
+			c.mu.Unlock()
+			c.saveRuntime(key, rt)
+			c.EventDetails("critical", rotationSource, "Festplatte „"+d.Label+"“ speichert nicht zuverlässig",
+				"Die Platte wurde neu aufgesetzt und neu befüllt, aber beim Zurücklesen waren die Daten wieder fehlerhaft. "+
+					"Das liegt meist am USB-Gehäuse oder Kabel, seltener an der Platte selbst. Bitte Gehäuse bzw. Platte tauschen und die Platte danach erneut neu aufsetzen.",
+				&notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Befund", Value: bad}}})
+			return
+		}
+		c.mu.Lock()
+		rt.RepairFailed = false
+		c.mu.Unlock()
+		checked = "alles von der Platte zurückgelesen und in Ordnung"
 	}
 	// What is on the disk now (read before it is unmounted).
 	rows := c.diskContents(ctx, pbs, d.Store)
@@ -631,6 +695,9 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		det.Facts = append(det.Facts, *copied)
 	}
 	det.Facts = append(det.Facts, notify.Fact{Label: "Enthält", Value: fmt.Sprintf("%d Server", len(rows))})
+	if checked != "" {
+		det.Facts = append(det.Facts, notify.Fact{Label: "Geprüft", Value: checked})
+	}
 	det.Facts = append(det.Facts, later...)
 	canPull := !r.UnmountOnDone || rt.DoneAt > 0
 	title := "USB-Sicherung auf „" + d.Label + "“ fertig"

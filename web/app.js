@@ -681,6 +681,8 @@ PAGES["/"] = async (el, token) => {
     if (rt && rt.status === "error") issue("error", "Der letzte Restore-Test ist fehlgeschlagen", "/restoretests");
     if (notBacked) issue("warning", `${notBacked} ${notBacked === 1 ? "VM bzw. Container ist" : "VMs und Container sind"} in keinem Sicherungsjob`, "/sicherungen");
     for (const x of rots.filter((x) => x.overdue && !x.disks.some((d) => d.state === "ready"))) issue("warning", `${x.name}: USB-Kopie überfällig (zuletzt ${fmtAgo(x.last_copy)})`, "/wechselplatten");
+    for (const x of rots) for (const d of x.disks.filter((d) => d.damaged && !d.phase))
+      issue("error", d.repair_failed ? `Wechselplatte „${d.label}“ speichert nicht zuverlässig – Gehäuse oder Platte tauschen` : `Wechselplatte „${d.label}“ ist beschädigt – neu aufsetzen`, "/wechselplatten");
     for (const x of rots.filter((x) => x.check_plan && x.plan_late && (x.plan_state === "swap" || x.plan_state === "missing")))
       issue("warning", `${x.name}: heute ist „${x.plan_today}“ dran – ${x.plan_state === "swap" ? "es steckt die falsche Platte" : "nicht angesteckt"}`, "/wechselplatten");
     for (const d of stores.filter((d) => d.total && d.used / d.total >= 0.9)) issue("warning", `Datastore ${d.store} ist zu ${pct(d.used, d.total)} % voll`, "/datastores");
@@ -1358,7 +1360,7 @@ const DISK_STATE = {
   absent: ["Nicht angesteckt", ""], idle: ["Angesteckt", "blue"], running: ["Kopiert …", "blue"],
   ready: ["Fertig – abziehen", "green"], error: ["Fehler", "rose"],
 };
-const PHASE = { pruning: "räumt auf", gc: "gibt Speicher frei", unmounting: "hängt aus", mounting: "hängt ein" };
+const PHASE = { pruning: "räumt auf", gc: "gibt Speicher frei", unmounting: "hängt aus", mounting: "hängt ein", rebuilding: "wird neu aufgesetzt", verifying: "wird zurückgelesen" };
 
 PAGES["/wechselplatten"] = async (el, token) => {
   await loadConn();
@@ -1380,16 +1382,17 @@ PAGES["/wechselplatten"] = async (el, token) => {
             <button class="ib red" type="button" title="Satz entfernen" aria-label="Satz entfernen" data-del="${x.id}">${icon("trash")}</button></div></div>
         ${x.error ? callout("red", "Backup-Server nicht erreichbar", esc(x.error)) : ""}
         ${x.overdue ? callout("yellow", "Kopie überfällig", `Letzte erfolgreiche Kopie: ${esc(fmtTime(x.last_copy, true))}.`) : ""}
+        ${x.disks.filter((d) => d.damaged && !d.phase).map((d) => damageCallout(x, d)).join("")}
         ${planCallout(x)}
         ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : `<div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
           <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? " · Platten werden nach der Kopie ausgehängt" : ""}</div></div></div>`}
         ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte Kopie</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
           const [l, t] = DISK_STATE[d.state] || DISK_STATE.absent;
           const cls = d.state === "ready" ? "ready" : d.state === "error" ? "error" : d.present ? "present" : "";
-          const problem = d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
+          const problem = d.damaged ? "" : d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
           return `<tr class="disk-row ${cls}">
             <td data-l="Platte"><div class="disk-cell"><span class="disk-ic">${icon("disk")}</span><div><div class="t-main">${esc(d.label)}${d.today ? ` <span class="today-tag">heute dran</span>` : ""}</div><div class="t-sub"><span class="mono">${esc(d.store)}</span>${d.plan ? ` · ${esc(d.plan)}` : ""}</div></div></div></td>
-            <td data-l="Status">${pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running")}${d.stale ? `<div class="t-sub warnc">lange nicht angesteckt</div>` : ""}</td>
+            <td data-l="Status">${d.damaged && !d.phase ? pill("Beschädigt", "rose", true) : pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running" || !!d.phase)}${d.stale ? `<div class="t-sub warnc">lange nicht angesteckt</div>` : ""}</td>
             <td data-l="Letzte Kopie" class="nowrap">${d.last_ok ? `${esc(fmtAgo(d.last_ok))}<div class="t-sub">${esc(fmtTime(d.last_ok, true))}</div>` : '<span class="muted">noch keine</span>'}${problem ? `<div class="t-sub bad">${esc(problem)}</div>` : ""}</td>
             <td data-l="Belegung" class="bar-cell">${d.total ? usageBar(d.used, d.total) : '<span class="muted small">—</span>'}
               <div data-live="${esc(d.label)}" hidden><div class="flex small"><span class="grow" data-live-text></span><b class="mono" data-live-pct></b></div><div class="pbar"><span></span></div></div></td>
@@ -1415,6 +1418,15 @@ PAGES["/wechselplatten"] = async (el, token) => {
     bindArchives(el, archives, draw);
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => rotationForm(rots.find((x) => x.id === b.dataset.edit), draw));
     qsa("[data-plan]", el).forEach((b) => b.onclick = () => planForm(rots.find((x) => x.id === b.dataset.plan), draw));
+    qsa("[data-rebuild]", el).forEach((b) => b.onclick = async () => {
+      const [rid, k] = b.dataset.rebuild.split("|");
+      const x = rots.find((r1) => r1.id === rid), d = x.disks.find((d1) => d1.key === k);
+      const keeps = x.transfer_last === 1 && x.keep_last === 1 && !x.keep_daily && !x.keep_weekly && !x.keep_monthly;
+      const ok = await confirmDialog({ title: `„${d.label}“ neu aufsetzen?`, button: "Formatieren und neu kopieren", ic: "refresh",
+        text: `Alles auf der Platte wird gelöscht, sie wird neu formatiert und mit den Sicherungen von ${esc(x.source_name)} / ${esc(x.source_store)} neu befüllt. Danach liest die Appliance alles von der Platte zurück, um zu prüfen, ob sie zuverlässig speichert.${keeps ? "" : " <b>Ältere Stände, die nur auf dieser Platte liegen, gehen dabei verloren.</b>"}` });
+      if (!ok) return;
+      await run(b, async () => { await POST(`/api/rotations/${rid}/disks/${k}/rebuild`); setTimeout(draw, 1500); }, "Die Platte wird neu aufgesetzt – das dauert je nach Größe einige Minuten.");
+    });
     qsa("[data-adddisk]", el).forEach((b) => b.onclick = () => addDiskForm(rots.find((x) => x.id === b.dataset.adddisk), draw));
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
       const x = rots.find((y) => y.id === b.dataset.del);
@@ -1436,6 +1448,17 @@ PAGES["/wechselplatten"] = async (el, token) => {
 
 const TRANSFER_OPTIONS = [[1, "Nur die neueste Sicherung"], [2, "Die neuesten 2"], [3, "Die neuesten 3"], [7, "Die neuesten 7"], [14, "Die neuesten 14"], [0, "Alle Sicherungen"]];
 const transferText = (n) => (!n ? "alle Sicherungen" : n === 1 ? "nur die neueste Sicherung" : `die neuesten ${n} Sicherungen`);
+
+// damageCallout recommends formatting a disk whose files cannot be read any more.
+function damageCallout(x, d) {
+  const src = `${x.source_name} / ${x.source_store}`;
+  if (d.repair_failed) return callout("red", `„${d.label}“ speichert nicht zuverlässig`,
+    `Die Platte wurde neu aufgesetzt, beim Zurücklesen waren die Daten aber wieder fehlerhaft. Meist liegt das am USB-Gehäuse oder Kabel, seltener an der Platte. <b>Empfehlung:</b> Gehäuse bzw. Platte tauschen und danach erneut neu aufsetzen.<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`,
+    `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} Erneut neu aufsetzen</button>`);
+  return callout("red", `„${d.label}“ ist beschädigt – Empfehlung: neu aufsetzen`,
+    `Dateien auf der Platte lassen sich nicht mehr richtig lesen, deshalb schlägt die Kopie fehl. Neu aufsetzen formatiert die Platte, kopiert alles neu von ${esc(src)} und liest es danach zur Kontrolle von der Platte zurück. Die Sicherungen auf dem Backup-Server bleiben unberührt.${d.present ? "" : " <b>Dazu die Platte anstecken.</b>"}<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`,
+    `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} Neu aufsetzen</button>`);
+}
 
 // planCallout says which disk is due today according to the swap plan.
 function planCallout(x) {
@@ -1522,15 +1545,28 @@ function rotationForm(x, done) {
       { name: "keep_daily", label: "Täglich", type: "number", min: 0, value: x.keep_daily },
       { name: "keep_weekly", label: "Wöchentlich", type: "number", min: 0, value: x.keep_weekly },
       { name: "keep_monthly", label: "Monatlich", type: "number", min: 0, value: x.keep_monthly },
+      { name: "auto_repair", label: "Beschädigte Platte automatisch neu aufsetzen und die Kopie wiederholen", type: "checkbox", value: x.auto_repair, wide: true,
+        hint: "Lässt sich eine Platte nicht mehr lesen (Dateisystem beschädigt), formatiert die Appliance sie neu, kopiert erneut und liest danach alles zurück. Nur möglich, wenn auf der Platte nur die neueste Sicherung liegt – dann geht dabei nichts verloren." },
     ],
     onMount: async (d) => {
       const form = qs("form", d);
-      const show = () => { qs('[data-field="swap_day"]', d).hidden = formValues(form).rhythm !== "weekly"; };
+      const show = () => {
+        const v = formValues(form);
+        qs('[data-field="swap_day"]', d).hidden = v.rhythm !== "weekly";
+        // Automatic repair only when the disk holds just the newest backup.
+        const single = Number(v.transfer_last) === 1 && Number(v.keep_last) === 1 && !Number(v.keep_daily) && !Number(v.keep_weekly) && !Number(v.keep_monthly);
+        const ar = qs('[name="auto_repair"]', d);
+        ar.disabled = !single;
+        if (!single) ar.checked = false;
+        qs('[data-field="auto_repair"]', d).classList.toggle("dim-field", !single);
+      };
+      qsa('[name="transfer_last"], [name="keep_last"], [name="keep_daily"], [name="keep_weekly"], [name="keep_monthly"]', d).forEach((i) => i.addEventListener("input", show));
       // "only the newest": the disk should then hold just that one, too.
       qs('[name="transfer_last"]', d).addEventListener("change", (e) => {
         if (e.target.value !== "1") return;
         const set = (n, v) => { qs(`[name="${n}"]`, d).value = v; };
         set("keep_last", 1); set("keep_daily", 0); set("keep_weekly", 0); set("keep_monthly", 0);
+        show();
       });
       qsa('[name="rhythm"]', d).forEach((r) => r.onchange = show);
       show();

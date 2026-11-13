@@ -23,6 +23,11 @@ type store struct {
 	total   int64
 	mounted bool
 	snaps   []prox.Snapshot
+	// corrupt: files on the disk read back as garbage (copy and check fail).
+	corrupt bool
+	// badEnclosure: what is written only reads back wrong after mounting again.
+	badEnclosure bool
+	mountedOnce  bool
 }
 
 type job struct {
@@ -62,6 +67,24 @@ type PBS struct {
 	foreign map[string][]prox.Snapshot
 	smart   map[string]map[string]any // disk → answer of /disks/smart
 	blobs   map[string][]byte         // store/type/id/time/file → content
+	// badDisks are disks in a broken USB enclosure (datastores made on them go bad).
+	badDisks map[string]bool
+}
+
+// SetCorrupt makes the files of a datastore unreadable (as after a broken write).
+func (p *PBS) SetCorrupt(st string, v bool) {
+	p.mu.Lock()
+	if s := p.stores[st]; s != nil {
+		s.corrupt = v
+	}
+	p.mu.Unlock()
+}
+
+// SetBadEnclosure puts a disk into a USB enclosure that corrupts what is written.
+func (p *PBS) SetBadEnclosure(disk string, v bool) {
+	p.mu.Lock()
+	p.badDisks[disk] = v
+	p.mu.Unlock()
 }
 
 // AddForeign puts a datastore of another server onto a partition (read in with reuse-datastore).
@@ -72,7 +95,7 @@ func (p *PBS) AddForeign(uuid, path string, snaps []prox.Snapshot) {
 // NewPBS creates an empty server.
 func NewPBS(node string, root int64) *PBS {
 	return &PBS{node: node, root: root, stores: map[string]*store{}, jobs: map[string]*job{}, remotes: map[string]prox.Remote{}, usedExtra: map[string]int64{}, users: map[string]bool{}, foreign: map[string][]prox.Snapshot{},
-		smart: map[string]map[string]any{}, blobs: map[string][]byte{}}
+		smart: map[string]map[string]any{}, blobs: map[string][]byte{}, badDisks: map[string]bool{}}
 }
 
 // AddStore adds a datastore (removable when uuid is set).
@@ -177,6 +200,15 @@ func (p *PBS) runSync(j *job) string {
 			if dst == nil || !dst.mounted {
 				j.end, j.state = time.Now().Unix(), "datastore '"+target+"' is not mounted"
 				return j.state, nil
+			}
+			if dst.corrupt {
+				j.end, j.state = time.Now().Unix(), "sync failed with some errors."
+				var lines []string
+				for _, g := range []string{"vm/100", "vm/101", "ct/110"} {
+					lines = append(lines, time.Now().Format(time.RFC3339)+": ["+g+"]: sync group "+g+" failed - group lock failed: unable to read \"/mnt/datastore/"+target+"/"+g+"/owner\" - stream did not contain valid UTF-8",
+						time.Now().Format(time.RFC3339)+": ["+g+"]: create_locked_backup_group failed")
+				}
+				return j.state, lines
 			}
 			n := 0
 			var bytes int64
@@ -316,6 +348,10 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.mounted = true
+			if s.badEnclosure && s.mountedOnce {
+				s.corrupt = true
+			}
+			s.mountedOnce = true
 			upid := p.tasks.start(p.node, "mount-device", seg[2], time.Second, nil, nil)
 			for _, j := range p.jobs {
 				if j.kind == "sync" && j.params["store"] == seg[2] && boolv(j.params["run-on-mount"]) {
@@ -333,7 +369,13 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			data(w, p.tasks.start(p.node, "garbage_collection", seg[2], 12*time.Second, []string{"starting garbage collection on store " + seg[2], "Removed garbage: 1.2 GiB"}, nil))
 		case "verify":
-			data(w, p.tasks.start(p.node, "verify", seg[2], VerifyDuration, []string{"verify datastore " + seg[2]}, nil))
+			bad := s.corrupt
+			data(w, p.tasks.start(p.node, "verify", seg[2], VerifyDuration, []string{"verify datastore " + seg[2]}, func() (string, []string) {
+				if bad {
+					return "verification failed - please check the log for details", []string{"can't verify chunk, load failed - Bad message (os error 74)", "corrupt chunk renamed"}
+				}
+				return "OK", nil
+			}))
 		case "prune-datastore":
 			// keep-last only (enough for the demo and the tests)
 			if n := atoi(f.Get("keep-last")); n > 0 && f.Get("keep-daily")+f.Get("keep-weekly")+f.Get("keep-monthly") == "" {
@@ -548,7 +590,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if boolv(f.Get("removable-datastore")) {
 				dev = uuid
 			}
-			p.stores[name] = &store{cfg: prox.DatastoreConfig{Name: name, Path: "/mnt/datastore/" + name, BackingDevice: dev}, total: 1800 * gib, mounted: dev == ""}
+			p.stores[name] = &store{cfg: prox.DatastoreConfig{Name: name, Path: "/mnt/datastore/" + name, BackingDevice: dev}, total: 1800 * gib, mounted: dev == "", badEnclosure: p.badDisks[disk]}
 		}
 		data(w, p.tasks.start(p.node, "dircreate", name, 3*time.Second, []string{"create datastore '" + name + "' on disk " + disk}, nil))
 	case path == "/nodes/localhost/tasks":
