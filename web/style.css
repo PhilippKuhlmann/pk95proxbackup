@@ -674,3 +674,8 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
 .sched-preview:empty { display: none; }
 .next-runs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; }
 .next-run { display: inline-block; padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--r); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* ---- Suche in der Gast-Auswahl ---- */
+.guest-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.guest-tools input[type="search"] { flex: 1 1 220px; min-width: 0; }
+.guest-list label[hidden] { display: none; }

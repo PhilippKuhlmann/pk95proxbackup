@@ -50,7 +50,9 @@ type UpdateInfo struct {
 	Phase      string `json:"phase,omitempty"` // downloading, verifying, installing, restarting, failed
 	PhaseError string `json:"phase_error,omitempty"`
 	CanInstall bool   `json:"can_install"`
-	Reason     string `json:"reason,omitempty"` // why it cannot be installed from here
+	// Busy is work the appliance follows right now that a restart would interrupt.
+	Busy   []string `json:"busy"`
+	Reason string   `json:"reason,omitempty"` // why it cannot be installed from here
 }
 
 type updateRuntime struct {
@@ -95,6 +97,7 @@ func (c *Core) Update() UpdateInfo {
 		Checked: st.Checked, Error: st.Error, AutoCheck: c.updateSettings().AutoCheck}
 	info.Available = st.Latest != "" && NewerVersion(st.Latest, c.Version)
 	info.CanInstall, info.Reason = c.canSelfUpdate()
+	info.Busy = c.BusyWork()
 	c.update.mu.Lock()
 	info.Phase, info.PhaseError = c.update.phase, c.update.err
 	c.update.mu.Unlock()
@@ -461,6 +464,7 @@ var execProgram = syscall.Exec
 // afterStart reports a finished or rolled back update and a restored configuration once the
 // program runs.
 func (c *Core) afterStart(ctx context.Context) {
+	c.resumeRotations(ctx)
 	if b, err := os.ReadFile(rolledBackPath(c.DataDir)); err == nil {
 		var m updateMarker
 		_ = json.Unmarshal(b, &m)
@@ -492,4 +496,39 @@ func (c *Core) afterStart(ctx context.Context) {
 	_ = json.Unmarshal(b, &m)
 	os.Remove(markerPath(c.DataDir))
 	c.Event("info", "Appliance", "Auf Version "+m.To+" aktualisiert", "Vorher lief "+m.From+". Die alte Programmdatei liegt als "+filepath.Base(m.Exe)+".old daneben.")
+}
+
+var phaseWords = map[string]string{"pruning": "räumt auf", "gc": "gibt Speicher frei", "unmounting": "wird ausgehängt", "mounting": "wird eingehängt",
+	"rebuilding": "wird neu aufgesetzt", "verifying": "wird zurückgelesen (Gegentest)"}
+
+// BusyWork lists what the appliance is doing right now that a restart would interrupt.
+func (c *Core) BusyWork() []string {
+	out := []string{}
+	if rots, err := c.Rotations(); err == nil {
+		for _, r := range rots {
+			for _, d := range r.Disks {
+				rt := c.runtime(rtKey(r, d))
+				c.mu.Lock()
+				phase := rt.Phase
+				c.mu.Unlock()
+				if phase != "" {
+					w := phaseWords[phase]
+					if w == "" {
+						w = phase
+					}
+					out = append(out, "Wechselplatte „"+d.Label+"“ "+w)
+				}
+			}
+		}
+	}
+	for _, a := range c.busyArchives() {
+		out = append(out, "Archiv-Platte „"+a.Name+"“ ("+archivePhaseLabel[a.Phase]+")")
+	}
+	if run := c.ActiveRestoreTest(); run != nil {
+		out = append(out, "Restore-Test „"+run.PlanName+"“")
+	}
+	if c.SelfBackup().Running {
+		out = append(out, "Sicherung der Appliance-Konfiguration")
+	}
+	return out
 }

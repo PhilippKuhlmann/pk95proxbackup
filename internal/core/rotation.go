@@ -216,6 +216,7 @@ type diskRuntime struct {
 	VerifyNext   bool   `json:"verify_next,omitempty"`   // read everything back after the next copy
 	DamageSeen   string `json:"damage_seen,omitempty"`   // failed run already looked at for damage
 	VerifyWhy    string `json:"verify_why,omitempty"`    // rebuild, unplugged
+	VerifyUPID   string `json:"verify_upid,omitempty"`   // the check running on the server
 	UnpluggedAt  int64  `json:"unplugged_at,omitempty"`
 }
 
@@ -616,17 +617,23 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		}
 	}
 	// After a rebuild: read everything back from the disk itself.
+	// VerifyNext and VerifyWhy stay set until the check is done, so that a restart in between
+	// picks it up again (resumeRotations).
 	c.mu.Lock()
-	verify := rt.VerifyNext
-	rt.VerifyNext = false
+	verify := rt.VerifyNext || rt.VerifyUPID != ""
+	why := rt.VerifyWhy
 	c.mu.Unlock()
 	checked := ""
-	c.mu.Lock()
-	why := rt.VerifyWhy
-	rt.VerifyWhy = ""
-	c.mu.Unlock()
+	doneCheck := func() {
+		c.mu.Lock()
+		rt.VerifyNext, rt.VerifyWhy, rt.VerifyUPID = false, "", ""
+		c.mu.Unlock()
+		c.saveRuntime(key, rt)
+	}
 	if verify && why == "unplugged" {
-		if bad := c.checkRebuilt(ctx, pbs, r, d, rt); bad != "" {
+		bad := c.checkRebuilt(ctx, pbs, r, d, rt)
+		doneCheck()
+		if bad != "" {
 			msg := c.noteDamage(r, d, rt, bad)
 			c.EventDetails("critical", rotationSource, "Festplatte „"+d.Label+"“ nach dem Abziehen beschädigt",
 				"Die Platte war im eingehängten Zustand abgezogen worden. Beim Zurücklesen nach der Kopie waren Daten nicht mehr lesbar. "+msg,
@@ -637,7 +644,9 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		verify = false
 	}
 	if verify {
-		if bad := c.checkRebuilt(ctx, pbs, r, d, rt); bad != "" {
+		bad := c.checkRebuilt(ctx, pbs, r, d, rt)
+		doneCheck()
+		if bad != "" {
 			c.mu.Lock()
 			rt.RepairFailed, rt.Damaged = true, bad
 			c.mu.Unlock()

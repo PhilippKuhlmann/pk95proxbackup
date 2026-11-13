@@ -175,6 +175,13 @@ func (c *Core) rebuildDisk(ctx context.Context, r Rotation, d RotDisk, rt *diskR
 func (c *Core) checkRebuilt(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDisk, rt *diskRuntime) string {
 	key := rtKey(r, d)
 	c.setPhase(key, rt, "verifying")
+	c.mu.Lock()
+	upid := rt.VerifyUPID
+	c.mu.Unlock()
+	if upid != "" {
+		// Started before a restart of the appliance: wait for that check.
+		return verifyResult(ctx, pbs, upid)
+	}
 	job := r.SyncJobID(d)
 	if r.RunOnMount {
 		_ = pbs.UpdateJob(ctx, "sync", job, prox.Params{"run-on-mount": false})
@@ -183,17 +190,26 @@ func (c *Core) checkRebuilt(ctx context.Context, pbs *prox.PBS, r Rotation, d Ro
 	if err := c.unmountStore(ctx, pbs, d.Store); err != nil {
 		return "Aushängen vor dem Zurücklesen: " + err.Error()
 	}
-	upid, err := pbs.Mount(ctx, d.Store)
+	mupid, err := pbs.Mount(ctx, d.Store)
 	if err != nil {
 		return "Wieder einhängen: " + err.Error()
 	}
-	if _, err := pbs.WaitTask(ctx, upid, 5*time.Minute); err != nil {
+	if _, err := pbs.WaitTask(ctx, mupid, 5*time.Minute); err != nil {
 		return "Wieder einhängen: " + err.Error()
 	}
 	upid, err = pbs.StartTask(ctx, "/admin/datastore/"+url.PathEscape(d.Store)+"/verify", prox.Params{"ignore-verified": false})
 	if err != nil {
 		return "Prüfung starten: " + err.Error()
 	}
+	c.mu.Lock()
+	rt.VerifyUPID = upid
+	c.mu.Unlock()
+	c.saveRuntime(key, rt)
+	return verifyResult(ctx, pbs, upid)
+}
+
+// verifyResult waits for a verification and returns "" or what went wrong.
+func verifyResult(ctx context.Context, pbs *prox.PBS, upid string) string {
 	st, err := pbs.WaitTask(ctx, upid, 24*time.Hour)
 	if err == nil {
 		return ""
@@ -207,4 +223,67 @@ func (c *Core) checkRebuilt(ctx context.Context, pbs *prox.PBS, r Rotation, d Ro
 		return err.Error()
 	}
 	return st.ExitStatus
+}
+
+// resumeRotations runs once after the start: work on a rotation disk that a restart of the
+// appliance interrupted is picked up (a check still running on the Backup Server is waited
+// for and evaluated) or released, so that no disk stays "busy" for ever.
+func (c *Core) resumeRotations(ctx context.Context) {
+	rots, err := c.Rotations()
+	if err != nil {
+		return
+	}
+	for _, r := range rots {
+		for _, d := range r.Disks {
+			key := rtKey(r, d)
+			rt := c.runtime(key)
+			c.mu.Lock()
+			phase, since, vupid := rt.Phase, rt.PhaseSince, rt.VerifyUPID
+			c.mu.Unlock()
+			if phase == "" && vupid == "" {
+				continue
+			}
+			pbs, _, err := c.PBS(r.ServerID)
+			if err != nil {
+				continue
+			}
+			if phase == "verifying" && vupid == "" {
+				// Before this version the task was not remembered: find it on the server.
+				if ts, err := pbs.Tasks(ctx, 200, false); err == nil {
+					for _, t := range ts {
+						if t.Type == "verify" && (t.WorkerID == d.Store || unescapeWorkerID(t.WorkerID) == d.Store) && t.StartTime >= since-120 {
+							vupid = t.UPID
+							break
+						}
+					}
+				}
+				if vupid != "" {
+					c.mu.Lock()
+					rt.VerifyUPID, rt.VerifyNext = vupid, true
+					if rt.VerifyWhy == "" {
+						rt.VerifyWhy = "rebuild"
+						if rt.UnpluggedAt > rt.RepairAt {
+							rt.VerifyWhy = "unplugged"
+						}
+					}
+					c.mu.Unlock()
+				}
+			}
+			if vupid == "" {
+				c.setPhase(key, rt, "") // pruning, unmounting … cannot be resumed: release
+				continue
+			}
+			c.saveRuntime(key, rt)
+			go func(r Rotation, d RotDisk, rt *diskRuntime) {
+				for i := 0; !c.tryBusy(rtKey(r, d)); i++ {
+					if i > 600 {
+						return
+					}
+					time.Sleep(time.Second)
+				}
+				defer c.doneBusy(rtKey(r, d))
+				c.aftercare(context.WithoutCancel(ctx), pbs, r, d, rt)
+			}(r, d, rt)
+		}
+	}
 }

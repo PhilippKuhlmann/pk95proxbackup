@@ -260,3 +260,51 @@ func TestUnpluggedWhileMounted(t *testing.T) {
 		t.Fatalf("no read-back after the copy:\n%s", eventTitles(t, c))
 	}
 }
+
+// The appliance restarted while a disk was being read back (as with an update during the
+// check): the check running on the Backup Server is found, waited for and evaluated.
+func TestResumeCheckAfterRestart(t *testing.T) {
+	vd := fake.VerifyDuration
+	fake.VerifyDuration = 3 * time.Second
+	t.Cleanup(func() { fake.VerifyDuration = vd })
+	c := newCore(t)
+	ctx := context.Background()
+	srv, _ := c.Server("local")
+	pbs := c.PBSClient(srv)
+	if _, err := pbs.StartTask(ctx, "/admin/datastore/usb-a/verify", nil); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	var rt map[string]any
+	_ = c.St.GetSetting("rt:demo/a1", &rt)
+	rt["phase"], rt["phase_since"], rt["repair_at"], rt["last_ok"] = "verifying", now-5, now-600, now-60
+	_ = c.St.SetSetting("rt:demo/a1", rt)
+
+	c2 := core.New(c.St, c.DataDir, "test", c.Signer)
+	c2.LocalRunner = c.LocalRunner
+	c2.ResumeForTest(ctx)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		st := c2.RotationStates(ctx)[0].Disks[0]
+		if st.Phase == "" && !st.VerifyNext {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("check not resumed: %+v", st)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	found := false
+	for i := 0; i < 20 && !found; i++ {
+		evs, _ := c2.St.Events(ctx, "", 0, 20)
+		for _, e := range evs {
+			if strings.Contains(string(e.Details), "zurückgelesen und in Ordnung") {
+				found = true
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !found {
+		t.Fatalf("result of the resumed check not reported:\n%s", eventTitles(t, c2))
+	}
+}

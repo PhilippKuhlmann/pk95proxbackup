@@ -28,3 +28,6 @@ func (c *Core) CheckPlanForTest(r Rotation, st RotationState, now time.Time) { c
 func (c *Core) CheckUnpluggedForTest(ctx context.Context, r Rotation, st RotationState, now time.Time) {
 	c.checkUnplugged(ctx, r, st, now)
 }
+
+// ResumeForTest exposes resumeRotations.
+func (c *Core) ResumeForTest(ctx context.Context) { c.resumeRotations(ctx) }

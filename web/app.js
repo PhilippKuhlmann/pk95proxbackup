@@ -2567,9 +2567,14 @@ function jobForm(x, j, done) {
   const targets = r.storages.filter((s) => (s.content || "").includes("backup"));
   const sel = j ? (j.all ? (j.exclude ? "exclude" : "all") : "include") : "all";
   const chosen = new Set((j?.vmid || j?.exclude || "").split(",").filter(Boolean));
-  const guestsHTML = `<div class="field wide" data-field="vmids"><span class="fl">VMs & Container</span><div class="section" style="max-height:240px;overflow:auto;gap:6px">
-    ${r.guests.filter((g) => !g.template).sort((a, b) => a.vmid - b.vmid).map((g) => `<label class="check"><input type="checkbox" class="plain" data-vm="${g.vmid}" ${chosen.has(String(g.vmid)) ? "checked" : ""}><span>${g.vmid} ${esc(g.name)} <span class="muted small">${g.type === "lxc" ? "CT" : "VM"} · ${esc(g.node)}</span></span></label>`).join("")}
-    </div><span class="err" hidden></span></div>`;
+  const guests = r.guests.filter((g) => !g.template).sort((a, b) => a.vmid - b.vmid);
+  const guestsHTML = `<div class="field wide" data-field="vmids"><span class="fl">VMs & Container <span class="muted small" data-gcount></span></span>
+    <div class="guest-tools"><input type="search" data-gsearch placeholder="Suchen: Name, ID oder Knoten" aria-label="VMs und Container suchen" autocomplete="off">
+      <div class="seg" role="group" aria-label="Art">${[["", "Alle"], ["qemu", "VMs"], ["lxc", "Container"], ["sel", "Ausgewählt"]].map(([k, l]) => `<button type="button" data-gtype="${k}" aria-pressed="${k === ""}">${l}</button>`).join("")}</div>
+      <button class="btn gray sm" type="button" data-gall title="Alle angezeigten auswählen">Alle an</button><button class="btn gray sm" type="button" data-gnone title="Alle angezeigten abwählen">Alle aus</button></div>
+    <div class="section guest-list" style="max-height:240px;overflow:auto;gap:6px">
+    ${guests.map((g) => `<label class="check" data-g="${esc((g.vmid + " " + g.name + " " + g.node + " " + (g.type === "lxc" ? "ct container" : "vm")).toLowerCase())}" data-gt="${g.type === "lxc" ? "lxc" : "qemu"}"><input type="checkbox" class="plain" data-vm="${g.vmid}" ${chosen.has(String(g.vmid)) ? "checked" : ""}><span>${g.vmid} ${esc(g.name)} <span class="muted small">${g.type === "lxc" ? "CT" : "VM"} · ${esc(g.node)}</span></span></label>`).join("")}
+    <div class="muted small" data-gempty hidden>Nichts gefunden.</div></div><span class="err" hidden></span></div>`;
   formDialog({
     title: edit ? "Sicherungsjob bearbeiten" : `Sicherungsjob in ${c.name}`, ic: "calendar",
     fields: [
@@ -2589,6 +2594,31 @@ function jobForm(x, j, done) {
       const show = () => { qs('[data-field="vmids"]', d).hidden = formValues(form).selection === "all"; };
       qsa('[name="selection"]', d).forEach((x2) => x2.onchange = show);
       show();
+      // Search and filter the guest list; checked guests stay checked when hidden.
+      let gtype = "";
+      const search = qs("[data-gsearch]", d);
+      const rows = qsa("[data-g]", d);
+      const filter = () => {
+        const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+        let shown = 0;
+        rows.forEach((row) => {
+          const box = qs("input", row);
+          const ok = words.every((w) => row.dataset.g.includes(w)) && (!gtype || (gtype === "sel" ? box.checked : row.dataset.gt === gtype));
+          row.hidden = !ok;
+          if (ok) shown++;
+        });
+        qs("[data-gempty]", d).hidden = shown > 0;
+        const n = rows.filter((row) => qs("input", row).checked).length;
+        qs("[data-gcount]", d).textContent = `· ${n} von ${rows.length} gewählt`;
+      };
+      search.addEventListener("input", filter);
+      search.addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
+      qsa("[data-gtype]", d).forEach((b) => b.onclick = () => { gtype = b.dataset.gtype; qsa("[data-gtype]", d).forEach((x2) => x2.setAttribute("aria-pressed", x2 === b)); filter(); });
+      const setShown = (on) => { rows.filter((row) => !row.hidden).forEach((row) => { qs("input", row).checked = on; }); filter(); };
+      qs("[data-gall]", d).onclick = () => setShown(true);
+      qs("[data-gnone]", d).onclick = () => setShown(false);
+      rows.forEach((row) => qs("input", row).addEventListener("change", filter));
+      filter();
     },
     submit: async (v, d) => {
       v.vmids = qsa("[data-vm]", d).filter((x2) => x2.checked).map((x2) => x2.dataset.vm).join(",");
@@ -2925,7 +2955,12 @@ async function updatePanel(box) {
         <small>Fragt nur bei GitHub nach der neuesten Version; übertragen wird dabei allein die installierte Versionsnummer. Installiert wird nur auf Klick.</small></span></label>`;
     const ib = qs("[data-install]", box);
     if (ib) ib.onclick = async () => {
-      const ok = await confirmDialog({ title: `Auf Version ${u.latest} aktualisieren?`, text: "Die Appliance lädt das Programm, prüft die Prüfsumme, testet es und startet neu. Die Oberfläche ist dabei etwa eine Minute nicht erreichbar; Sicherungen, die Proxmox gerade schreibt, laufen weiter. Startet die neue Version nicht, kehrt die Appliance von selbst zur jetzigen zurück.", button: "Jetzt aktualisieren", tone: "", ic: "download" });
+      const cur = await GET("/api/update");
+      const busy = cur.busy || [];
+      const ok = await confirmDialog({ title: `Auf Version ${u.latest} aktualisieren?`,
+        text: (busy.length ? `<b>Gerade läuft:</b> ${busy.map(esc).join(", ")}. Ein Neustart unterbricht das; die Appliance nimmt es danach wieder auf, soweit möglich. Besser warten, bis es fertig ist.<br><br>` : "") +
+          "Die Appliance lädt das Programm, prüft die Prüfsumme, testet es und startet neu. Die Oberfläche ist dabei etwa eine Minute nicht erreichbar; Sicherungen, die Proxmox gerade schreibt, laufen weiter. Startet die neue Version nicht, kehrt die Appliance von selbst zur jetzigen zurück.",
+        button: busy.length ? "Trotzdem aktualisieren" : "Jetzt aktualisieren", tone: busy.length ? "red" : "", ic: "download" });
       if (!ok) return;
       await run(ib, async () => { draw(await POST("/api/update/install")); poll(u.latest); });
     };
