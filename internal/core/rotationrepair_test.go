@@ -169,3 +169,42 @@ func eventBodies(t *testing.T, c *core.Core) []string {
 	}
 	return out
 }
+
+// The proxy holds the disk open (umount: target is busy): it is reloaded, the stuck
+// maintenance mode is cleared, and the rebuild goes on.
+func TestRebuildBusyDisk(t *testing.T) {
+	sd, vd := fake.SyncDuration, fake.VerifyDuration
+	fake.SyncDuration, fake.VerifyDuration = time.Second, time.Second
+	t.Cleanup(func() { fake.SyncDuration, fake.VerifyDuration = sd, vd })
+	c := newCore(t)
+	ctx := context.Background()
+	rot, _ := c.Rotation("demo")
+	fake.Current.Local.SetBusy("usb-a", true)
+	if err := c.RebuildDisk(ctx, rot, rot.Disks[0], false); err != nil {
+		t.Fatalf("rebuild of a busy disk: %v", err)
+	}
+	if n := fake.Current.Local.Reloads(); n != 1 {
+		t.Fatalf("proxy reloaded %d times", n)
+	}
+	st := waitDisk(t, c, "rebuilt disk should be ready", func(d core.DiskState) bool { return d.State == "ready" })
+	if st.Damaged != "" {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// A maintenance mode "unmount" left behind by a failed attempt does not block ejecting.
+func TestEjectAfterStuckUnmount(t *testing.T) {
+	c := newCore(t)
+	ctx := context.Background()
+	rot, _ := c.Rotation("demo")
+	srv, _ := c.Server("local")
+	pbs := c.PBSClient(srv)
+	fake.Current.Local.SetBusy("usb-a", true)
+	if upid, err := pbs.Unmount(ctx, "usb-a"); err == nil {
+		_, _ = pbs.WaitTask(ctx, upid, time.Minute)
+	}
+	fake.Current.Local.SetBusy("usb-a", false)
+	if err := c.EjectRotationDisk(ctx, rot, rot.Disks[0]); err != nil {
+		t.Fatalf("eject after a stuck unmount: %v", err)
+	}
+}

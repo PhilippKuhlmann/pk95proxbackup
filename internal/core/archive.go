@@ -313,11 +313,7 @@ func (c *Core) runArchive(ctx context.Context, id string, check bool) {
 	}
 	unmount := func() {
 		c.setArchivePhase(id, "unmounting", "")
-		upid, err := pbs.Unmount(ctx, a.Store)
-		if err == nil {
-			_, err = pbs.WaitTask(ctx, upid, 10*time.Minute)
-		}
-		if err != nil {
+		if err := c.unmountStore(ctx, pbs, a.Store); err != nil {
 			problems = append(problems, "Aushängen: "+err.Error())
 		}
 	}

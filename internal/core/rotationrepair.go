@@ -136,16 +136,13 @@ func (c *Core) rebuildDisk(ctx context.Context, r Rotation, d RotDisk, rt *diskR
 	if us, err := pbs.Usage(ctx); err == nil {
 		for _, u := range us {
 			if u.Store == d.Store && u.MountStatus == "mounted" {
-				upid, err := pbs.Unmount(ctx, d.Store)
-				if err != nil {
-					return fmt.Errorf("Aushängen: %w", err)
-				}
-				if _, err := pbs.WaitTask(ctx, upid, 10*time.Minute); err != nil {
+				if err := c.unmountStore(ctx, pbs, d.Store); err != nil {
 					return fmt.Errorf("Aushängen: %w", err)
 				}
 			}
 		}
 	}
+	c.clearUnmountMode(ctx, pbs, d.Store)
 	if err := pbs.DeleteDatastore(ctx, d.Store, false); err != nil {
 		return fmt.Errorf("Datastore aus der Konfiguration nehmen: %w", err)
 	}
@@ -181,8 +178,8 @@ func (c *Core) checkRebuilt(ctx context.Context, pbs *prox.PBS, r Rotation, d Ro
 		_ = pbs.UpdateJob(ctx, "sync", job, prox.Params{"run-on-mount": false})
 		defer func() { _ = c.ApplyRotation(context.WithoutCancel(ctx), r) }()
 	}
-	if upid, err := pbs.Unmount(ctx, d.Store); err == nil {
-		_, _ = pbs.WaitTask(ctx, upid, 10*time.Minute)
+	if err := c.unmountStore(ctx, pbs, d.Store); err != nil {
+		return "Aushängen vor dem Zurücklesen: " + err.Error()
 	}
 	upid, err := pbs.Mount(ctx, d.Store)
 	if err != nil {

@@ -454,3 +454,13 @@ func GuestNameFromConfig(conf []byte) string {
 	}
 	return ""
 }
+
+// ReloadProxy reloads proxmox-backup-proxy gracefully: running tasks finish in the old
+// process, open handles of datastores (which can keep a disk busy) are let go.
+func (p *PBS) ReloadProxy(ctx context.Context) error {
+	var upid string
+	if err := p.Do(ctx, http.MethodPost, "/nodes/localhost/services/proxmox-backup-proxy/reload", nil, &upid); err != nil {
+		return err
+	}
+	return p.waitIfTask(ctx, upid, 2*time.Minute)
+}

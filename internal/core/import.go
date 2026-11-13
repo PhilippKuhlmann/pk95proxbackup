@@ -240,11 +240,7 @@ func (c *Core) EjectArchive(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	upid, err := pbs.Unmount(ctx, a.Store)
-	if err != nil {
-		return err
-	}
-	_, err = pbs.WaitTask(ctx, upid, 10*time.Minute)
+	err = c.unmountStore(ctx, pbs, a.Store)
 	c.RequestRefresh()
 	return err
 }

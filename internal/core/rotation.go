@@ -673,9 +673,7 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	}
 	if r.UnmountOnDone {
 		c.setPhase(key, rt, "unmounting")
-		if upid, err := pbs.Unmount(ctx, d.Store); err != nil {
-			problems = append(problems, "Aushängen: "+err.Error())
-		} else if _, err := pbs.WaitTask(ctx, upid, 10*time.Minute); err != nil {
+		if err := c.unmountStore(ctx, pbs, d.Store); err != nil {
 			problems = append(problems, "Aushängen: "+err.Error())
 		} else {
 			c.mu.Lock()
@@ -785,11 +783,7 @@ func (c *Core) EjectRotationDisk(ctx context.Context, r Rotation, d RotDisk) err
 	if err != nil {
 		return err
 	}
-	upid, err := pbs.Unmount(ctx, d.Store)
-	if err != nil {
-		return err
-	}
-	if _, err := pbs.WaitTask(ctx, upid, 10*time.Minute); err != nil {
+	if err := c.unmountStore(ctx, pbs, d.Store); err != nil {
 		return err
 	}
 	rt := c.runtime(rtKey(r, d))

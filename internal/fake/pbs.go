@@ -69,6 +69,23 @@ type PBS struct {
 	blobs   map[string][]byte         // store/type/id/time/file → content
 	// badDisks are disks in a broken USB enclosure (datastores made on them go bad).
 	badDisks map[string]bool
+	// busy are datastores the proxy holds open: unmount fails until the proxy is reloaded.
+	busy    map[string]bool
+	reloads int
+}
+
+// Reloads counts the reloads of proxmox-backup-proxy.
+func (p *PBS) Reloads() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.reloads
+}
+
+// SetBusy makes unmounting a datastore fail with "target is busy" until the proxy reloads.
+func (p *PBS) SetBusy(st string, v bool) {
+	p.mu.Lock()
+	p.busy[st] = v
+	p.mu.Unlock()
 }
 
 // SetCorrupt makes the files of a datastore unreadable (as after a broken write).
@@ -95,7 +112,7 @@ func (p *PBS) AddForeign(uuid, path string, snaps []prox.Snapshot) {
 // NewPBS creates an empty server.
 func NewPBS(node string, root int64) *PBS {
 	return &PBS{node: node, root: root, stores: map[string]*store{}, jobs: map[string]*job{}, remotes: map[string]prox.Remote{}, usedExtra: map[string]int64{}, users: map[string]bool{}, foreign: map[string][]prox.Snapshot{},
-		smart: map[string]map[string]any{}, blobs: map[string][]byte{}, badDisks: map[string]bool{}}
+		smart: map[string]map[string]any{}, blobs: map[string][]byte{}, badDisks: map[string]bool{}, busy: map[string]bool{}}
 }
 
 // AddStore adds a datastore (removable when uuid is set).
@@ -360,6 +377,18 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			data(w, upid)
 		case "unmount":
+			if strings.Contains(s.cfg.Maintenance, "unmount") {
+				apiErr(w, 400, "datastore is already being unmounted")
+				return
+			}
+			if p.busy[seg[2]] {
+				// Like PBS: the maintenance mode stays behind when umount fails.
+				s.cfg.Maintenance = "unmount"
+				data(w, p.tasks.start(p.node, "unmount-device", seg[2], time.Second, nil, func() (string, []string) {
+					return `command "umount" "/mnt/datastore/` + seg[2] + `" failed - status code: 32 - umount: /mnt/datastore/` + seg[2] + `: target is busy.`, nil
+				}))
+				return
+			}
 			s.mounted = s.cfg.BackingDevice == ""
 			data(w, p.tasks.start(p.node, "unmount-device", seg[2], 2*time.Second, nil, nil))
 		case "gc":
@@ -562,6 +591,10 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		p.remotes[seg[2]] = prox.Remote{Name: seg[2], Host: f.Get("host"), AuthID: f.Get("auth-id"), Fingerprint: f.Get("fingerprint"), Comment: f.Get("comment")}
 		data(w, nil)
+	case path == "/nodes/localhost/services/proxmox-backup-proxy/reload" && m == "POST":
+		p.reloads++
+		p.busy = map[string]bool{}
+		data(w, p.tasks.start(p.node, "srvreload", "proxmox-backup-proxy", time.Second, nil, nil))
 	case path == "/nodes/localhost/disks/smart":
 		p.serveSmart(w, f.Get("disk"))
 	case path == "/nodes/localhost/disks/list":
