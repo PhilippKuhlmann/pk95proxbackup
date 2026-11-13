@@ -70,9 +70,10 @@ type PBS struct {
 	// badDisks are disks in a broken USB enclosure (datastores made on them go bad).
 	badDisks map[string]bool
 	// busy are datastores the proxy holds open: unmount fails until the proxy is reloaded.
-	busy    map[string]bool
-	reloads int
-	apt     aptState
+	busy     map[string]bool
+	reloads  int
+	apt      aptState
+	remotePw map[string]string
 }
 
 type aptState struct {
@@ -148,7 +149,7 @@ func (p *PBS) AddForeign(uuid, path string, snaps []prox.Snapshot) {
 // NewPBS creates an empty server.
 func NewPBS(node string, root int64) *PBS {
 	return &PBS{node: node, root: root, stores: map[string]*store{}, jobs: map[string]*job{}, remotes: map[string]prox.Remote{}, usedExtra: map[string]int64{}, users: map[string]bool{}, foreign: map[string][]prox.Snapshot{},
-		smart: map[string]map[string]any{}, blobs: map[string][]byte{}, badDisks: map[string]bool{}, busy: map[string]bool{}}
+		smart: map[string]map[string]any{}, blobs: map[string][]byte{}, badDisks: map[string]bool{}, busy: map[string]bool{}, remotePw: map[string]string{}}
 }
 
 // AddStore adds a datastore (removable when uuid is set).
@@ -618,15 +619,30 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		data(w, out)
 	case path == "/config/remote" && m == "POST":
-		p.remotes[f.Get("name")] = prox.Remote{Name: f.Get("name"), Host: f.Get("host"), AuthID: f.Get("auth-id"), Fingerprint: f.Get("fingerprint"), Comment: f.Get("comment")}
+		p.remotes[f.Get("name")] = prox.Remote{Name: f.Get("name"), Host: f.Get("host"), Port: atoi(f.Get("port")), AuthID: f.Get("auth-id"), Fingerprint: f.Get("fingerprint"), Comment: f.Get("comment")}
+		p.remotePw[f.Get("name")] = f.Get("password")
 		data(w, nil)
 	case len(seg) == 3 && seg[0] == "config" && seg[1] == "remote" && m == "PUT":
 		if _, ok := p.remotes[seg[2]]; !ok {
 			apiErr(w, 404, "remote does not exist")
 			return
 		}
-		p.remotes[seg[2]] = prox.Remote{Name: seg[2], Host: f.Get("host"), AuthID: f.Get("auth-id"), Fingerprint: f.Get("fingerprint"), Comment: f.Get("comment")}
+		p.remotes[seg[2]] = prox.Remote{Name: seg[2], Host: f.Get("host"), Port: atoi(f.Get("port")), AuthID: f.Get("auth-id"), Fingerprint: f.Get("fingerprint"), Comment: f.Get("comment")}
+		p.remotePw[seg[2]] = f.Get("password")
 		data(w, nil)
+	case len(seg) == 4 && seg[0] == "config" && seg[1] == "remote" && seg[3] == "scan":
+		// Like PBS: this server connects to the remote and lists its datastores.
+		rm, ok := p.remotes[seg[2]]
+		if !ok {
+			apiErr(w, 404, "remote does not exist")
+			return
+		}
+		stores, err := scanRemote(rm, p.remotePw[seg[2]])
+		if err != nil {
+			apiErr(w, 400, err.Error())
+			return
+		}
+		data(w, stores)
 	case len(seg) == 5 && seg[0] == "nodes" && seg[2] == "services" && seg[4] == "reload" && m == "POST":
 		if seg[3] == "proxmox-backup-proxy" {
 			p.reloads++

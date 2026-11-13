@@ -325,7 +325,7 @@ func (c *Core) runArchive(ctx context.Context, id string, check bool) {
 	}
 	// 3. Copy (a one-off pull: no sync job is left behind on the server).
 	if !check {
-		remote, err := c.RemoteFor(ctx, pbs, srv, a.SourceServer)
+		remote, err := c.RemoteFor(ctx, pbs, srv, a.SourceServer, a.SourceStore, "")
 		if err != nil {
 			unmount()
 			failed("Verbindung zur Quelle", err)

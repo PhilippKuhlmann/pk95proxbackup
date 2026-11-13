@@ -1239,8 +1239,8 @@ PAGES["/kopierjobs"] = async (el, token) => {
           ${rot ? "" : `<button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${esc(j.id)}">${icon("pencil")}</button><button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${esc(j.id)}">${icon("trash")}</button>`}</div></td></tr>`; }).join("")}
       </tbody></table></div></div>` : empty("Noch kein Kopierjob", "Zum Beispiel: Diese Appliance holt jede Nacht eine Kopie vom PBS im Büro – oder umgekehrt.", `<button class="btn" type="button" data-add2>${icon("plus")} Kopierjob anlegen</button>`, "sync"));
     bindPicker(el);
-    qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => syncForm(srv, null, draw));
-    qsa("[data-edit]", el).forEach((b) => b.onclick = () => syncForm(srv, jobs.find((j) => j.id === b.dataset.edit), draw));
+    qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => syncForm(srv, null, draw, remotes));
+    qsa("[data-edit]", el).forEach((b) => b.onclick = () => syncForm(srv, jobs.find((j) => j.id === b.dataset.edit), draw, remotes));
     qsa("[data-run]", el).forEach((b) => b.onclick = () => run(b, async () => { await POST(`/api/pbs/${sid}/sync/${enc(b.dataset.run)}/run`); setTimeout(draw, 1500); }, "Kopierjob gestartet."));
     qsa("[data-log]", el).forEach((b) => b.onclick = () => showTask("pbs:" + sid, b.dataset.log, "Kopierjob"));
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
@@ -1258,25 +1258,45 @@ async function storesOf(serverId) {
   return r.datastores;
 }
 
-function syncForm(srv, job, done) {
+// sourceAddress is the default address under which other servers reach a Backup Server.
+function sourceAddress(s) {
+  if (!s) return "";
+  if (s.local) return s.public_host || "";
+  const h = s.public_host || s.host;
+  return s.port && s.port !== 8007 ? `${h}:${s.port}` : h;
+}
+
+function syncForm(srv, job, done, remotes = {}) {
   const edit = !!job;
   let srcServer = srv.id;
   if (job?.remote) {
     const m = state.servers.find((s) => "pk95-" + s.id === job.remote);
     if (m) srcServer = m.id;
   }
+  // Address the target uses now (editing) or the default of the source.
+  const remoteAddr = (sid) => {
+    const r = remotes["pk95-" + sid];
+    if (r && r.host) return r.port && r.port !== 8007 ? `${r.host}:${r.port}` : r.host;
+    return sourceAddress(state.servers.find((s) => s.id === sid));
+  };
   formDialog({
     title: edit ? "Kopierjob bearbeiten" : "Kopierjob anlegen", ic: "sync",
-    text: `Ziel-Server: <b>${esc(srv.name)}</b>. Liegt die Quelle auf einem anderen Backup-Server, richtet die Appliance dort den Zugang („Remote“) ein.`,
+    text: `Ziel-Server: <b>${esc(srv.name)}</b> – die Kopie wird dorthin geholt.`,
     fields: [
       { name: "source_server", label: "Quelle: Backup-Server", type: "select", value: srcServer, options: state.servers.map((s) => [s.id, s.name]) },
       { name: "source_store", label: "Quelle: Datastore", type: "select", options: [["", "Lade …"]] },
+      { type: "html", name: "conn_head", wide: true, html: `<div data-conn-head hidden><div class="section-title">Verbindung zwischen den Servern</div>
+        <div class="hint">${esc(srv.name)} holt die Sicherungen bei <b data-src-name></b> ab. Dafür muss ${esc(srv.name)} die Quelle über das Netzwerk erreichen: <b>TCP-Port 8007 vom Ziel zur Quelle</b> – auch durch Firewall, Router oder VPN. Die Appliance legt auf der Quelle einen eigenen Zugang an, der nur lesen darf.</div></div>` },
+      { name: "source_host", label: "Adresse der Quelle aus Sicht des Ziels", mono: true, wide: true, button: "Verbindung prüfen",
+        hint: "IP oder Name, optional mit :Port – so, wie der Ziel-Server die Quelle erreicht (z. B. die öffentliche IP oder die VPN-Adresse)." },
+      { type: "html", name: "conn_res", wide: true, html: `<div data-conn-res></div>` },
       { name: "store", label: "Ziel-Datastore", type: "select", options: [["", "Lade …"]] },
       { name: "schedule", label: "Zeitplan", value: job?.schedule ?? "daily", mono: true, hint: "z. B. daily, 03:00, mon..fri 23:00 – leer = nur von Hand" },
       { name: "transfer_last", label: "Was kopieren?", type: "select", value: job?.["transfer-last"] || 0, options: TRANSFER_OPTIONS, hint: "Pro VM bzw. Container." },
       { name: "comment", label: "Beschreibung", value: job?.comment || "", wide: true },
       { name: "remove_vanished", label: "Am Ziel löschen, was an der Quelle gelöscht wurde", type: "checkbox", value: job?.["remove-vanished"], wide: true, hint: "Aus: Das Ziel behält auch ältere Sicherungen (eigene Aufbewahrung am Ziel einstellen)." },
     ],
+    extraButtons: `<button class="btn gray" type="button" data-add-src>${icon("plus")} Backup-Server verbinden</button>`,
     onMount: async (d) => {
       const fill = async (sel, sid, value) => {
         sel.innerHTML = `<option value="">Lade …</option>`;
@@ -1285,12 +1305,37 @@ function syncForm(srv, job, done) {
           sel.innerHTML = list.map((s) => `<option ${s.name === value ? "selected" : ""}>${esc(s.name)}</option>`).join("");
         } catch (e) { sel.innerHTML = ""; toastErr(e); }
       };
-      const ss = qs('[name="source_server"]', d);
-      ss.onchange = () => fill(qs('[name="source_store"]', d), ss.value, "");
+      const ss = qs('[name="source_server"]', d), host = qs('[name="source_host"]', d), res = qs("[data-conn-res]", d);
+      const showConn = () => {
+        const other = ss.value !== srv.id;
+        qs("[data-conn-head]", d).hidden = !other;
+        qs('[data-field="source_host"]', d).hidden = !other;
+        qs("[data-src-name]", d).textContent = state.servers.find((s) => s.id === ss.value)?.name || "";
+        res.innerHTML = "";
+      };
+      ss.onchange = () => { host.value = remoteAddr(ss.value); showConn(); fill(qs('[name="source_store"]', d), ss.value, ""); };
+      host.value = remoteAddr(srcServer);
+      showConn();
+      const btn = qs('[data-fbtn="source_host"]', d);
+      btn.onclick = () => run(btn, async () => {
+        res.innerHTML = "";
+        const r = await POST(`/api/pbs/${srv.id}/sync/check`, { source_server: ss.value, source_store: qs('[name="source_store"]', d).value, source_host: host.value });
+        const src = state.servers.find((s) => s.id === ss.value)?.name || "die Quelle";
+        res.innerHTML = r.ok
+          ? callout("green", `${srv.name} erreicht ${src}`, `Unter ${esc(r.host)} angemeldet; sichtbar: ${r.stores.map(esc).join(", ") || "–"}.`)
+          : callout("red", `${srv.name} erreicht ${src} nicht`, `${esc(r.hint || "")}<div class="t-sub mono" style="margin-top:6px">${esc(r.error || "")}</div>`);
+      });
+      qs("[data-add-src]", d).onclick = () => pbsForm(null, async () => {
+        await loadConn();
+        const cur = ss.value;
+        ss.innerHTML = state.servers.map((s) => `<option value="${esc(s.id)}" ${s.id === cur ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+        toast("Backup-Server verbunden – jetzt als Quelle wählbar.");
+      });
       await Promise.all([fill(qs('[name="source_store"]', d), srcServer, job?.["remote-store"]), fill(qs('[name="store"]', d), srv.id, job?.store)]);
     },
     submit: async (v) => {
       v.transfer_last = Number(v.transfer_last);
+      if (v.source_server === srv.id) v.source_host = "";
       if (edit) await PUT(`/api/pbs/${srv.id}/sync/${enc(job.id)}`, v); else await POST(`/api/pbs/${srv.id}/sync`, v);
       toast("Gespeichert."); done();
     },

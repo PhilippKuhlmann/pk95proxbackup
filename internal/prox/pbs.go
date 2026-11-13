@@ -516,3 +516,19 @@ func (p *PBS) ReloadService(ctx context.Context, service string) error {
 	}
 	return p.waitIfTask(ctx, upid, 2*time.Minute)
 }
+
+// ScanRemote lets the server list the datastores it can see on a remote: this tests the
+// connection from this server to the remote (network, certificate, login).
+func (p *PBS) ScanRemote(ctx context.Context, name string) ([]string, error) {
+	var out []struct {
+		Store string `json:"store"`
+	}
+	if err := p.Do(ctx, http.MethodGet, "/config/remote/"+url.PathEscape(name)+"/scan", nil, &out); err != nil {
+		return nil, err
+	}
+	stores := []string{}
+	for _, s := range out {
+		stores = append(stores, s.Store)
+	}
+	return stores, nil
+}

@@ -117,34 +117,6 @@ func (c *Core) Rotation(id string) (Rotation, error) {
 	return r, err
 }
 
-// remoteFor makes sure the target server has a remote pointing at the source server.
-// Returns "" when both are the same server (local sync).
-func (c *Core) RemoteFor(ctx context.Context, target *prox.PBS, targetSrv PBSServer, sourceID string) (string, error) {
-	if sourceID == targetSrv.ID {
-		return "", nil
-	}
-	src, err := c.Server(sourceID)
-	if err != nil {
-		return "", fmt.Errorf("Quell-Server: %w", err)
-	}
-	name := JobID("pk95", src.ID)
-	port := src.Port
-	if port == 0 {
-		port = 8007
-	}
-	host := src.Address()
-	if src.Local && !targetSrv.Local {
-		host = src.PublicHost
-	}
-	err = target.PutRemote(ctx, prox.Remote{
-		Name: name, Host: host, Port: port, AuthID: src.AuthID, Fingerprint: src.Fingerprint, Comment: "PK95 ProxBackup: " + src.Name,
-	}, src.Secret)
-	if err != nil {
-		return "", fmt.Errorf("Remote auf %s anlegen: %w", targetSrv.Name, err)
-	}
-	return name, nil
-}
-
 // SyncParams returns the PBS parameters of the sync job for one disk.
 func (c *Core) syncParams(r Rotation, d RotDisk, remote string) prox.Params {
 	p := prox.Params{
@@ -172,7 +144,7 @@ func (c *Core) ApplyRotation(ctx context.Context, r Rotation) error {
 	if err != nil {
 		return err
 	}
-	remote, err := c.RemoteFor(ctx, pbs, srv, r.SourceServer)
+	remote, err := c.RemoteFor(ctx, pbs, srv, r.SourceServer, r.SourceStore, "")
 	if err != nil {
 		return err
 	}

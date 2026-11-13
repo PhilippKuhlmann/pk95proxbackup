@@ -672,6 +672,7 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 		RemoveVanished bool   `json:"remove_vanished"`
 		TransferLast   int    `json:"transfer_last"`
 		Comment        string `json:"comment"`
+		SourceHost     string `json:"source_host"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -700,8 +701,12 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 	if fieldErrs(w, errs) {
 		return
 	}
-	remote, err := s.C.RemoteFor(r.Context(), pbs, srv, req.SourceServer)
+	remote, err := s.C.RemoteFor(r.Context(), pbs, srv, req.SourceServer, req.SourceStore, strings.TrimSpace(req.SourceHost))
 	if err != nil {
+		if strings.Contains(err.Error(), "Adresse der Quelle") {
+			fieldErrs(w, map[string]string{"source_host": err.Error()})
+			return
+		}
 		fail(w, err)
 		return
 	}
@@ -812,3 +817,18 @@ func (s *Server) taskLog(w http.ResponseWriter, r *http.Request) {
 }
 
 var _ = store.ErrNotFound
+
+// checkSyncSource lets the target connect to the source of a copy (network, certificate, login).
+func (s *Server) checkSyncSource(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SourceServer string `json:"source_server"`
+		SourceStore  string `json:"source_store"`
+		SourceHost   string `json:"source_host"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	writeJSON(w, http.StatusOK, s.C.CheckRemote(ctx, r.PathValue("id"), req.SourceServer, req.SourceStore, strings.TrimSpace(req.SourceHost)))
+}

@@ -9,6 +9,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 - **Datastores** auf einer freien (virtuellen) Platte, einer **NFS-/SMB-Freigabe** oder in einem Verzeichnis,
   mit Aufbewahrung (keep-last/daily/weekly/…), Prüfung (Verify) und Speicherfreigabe (Garbage Collection) nach Zeitplan.
 - **Vorhandener PBS:** weitere Backup-Server per API-Token einbinden; Kopierjobs zwischen den Servern (z. B. Außer-Haus-Kopie).
+  Der Kopierjob-Dialog verbindet die beiden Server selbst: Er zeigt die Adresse, unter der das Ziel die Quelle erreicht
+  (TCP 8007 vom Ziel zur Quelle), prüft die Verbindung vom Ziel aus und legt auf der Quelle einen eigenen Token an,
+  der nur die kopierten Datastores lesen darf.
 - **PBS in Proxmox VE eintragen** mit einem Klick: Die Appliance legt auf dem PBS einen eigenen Token an, der nur diesen
   Datastore benutzen darf, und trägt den Speicher in Proxmox VE ein.
 - **Wechselplatten (USB):** Sätze aus zwei oder mehr Platten, die täglich oder wöchentlich getauscht werden – am PBS

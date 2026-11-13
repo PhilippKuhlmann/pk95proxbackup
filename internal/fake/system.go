@@ -2,8 +2,12 @@ package fake
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -162,4 +166,34 @@ func NextMinor(v string) string {
 	maj, _ := strconv.Atoi(parts[0])
 	min, _ := strconv.Atoi(parts[1])
 	return strconv.Itoa(maj) + "." + strconv.Itoa(min+1) + ".0"
+}
+
+// scanRemote connects to another simulated server the way PBS does for /config/remote/…/scan.
+func scanRemote(rm prox.Remote, password string) ([]map[string]string, error) {
+	port := rm.Port
+	if port == 0 {
+		port = 8007
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://"+net.JoinHostPort(rm.Host, strconv.Itoa(port))+"/api2/json/config/datastore", nil)
+	req.Header.Set("Authorization", "PBSAPIToken="+rm.AuthID+":"+password)
+	cl := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error trying to connect: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("authentication failed (401)")
+	}
+	var out struct {
+		Data []prox.DatastoreConfig `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	stores := []map[string]string{}
+	for _, d := range out.Data {
+		stores = append(stores, map[string]string{"store": d.Name})
+	}
+	return stores, nil
 }

@@ -135,6 +135,7 @@ func (s *Server) routes() {
 	a("POST /api/pbs/{id}/disks/prepare", s.prepareDisk)
 	a("GET /api/pbs/{id}/sync", s.listSync)
 	a("POST /api/pbs/{id}/sync", s.saveSync)
+	a("POST /api/pbs/{id}/sync/check", s.checkSyncSource)
 	a("PUT /api/pbs/{id}/sync/{job}", s.saveSync)
 	a("DELETE /api/pbs/{id}/sync/{job}", s.deleteSync)
 	a("POST /api/pbs/{id}/sync/{job}/run", s.runSync)
