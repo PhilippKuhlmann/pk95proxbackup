@@ -45,6 +45,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   (`/etc/proxmox-backup`, Mount-Units) werden täglich mit einem Wiederherstellungs-Passwort verschlüsselt (AES-256-GCM,
   scrypt) als Gruppe `host/pk95proxbackup` in den Datastore geschrieben und wandern so auf die Wechselplatten. Eine
   neue Appliance lässt sich bei der Ersteinrichtung aus der Datei oder später aus einem Datastore wiederherstellen.
+- **Mails zu Sicherungsjobs im eigenen Design:** je Proxmox VE umschaltbar („Appliance übernimmt“ unter
+  Sicherungsjobs). Die Jobs in Proxmox VE schicken dann keine eigene Mail mehr, die Appliance meldet jeden Lauf mit
+  allen Servern, Ergebnis, Dauer und Datenmenge; andere Proxmox-Meldungen bleiben unverändert, zurückstellen geht jederzeit.
 - **Überwachung und Benachrichtigung** (E-Mail, Telegram, ntfy, Gotify, Webhook): fehlgeschlagene Aufgaben, Server offline,
   Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig. Telegram: Bot bei @BotFather anlegen,
   ihm schreiben (oder in die Gruppe aufnehmen), „Chat-ID ermitteln“ liest die Chat-ID aus; Screenshots und Berichte

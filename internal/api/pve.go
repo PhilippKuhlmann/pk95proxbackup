@@ -408,6 +408,11 @@ func (s *Server) saveJob(w http.ResponseWriter, r *http.Request) {
 	set("comment", req.Comment)
 	set("notes-template", req.NotesTemplate)
 	set("prune-backups", req.PruneBackups)
+	// The appliance sends the backup mails: Proxmox VE stays quiet for this job.
+	if s.C.PVEMailOn(cl.ID) {
+		p["notification-mode"] = "legacy-sendmail"
+		del = append(del, "mailto")
+	}
 	job := r.PathValue("job")
 	if job == "" {
 		for k := range p {
@@ -1021,4 +1026,32 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	s.C.Event(sev, cl.Name, what, archive+" (von "+currentUser(r).Username+")")
 	s.C.RequestRefresh()
 	writeJSON(w, http.StatusOK, map[string]any{"upid": upid, "source": "pve:" + cl.ID})
+}
+
+func (s *Server) getPVEMail(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	st, err := s.C.PVEMailState(ctx, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) putPVEMail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Appliance bool `json:"appliance"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	st, err := s.C.SetPVEMail(ctx, r.PathValue("id"), req.Appliance)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }

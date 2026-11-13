@@ -149,7 +149,9 @@ type BackupJob struct {
 	NotesTemplate string `json:"notes-template,omitempty"`
 	PruneBackups  string `json:"prune-backups,omitempty"`
 	MailTo        string `json:"mailto,omitempty"`
-	NextRun       int64  `json:"next-run,omitempty"`
+	// NotificationMode: auto, legacy-sendmail (mail only to MailTo), notification-system.
+	NotificationMode string `json:"notification-mode,omitempty"`
+	NextRun          int64  `json:"next-run,omitempty"`
 }
 
 // IsEnabled reports whether the job is active (missing means enabled).

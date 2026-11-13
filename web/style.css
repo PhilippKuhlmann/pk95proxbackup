@@ -664,3 +664,8 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
 .daypick input:focus-visible + span { outline: 2px solid var(--c500); outline-offset: -2px; }
 
 .dim-field { opacity: 0.55; }
+
+/* ---- Mails zu Sicherungsjobs ---- */
+.mail-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 16px 14px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); font-size: 13px; }
+.mail-strip .ms-ic { color: var(--accent); display: inline-flex; }
+.mail-strip .grow { min-width: 220px; }

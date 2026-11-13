@@ -2450,6 +2450,21 @@ function rtPlanForm(p, done, preset = {}) {
 }
 
 // ---------- Sicherungsjobs ----------
+// mailStrip says who mails about the backup jobs of a Proxmox VE and switches it.
+function mailStrip(c, m) {
+  const who = m.appliance
+    ? `<b>von der Appliance</b> – im eigenen Design mit allen Servern, Dauer und Datenmenge, an ${esc(m.appliance_to)}`
+    : `<b>von Proxmox VE</b> – die schlichte Proxmox-Mail`;
+  const notes = [];
+  if (m.appliance && m.pve_sends) notes.push(`${m.pve_sends} ${m.pve_sends === 1 ? "Job meldet" : "Jobs melden"} sich noch selbst und ${m.pve_sends === 1 ? "wird" : "werden"} in Kürze umgestellt.`);
+  if (m.appliance && m.min_severity !== "info") notes.push(`Erfolgreiche Läufe werden nicht gemeldet („Melden ab“ steht auf ${m.min_severity === "critical" ? "Fehler" : "Warnungen"}).`);
+  if (!m.appliance && !m.appliance_mail) notes.push(`Damit die Appliance übernehmen kann, zuerst unter <a href="/einstellungen" data-go>Einstellungen</a> E-Mail einrichten.`);
+  return `<div class="mail-strip"><span class="ms-ic">${icon("bell")}</span><div class="grow"><div>Mails zu diesen Sicherungsjobs ${who}.</div>${notes.map((n) => `<div class="t-sub">${n}</div>`).join("")}</div>
+    <div class="flex"><a class="btn gray sm" href="/api/settings/preview?status=ok" target="_blank" rel="noopener">${icon("eye")} So sieht unsere Mail aus</a>
+    ${m.appliance ? `<button class="btn gray sm" type="button" data-pvemail="${c.id}|0">Wieder Proxmox VE</button>`
+      : `<button class="btn sm" type="button" data-pvemail="${c.id}|1" ${m.appliance_mail ? "" : "disabled"}>Appliance übernimmt</button>`}</div></div>`;
+}
+
 PAGES["/jobs"] = async (el, token) => {
   await loadConn();
   if (!state.clusters.length) {
@@ -2457,10 +2472,16 @@ PAGES["/jobs"] = async (el, token) => {
     return;
   }
   const draw = async () => {
-    const all = await Promise.all(state.clusters.map(async (c) => { try { return { c, r: await GET(`/api/pve/${c.id}/jobs`) }; } catch (e) { return { c, err: e.message }; } }));
+    const all = await Promise.all(state.clusters.map(async (c) => {
+      try {
+        const [r, mail] = await Promise.all([GET(`/api/pve/${c.id}/jobs`), GET(`/api/pve/${c.id}/mail`).catch(() => null)]);
+        return { c, r, mail };
+      } catch (e) { return { c, err: e.message }; }
+    }));
     if (token !== pageToken) return;
     el.innerHTML = pageHead("Sicherungsjobs", "Zeitgesteuerte Sicherungen in Proxmox VE (Rechenzentrum → Backup). Ziel ist ein Backup-Speicher, z. B. ein Datastore dieser Appliance.") +
-      all.map(({ c, r, err }) => `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(c.name)}</div><div class="actions"><button class="btn" type="button" data-add="${c.id}">${icon("plus")} Job anlegen</button></div></div>
+      all.map(({ c, r, err, mail }) => `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(c.name)}</div><div class="actions"><button class="btn" type="button" data-add="${c.id}">${icon("plus")} Job anlegen</button></div></div>
+        ${mail && r && r.jobs.length ? mailStrip(c, mail) : ""}
         ${err ? `<div style="padding:0 16px 16px">${err.includes("fehlen Rechte") ? permCallout(c, (err.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean)) : callout("red", "Nicht erreichbar", esc(err))}</div>` : r.jobs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Job</th><th>Zeitplan</th><th>Was</th><th>Ziel</th><th>Aufbewahrung</th><th></th></tr></thead><tbody>
         ${r.jobs.map((j) => { const names = Object.fromEntries(r.guests.map((g) => [String(g.vmid), g.name])); const ids = (j.vmid || j.exclude || "").split(",").filter(Boolean);
           return `<tr class="${j.enabled === 0 ? "off" : ""}"><td data-l="Job"><div class="t-main">${esc(j.comment || j.id)} ${j.enabled === 0 ? pill("aus") : ""}</div><div class="t-sub mono">${esc(j.id)}</div></td>
@@ -2472,6 +2493,15 @@ PAGES["/jobs"] = async (el, token) => {
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${c.id}|${esc(j.id)}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${c.id}|${esc(j.id)}">${icon("trash")}</button></div></td></tr>`; }).join("")}</tbody></table></div>` :
           `<div style="padding:0 16px 16px">${empty("Noch kein Sicherungsjob", "Zum Beispiel jede Nacht um 21:00 alle VMs auf den Backup-Server.", "", "calendar")}</div>`}</div>`).join("");
+    qsa("[data-pvemail]", el).forEach((b) => b.onclick = async () => {
+      const [cid, on] = b.dataset.pvemail.split("|");
+      if (on === "1") {
+        const ok = await confirmDialog({ title: "Mails zu Sicherungsjobs von der Appliance?", tone: "", ic: "bell", button: "Umstellen",
+          text: "Die Sicherungsjobs in Proxmox VE schicken dann keine eigene Mail mehr; stattdessen meldet die Appliance jeden Lauf in ihrem Design – mit allen Servern, Ergebnis, Dauer und Datenmenge. Alle anderen Meldungen von Proxmox VE bleiben wie sie sind. Zurückstellen geht jederzeit." });
+        if (!ok) return;
+      }
+      run(b, async () => { await PUT(`/api/pve/${cid}/mail`, { appliance: on === "1" }); await draw(); }, on === "1" ? "Umgestellt – die Mails kommen jetzt von der Appliance." : "Zurückgestellt auf Proxmox VE.");
+    });
     bindCopy(el);
     const find = (v) => { const [cid, jid] = v.split("|"); const x = all.find((a) => a.c.id === cid); return { x, job: x.r?.jobs.find((j) => j.id === jid), jid }; };
     qsa("[data-add]", el).forEach((b) => b.onclick = () => jobForm(all.find((a) => a.c.id === b.dataset.add), null, draw));

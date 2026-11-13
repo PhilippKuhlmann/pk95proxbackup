@@ -151,6 +151,8 @@ func (s *Server) routes() {
 	a("DELETE /api/pve/{id}/storages/{storage}", s.deletePVEStorage)
 	a("GET /api/pve/{id}/nodes/{node}/storages", s.nodeStorages)
 	a("GET /api/pve/{id}/jobs", s.listJobs)
+	a("GET /api/pve/{id}/mail", s.getPVEMail)
+	a("PUT /api/pve/{id}/mail", s.putPVEMail)
 	a("POST /api/pve/{id}/jobs", s.saveJob)
 	a("PUT /api/pve/{id}/jobs/{job}", s.saveJob)
 	a("DELETE /api/pve/{id}/jobs/{job}", s.deleteJob)

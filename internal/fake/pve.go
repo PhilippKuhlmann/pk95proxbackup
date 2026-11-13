@@ -86,6 +86,10 @@ func (p *PVE) jobParams(j *prox.BackupJob, f url.Values) {
 			j.NotesTemplate = ""
 		case "prune-backups":
 			j.PruneBackups = ""
+		case "mailto":
+			j.MailTo = ""
+		case "notification-mode":
+			j.NotificationMode = ""
 		}
 	}
 	set := func(k string, dst *string) {
@@ -102,6 +106,8 @@ func (p *PVE) jobParams(j *prox.BackupJob, f url.Values) {
 	set("comment", &j.Comment)
 	set("notes-template", &j.NotesTemplate)
 	set("prune-backups", &j.PruneBackups)
+	set("mailto", &j.MailTo)
+	set("notification-mode", &j.NotificationMode)
 	if v, ok := f["all"]; ok {
 		j.All = atoi(v[0])
 	}
