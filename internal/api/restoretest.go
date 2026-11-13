@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"time"
 
 	"pk95proxbackup/internal/core"
 )
@@ -16,7 +17,32 @@ func (s *Server) listRestoreTests(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"plans": plans, "runs": s.C.RestoreTestRuns(), "active": s.C.ActiveRestoreTest()})
+	type planView struct {
+		core.RestoreTestPlan
+		ScheduleText string  `json:"schedule_text"`
+		Next         []int64 `json:"next"`
+	}
+	views := []planView{}
+	for _, p := range plans {
+		views = append(views, planView{RestoreTestPlan: p, ScheduleText: p.ScheduleText(), Next: p.NextRuns(time.Now(), 3)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plans": views, "runs": s.C.RestoreTestRuns(), "active": s.C.ActiveRestoreTest()})
+}
+
+// previewSchedule describes a schedule and its next dates (while editing a plan).
+func (s *Server) previewSchedule(w http.ResponseWriter, r *http.Request) {
+	var p core.RestoreTestPlan
+	if !decode(w, r, &p) {
+		return
+	}
+	errs := map[string]string{}
+	p.Name, p.Cluster, p.Node, p.Storage, p.PBS, p.Store = "x", "x", "x", "x", "x", "x"
+	for k, v := range p.Normalize() {
+		if k == "weekdays" || k == "time" || k == "month_day" || k == "month_weekday" || k == "start_date" {
+			errs[k] = v
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"text": p.ScheduleText(), "next": p.NextRuns(time.Now(), 6), "errors": errs})
 }
 
 func (s *Server) saveRestoreTest(w http.ResponseWriter, r *http.Request) {

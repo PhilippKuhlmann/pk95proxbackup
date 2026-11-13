@@ -27,6 +27,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Später anstecken und „Prüfen“ liest alles erneut; zum Wiederherstellen erscheint die Platte als Quelle.
 - **Fremde Platten einlesen:** USB-Platte mit dem Datastore eines anderen Backup-Servers (Kundenplatte, altes Archiv)
   einbinden, ohne etwas zu löschen – danach wiederherstellen und automatisch per Restore-Test prüfen.
+- **Restore-Tests nach Zeitplan:** wöchentlich (auch alle 2–4 Wochen) oder monatlich – am ersten bis vierten oder
+  letzten Wochentag bzw. an einem Datum (auch Monatsletzter), jeden Monat oder alle 2, 3, 4, 6 oder 12 Monate ab einem
+  Startmonat. Der Dialog zeigt den Plan in Klartext und die nächsten Termine.
 - **Festplatten (SMART):** alle Platten der Backup-Server und der Proxmox-VE-Knoten werden täglich und gleich nach dem
   Einstecken geprüft – schwebende oder unlesbare Sektoren, ersetzte Sektoren, Selbsttest, SSD-Verschleiß, Temperatur.
   Wird eine Platte schlechter, kommt eine Meldung. Archiv-Platten, die über ein Jahr nicht angesteckt waren, erscheinen

@@ -2328,7 +2328,7 @@ PAGES["/restoretests"] = async (el, token) => {
         ${plans.map((p) => `<tr class="${p.enabled ? "" : "off"}"><td data-l="Plan"><div class="t-main">${esc(p.name)}</div>${p.enabled ? "" : '<div class="t-sub">Zeitplan aus</div>'}</td>
           <td data-l="Quelle" class="small">${esc(serverName(p.pbs))} / <b>${esc(p.store)}</b></td>
           <td data-l="Getestet auf" class="small">${esc(cl(p.cluster))} · ${esc(p.node)}<div class="t-sub">Disks auf ${esc(p.storage)}</div></td>
-          <td data-l="Zeitplan" class="small">${(p.weekdays || []).map((d) => WD[d]).join(", ") || "—"} ${esc(p.time || "")}</td>
+          <td data-l="Zeitplan" class="small">${esc(p.schedule_text || "—")}${!p.enabled ? `<div class="t-sub">Zeitplan aus – nur „Jetzt testen“</div>` : (p.next || []).length ? `<div class="next-runs"><span class="t-sub">Nächste Tests:</span>${p.next.slice(0, 3).map((t) => `<span class="next-run">${esc(new Date(t * 1000).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }))} ${esc(new Date(t * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))}</span>`).join("")}</div>` : ""}</td>
           <td data-l="Auswahl" class="small">${p.select === "all" ? "alle Server" : (p.select === "include" ? "nur " : "alle außer ") + esc(p.vmids)}</td>
           <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-run="${p.id}" ${act ? "disabled" : ""}>${icon("play")} Jetzt testen</button>
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${p.id}">${icon("pencil")}</button>
@@ -2399,8 +2399,19 @@ function rtPlanForm(p, done, preset = {}) {
       { name: "cluster", label: "Proxmox VE", type: "select", value: p.cluster, options: state.clusters.map((x) => [x.id, x.name]) },
       { name: "node", label: "Knoten", type: "select", options: [["", "Lade …"]] },
       { name: "storage", label: "Speicher für die Test-Disks", type: "select", options: [["", "Lade …"]] },
-      { type: "html", wide: true, html: `<div class="section-title">Wann?</div><div class="flex" data-wd>${[1, 2, 3, 4, 5, 6, 7].map((d) => `<label class="check"><input type="checkbox" class="plain" value="${d}" ${(p.weekdays || []).includes(d) ? "checked" : ""}><span>${WD[d]}</span></label>`).join("")}</div>`, name: "weekdays" },
+      { type: "html", wide: true, html: `<div class="section-title">Wann?</div>` },
+      { name: "repeat", type: "radio", label: "Rhythmus", value: p.repeat || "weekly", options: [["weekly", "Wöchentlich", "An bestimmten Wochentagen, auch alle 2–4 Wochen"], ["monthly", "Monatlich", "Z. B. erster oder letzter Sonntag, auch alle 2, 3 oder 6 Monate"]] },
+      { type: "html", wide: true, name: "weekdays", html: `<span class="fl">Wochentage</span><div class="daypick" data-wd>${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(p.weekdays || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+      { name: "every_weeks", label: "Wie oft", type: "select", value: p.every_weeks || 1, options: [[1, "jede Woche"], [2, "alle 2 Wochen"], [3, "alle 3 Wochen"], [4, "alle 4 Wochen"]] },
+      { name: "start_date", label: "Gezählt ab", type: "date", value: p.start_date || new Date().toISOString().slice(0, 10), hint: "Die Woche dieses Datums ist eine Test-Woche." },
+      { name: "month_mode", type: "radio", label: "An welchem Tag?", value: p.month_mode || "weekday", options: [["weekday", "Wochentag", "z. B. der erste oder letzte Sonntag"], ["day", "Datum", "z. B. der 15. oder der Monatsletzte"]] },
+      { name: "month_week", label: "Der …", type: "select", value: p.month_week || "1", options: [["1", "erste"], ["2", "zweite"], ["3", "dritte"], ["4", "vierte"], ["last", "letzte"]] },
+      { name: "month_weekday", label: "Wochentag", type: "select", value: p.month_weekday || 7, options: ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"].map((n, i) => [i + 1, n]) },
+      { name: "month_day", label: "Tag im Monat", type: "select", value: p.month_day || 1, options: [...Array(30).keys()].map((i) => [i + 1, `${i + 1}.`]).concat([[31, "letzter Tag"]]) },
+      { name: "every_months", label: "Wie oft", type: "select", value: p.every_months || 1, options: [[1, "jeden Monat"], [2, "alle 2 Monate"], [3, "alle 3 Monate (Quartal)"], [4, "alle 4 Monate"], [6, "alle 6 Monate"], [12, "einmal im Jahr"]] },
+      { name: "start_month", label: "Beginnend im", type: "select", value: p.start_month || (new Date().getMonth() + 1), options: ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"].map((m, i) => [i + 1, m]) },
       { name: "time", label: "Uhrzeit", type: "time", value: p.time },
+      { type: "html", wide: true, name: "sched_preview", html: `<div class="sched-preview" data-sched></div>` },
       { name: "enabled", label: "Zeitplan aktiv", type: "checkbox", value: p.enabled },
       { type: "html", wide: true, html: `<div class="section-title">Grenzen</div>` },
       { name: "max_cores", label: "Höchstens CPU-Kerne", type: "number", min: 0, value: p.max_cores, hint: "0 = wie das Original" },
@@ -2412,8 +2423,36 @@ function rtPlanForm(p, done, preset = {}) {
     ],
     onMount: async (d) => {
       const form = qs("form", d);
-      const show = () => { qs('[data-field="vmids"]', d).hidden = formValues(form).select === "all"; };
-      qsa('[name="select"]', d).forEach((r) => r.onchange = show);
+      const schedValues = () => {
+        const v = formValues(form);
+        const out = { repeat: v.repeat, time: v.time, weekdays: qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value)),
+          every_weeks: Number(v.every_weeks), start_date: v.start_date, month_mode: v.month_mode, month_week: v.month_week,
+          month_weekday: Number(v.month_weekday), month_day: Number(v.month_day), every_months: Number(v.every_months), start_month: Number(v.start_month) };
+        return out;
+      };
+      let pv = 0;
+      const preview = async () => {
+        const n = ++pv;
+        try {
+          const r = await POST("/api/restoretests/schedule", schedValues());
+          if (n !== pv) return;
+          const next = (r.next || []).map((t) => new Date(t * 1000).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }));
+          qs("[data-sched]", d).innerHTML = `<b>${esc(r.text)}</b>${next.length ? `<div class="t-sub">Nächste Termine: ${next.map(esc).join(" · ")}</div>` : `<div class="t-sub">Noch kein Termin – Wochentage und Uhrzeit wählen.</div>`}`;
+        } catch (e) { /* keep */ }
+      };
+      const show = () => {
+        const v = formValues(form);
+        qs('[data-field="vmids"]', d).hidden = v.select === "all";
+        const weekly = v.repeat !== "monthly", byDay = v.month_mode === "day";
+        ["weekdays", "every_weeks"].forEach((k) => { qs(`[data-field="${k}"]`, d).hidden = !weekly; });
+        qs('[data-field="start_date"]', d).hidden = !weekly || Number(v.every_weeks) <= 1;
+        ["month_mode", "every_months"].forEach((k) => { qs(`[data-field="${k}"]`, d).hidden = weekly; });
+        qs('[data-field="start_month"]', d).hidden = weekly || Number(v.every_months) <= 1;
+        ["month_week", "month_weekday"].forEach((k) => { qs(`[data-field="${k}"]`, d).hidden = weekly || byDay; });
+        qs('[data-field="month_day"]', d).hidden = weekly || !byDay;
+        preview();
+      };
+      form.addEventListener("change", show);
       show();
       const fillStores = async (val) => {
         const sel = qs('[name="store"]', d);
@@ -2442,7 +2481,7 @@ function rtPlanForm(p, done, preset = {}) {
     },
     submit: async (v, d) => {
       v.weekdays = qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value));
-      ["max_cores", "max_memory", "boot_wait", "time_limit", "id_base"].forEach((k) => { v[k] = Number(v[k]) || 0; });
+      ["max_cores", "max_memory", "boot_wait", "time_limit", "id_base", "every_weeks", "month_weekday", "month_day", "every_months", "start_month"].forEach((k) => { v[k] = Number(v[k]) || 0; });
       if (edit) await PUT(`/api/restoretests/${p.id}`, v); else await POST("/api/restoretests", v);
       toast("Gespeichert."); done();
     },

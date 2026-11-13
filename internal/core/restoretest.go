@@ -42,12 +42,22 @@ type RestoreTestPlan struct {
 	VMIDs    string `json:"vmids"`
 	Weekdays []int  `json:"weekdays"` // 1 = Monday … 7 = Sunday
 	Time     string `json:"time"`     // HH:MM
-	MaxCores int    `json:"max_cores"`
-	MaxMem   int    `json:"max_memory"` // MiB
-	BootWait int    `json:"boot_wait"`  // seconds
-	Limit    int    `json:"time_limit"` // minutes per guest for the restore
-	IDBase   int    `json:"id_base"`    // first VMID for test guests
-	KeepFail bool   `json:"keep_failed"`
+	// Schedule (see rtschedule.go): weekly (default) or monthly.
+	Repeat       string `json:"repeat"`
+	EveryWeeks   int    `json:"every_weeks"`   // weekly: every N weeks …
+	StartDate    string `json:"start_date"`    // … counted from this date (YYYY-MM-DD)
+	MonthMode    string `json:"month_mode"`    // monthly: weekday (n-th weekday) or day
+	MonthWeek    string `json:"month_week"`    // "1"–"4", "last"
+	MonthWeekday int    `json:"month_weekday"` // 1 = Monday … 7 = Sunday
+	MonthDay     int    `json:"month_day"`     // 1–31 (shorter months: their last day)
+	EveryMonths  int    `json:"every_months"`  // 1, 2, 3, 4, 6, 12 …
+	StartMonth   int    `json:"start_month"`   // … counted from this month (1–12)
+	MaxCores     int    `json:"max_cores"`
+	MaxMem       int    `json:"max_memory"` // MiB
+	BootWait     int    `json:"boot_wait"`  // seconds
+	Limit        int    `json:"time_limit"` // minutes per guest for the restore
+	IDBase       int    `json:"id_base"`    // first VMID for test guests
+	KeepFail     bool   `json:"keep_failed"`
 }
 
 // RestoreTestResult is the outcome for one guest.
@@ -117,8 +127,12 @@ func (p *RestoreTestPlan) Normalize() map[string]string {
 	if p.Time != "" && !hhmm.MatchString(p.Time) {
 		errs["time"] = "Uhrzeit als HH:MM."
 	}
-	if p.Enabled && (p.Time == "" || len(p.Weekdays) == 0) {
-		errs["time"] = "Für den Zeitplan Wochentage und Uhrzeit angeben."
+	p.normalizeSchedule(errs)
+	if p.Enabled && p.Time == "" {
+		errs["time"] = "Uhrzeit angeben."
+	}
+	if p.Enabled && p.Repeat == "weekly" && len(p.Weekdays) == 0 {
+		errs["weekdays"] = "Mindestens einen Wochentag wählen."
 	}
 	if p.BootWait <= 0 {
 		p.BootWait = 180
@@ -906,21 +920,8 @@ func allStart(n int) string {
 // scheduleRestoreTests starts plans whose weekday and time have come (called every minute).
 func (c *Core) scheduleRestoreTests(now time.Time) {
 	plans, _ := c.RestoreTestPlans()
-	wd := int(now.Weekday())
-	if wd == 0 {
-		wd = 7
-	}
 	for _, p := range plans {
-		if !p.Enabled || p.Time == "" || now.Format("15:04") < p.Time {
-			continue
-		}
-		today := false
-		for _, d := range p.Weekdays {
-			if d == wd {
-				today = true
-			}
-		}
-		if !today {
+		if !p.Enabled || p.Time == "" || now.Format("15:04") < p.Time || !p.DueOn(now) {
 			continue
 		}
 		key := "rtlast:" + p.ID
