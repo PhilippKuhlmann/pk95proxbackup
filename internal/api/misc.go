@@ -84,6 +84,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	out["stale_archives"] = stale
 	up := s.C.Update()
 	out["update"] = map[string]any{"available": up.Available, "latest": up.Latest, "current": up.Current}
+	out["server_health"] = s.C.ServerHealths()
 	sb := s.C.SelfBackup()
 	out["selfbackup"] = map[string]any{"enabled": sb.Enabled, "has_key": sb.HasKey, "last_ok": sb.LastOK, "last_error": sb.LastError}
 	writeJSON(w, http.StatusOK, out)

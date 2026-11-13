@@ -264,8 +264,11 @@ func (c *Core) Run(ctx context.Context) {
 		c.check(ctx, prev, &ov)
 		c.reportBackups(ctx, &ov)
 		c.scheduleRotations(ctx, ov.Rotations, time.Now())
+		c.checkArchivesUnplugged(ctx, time.Now())
 		c.scheduleRestoreTests(time.Now())
 		c.scheduleDiskHealth(time.Now())
+		c.scheduleServerHealth(time.Now())
+		c.scheduleMonthly(time.Now())
 		c.scheduleUpdateCheck(time.Now())
 		c.scheduleSelfBackup(time.Now())
 		prev = &ov

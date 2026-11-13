@@ -28,6 +28,13 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Einstecken geprüft – schwebende oder unlesbare Sektoren, ersetzte Sektoren, Selbsttest, SSD-Verschleiß, Temperatur.
   Wird eine Platte schlechter, kommt eine Meldung. Archiv-Platten, die über ein Jahr nicht angesteckt waren, erscheinen
   als Hinweis in der Übersicht.
+- **Abgezogen ohne Aushängen:** Wird eine Wechsel- oder Archiv-Platte im eingehängten Zustand gezogen, meldet die
+  Appliance das, entfernt den verwaisten Mount und liest die Platte nach der nächsten Kopie zur Kontrolle zurück.
+- **Zustand der Backup-Server:** laufende und installierte PBS-Version („Dienste neu laden“ per Klick), Neustart nötig
+  wegen neuem Kernel, verfügbare Updates – geprüft alle sechs Stunden, zu sehen unter Verbindungen.
+- **Monatsbericht:** am 1. jedes Monats per Mail, Telegram oder Push – Sicherungen je Server, USB-Kopien,
+  Restore-Tests, Festplatten, Backup-Server, Archiv-Platten und alle Hinweise des Vormonats, vollständig als
+  HTML-Datei (druckbar als PDF); jederzeit unter Einstellungen → Benachrichtigungen ansehbar.
 - **Update per Klick:** die Appliance sieht zweimal täglich bei GitHub nach (übertragen wird nur die Versionsnummer),
   prüft die Prüfsumme, testet das neue Programm vor dem Einsetzen und kehrt von selbst zur alten Version zurück, wenn
   die neue dreimal nicht startet.

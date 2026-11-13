@@ -464,3 +464,55 @@ func (p *PBS) ReloadProxy(ctx context.Context) error {
 	}
 	return p.waitIfTask(ctx, upid, 2*time.Minute)
 }
+
+// AptPackage is an entry of /nodes/localhost/apt/versions or /apt/update.
+type AptPackage struct {
+	Package    string `json:"Package"`
+	Version    string `json:"Version"`    // candidate (newest available)
+	OldVersion string `json:"OldVersion"` // installed
+	ExtraInfo  string `json:"ExtraInfo"`  // "running version: 4.2.6", "running kernel: …"
+}
+
+// AptVersions lists the versions of the Proxmox packages.
+func (p *PBS) AptVersions(ctx context.Context) ([]AptPackage, error) {
+	var out []AptPackage
+	err := p.Do(ctx, http.MethodGet, "/nodes/localhost/apt/versions", nil, &out)
+	return out, err
+}
+
+// AptUpdates lists the packages that can be upgraded (from the last package list refresh).
+func (p *PBS) AptUpdates(ctx context.Context) ([]AptPackage, error) {
+	var out []AptPackage
+	err := p.Do(ctx, http.MethodGet, "/nodes/localhost/apt/update", nil, &out)
+	return out, err
+}
+
+// RunningKernel returns the release of the running kernel ("7.0.14-17-pve").
+func (p *PBS) RunningKernel(ctx context.Context) (string, error) {
+	var out struct {
+		Kernel struct {
+			Release string `json:"release"`
+		} `json:"current-kernel"`
+		KVersion string `json:"kversion"`
+	}
+	if err := p.Do(ctx, http.MethodGet, "/nodes/localhost/status", nil, &out); err != nil {
+		return "", err
+	}
+	if out.Kernel.Release != "" {
+		return out.Kernel.Release, nil
+	}
+	f := strings.Fields(out.KVersion) // "Linux 7.0.14-17-pve #1 …"
+	if len(f) > 1 {
+		return f[1], nil
+	}
+	return "", nil
+}
+
+// ReloadService reloads a service gracefully ("proxmox-backup", "proxmox-backup-proxy").
+func (p *PBS) ReloadService(ctx context.Context, service string) error {
+	var upid string
+	if err := p.Do(ctx, http.MethodPost, "/nodes/localhost/services/"+url.PathEscape(service)+"/reload", nil, &upid); err != nil {
+		return err
+	}
+	return p.waitIfTask(ctx, upid, 2*time.Minute)
+}

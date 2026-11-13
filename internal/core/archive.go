@@ -87,6 +87,8 @@ type ArchiveState struct {
 	Mounted    bool   `json:"mounted"`
 	Busy       bool   `json:"busy"`
 	Missing    bool   `json:"missing"` // datastore no longer configured
+	// Orphan: still mounted although the disk is gone (pulled without unmounting).
+	Orphan bool `json:"orphan,omitempty"`
 	// LastSeen is when the disk was last plugged in, copied or checked.
 	LastSeen int64        `json:"last_seen"`
 	Health   *HealthBrief `json:"health,omitempty"`
@@ -153,7 +155,11 @@ func (c *Core) ArchiveStates(ctx context.Context) []ArchiveState {
 			u := f.usage[a.Store]
 			st.Missing = !known
 			st.Mounted = u.MountStatus == "mounted"
-			st.Present = st.Mounted || (cfg.BackingDevice != "" && f.uuids[strings.ToLower(cfg.BackingDevice)])
+			attached := cfg.BackingDevice != "" && f.uuids[strings.ToLower(cfg.BackingDevice)]
+			st.Present = st.Mounted || attached
+			if st.Mounted && f.disksOK && cfg.BackingDevice != "" && !attached {
+				st.Present, st.Orphan = false, true
+			}
 		}
 		out = append(out, st)
 	}

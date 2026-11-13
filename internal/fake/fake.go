@@ -267,6 +267,10 @@ func Setup(c *core.Core) (func(), error) {
 	pve.tasks.seed("pve2", "vzdump", "112", "ERROR: VM 112 - unable to find configuration file", now.Add(-20*time.Hour), time.Minute)
 	local.tasks.seed("pbs-appliance", "syncjob", "pk95r-demo-a1:backup:usb-a", "OK", now.Add(-26*time.Hour), 18*time.Minute)
 
+	// Software: the appliance is current; the office server was upgraded but not restarted.
+	upd := []prox.AptPackage{{Package: "tzdata", OldVersion: "2026c-0+deb13u1", Version: "2026f-0+deb13u1"}, {Package: "apt", OldVersion: "3.0.3", Version: "3.0.4"}}
+	local.SetPackages("4.2.10", "4.2.10-1", "", "7.0.14-26", []string{"7.0.14-26", "6.14.11-9"}, upd)
+	offsite.SetPackages("4.2.6", "4.2.10-1", "", "7.0.14-17", []string{"7.0.14-26", "7.0.14-17"}, nil)
 	// SMART: disk A is fine, the spare Seagate has replaced sectors, the Intenso adapter
 	// passes no SMART values on, the virtual disk has none.
 	local.SetSmart("sdc", SmartATA("passed", 0, 0, 8760, 34))

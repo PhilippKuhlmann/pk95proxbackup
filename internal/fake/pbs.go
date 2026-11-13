@@ -72,6 +72,22 @@ type PBS struct {
 	// busy are datastores the proxy holds open: unmount fails until the proxy is reloaded.
 	busy    map[string]bool
 	reloads int
+	apt     aptState
+}
+
+type aptState struct {
+	running, installed, candidate string
+	kernel                        string   // running, e.g. "7.0.14-17"
+	kernels                       []string // installed
+	updates                       []prox.AptPackage
+}
+
+// SetPackages sets the simulated PBS version (running, installed, available), the running
+// and installed kernels and the available updates.
+func (p *PBS) SetPackages(running, installed, candidate, kernel string, kernels []string, updates []prox.AptPackage) {
+	p.mu.Lock()
+	p.apt = aptState{running: running, installed: installed, candidate: candidate, kernel: kernel, kernels: kernels, updates: updates}
+	p.mu.Unlock()
 }
 
 // Reloads counts the reloads of proxmox-backup-proxy.
@@ -79,6 +95,26 @@ func (p *PBS) Reloads() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.reloads
+}
+
+// PullDisk removes a disk as if it was pulled out; its datastore stays mounted (stale).
+func (p *PBS) PullDisk(name string) (prox.Disk, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, d := range p.disks {
+		if d.Name == name {
+			p.disks = append(p.disks[:i], p.disks[i+1:]...)
+			return d, true
+		}
+	}
+	return prox.Disk{}, false
+}
+
+// PlugDisk puts a pulled disk back.
+func (p *PBS) PlugDisk(d prox.Disk) {
+	p.mu.Lock()
+	p.disks = append(p.disks, d)
+	p.mu.Unlock()
 }
 
 // SetBusy makes unmounting a datastore fail with "target is busy" until the proxy reloads.
@@ -290,7 +326,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/version":
 		data(w, map[string]string{"version": "4.0", "release": "18", "repoid": "demo"})
 	case path == "/nodes/localhost/status":
-		data(w, map[string]any{"cpu": 0.07, "uptime": 864000, "memory": map[string]int64{"total": 8 * gib, "used": 3 * gib}, "root": map[string]int64{"total": p.root, "used": 9 * gib}})
+		data(w, map[string]any{"current-kernel": map[string]string{"release": p.apt.kernel + "-pve"}, "cpu": 0.07, "uptime": 864000, "memory": map[string]int64{"total": 8 * gib, "used": 3 * gib}, "root": map[string]int64{"total": p.root, "used": 9 * gib}})
 	case path == "/config/datastore" && m == "GET":
 		out := []prox.DatastoreConfig{}
 		for _, s := range p.stores {
@@ -591,10 +627,30 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		p.remotes[seg[2]] = prox.Remote{Name: seg[2], Host: f.Get("host"), AuthID: f.Get("auth-id"), Fingerprint: f.Get("fingerprint"), Comment: f.Get("comment")}
 		data(w, nil)
-	case path == "/nodes/localhost/services/proxmox-backup-proxy/reload" && m == "POST":
-		p.reloads++
-		p.busy = map[string]bool{}
-		data(w, p.tasks.start(p.node, "srvreload", "proxmox-backup-proxy", time.Second, nil, nil))
+	case len(seg) == 5 && seg[0] == "nodes" && seg[2] == "services" && seg[4] == "reload" && m == "POST":
+		if seg[3] == "proxmox-backup-proxy" {
+			p.reloads++
+			p.busy = map[string]bool{}
+		}
+		if p.apt.installed != "" {
+			p.apt.running = strings.TrimSuffix(p.apt.installed, "-1")
+		}
+		data(w, p.tasks.start(p.node, "srvreload", seg[3], time.Second, nil, nil))
+	case path == "/nodes/localhost/apt/versions":
+		inst, cand := p.apt.installed, p.apt.candidate
+		if cand == "" {
+			cand = inst
+		}
+		out := []prox.AptPackage{
+			{Package: "proxmox-backup", Version: "4.2.0", OldVersion: "4.2.0", ExtraInfo: "running kernel: " + p.apt.kernel},
+			{Package: "proxmox-backup-server", Version: cand, OldVersion: inst, ExtraInfo: "running version: " + p.apt.running},
+		}
+		for _, k := range p.apt.kernels {
+			out = append(out, prox.AptPackage{Package: "proxmox-kernel-" + k + "-pve-signed", Version: k, OldVersion: k})
+		}
+		data(w, out)
+	case path == "/nodes/localhost/apt/update":
+		data(w, p.apt.updates)
 	case path == "/nodes/localhost/disks/smart":
 		p.serveSmart(w, f.Get("disk"))
 	case path == "/nodes/localhost/disks/list":

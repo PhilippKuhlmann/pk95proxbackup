@@ -23,3 +23,8 @@ func SetExecForTest(f func(string, []string, []string) error) func() {
 
 // CheckPlanForTest exposes checkPlan.
 func (c *Core) CheckPlanForTest(r Rotation, st RotationState, now time.Time) { c.checkPlan(r, st, now) }
+
+// CheckUnpluggedForTest exposes checkUnplugged.
+func (c *Core) CheckUnpluggedForTest(ctx context.Context, r Rotation, st RotationState, now time.Time) {
+	c.checkUnplugged(ctx, r, st, now)
+}

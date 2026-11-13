@@ -208,3 +208,55 @@ func TestEjectAfterStuckUnmount(t *testing.T) {
 		t.Fatalf("eject after a stuck unmount: %v", err)
 	}
 }
+
+// A disk pulled while mounted is reported, the stale mount removed, and after the next copy
+// the disk is read back.
+func TestUnpluggedWhileMounted(t *testing.T) {
+	sd, vd := fake.SyncDuration, fake.VerifyDuration
+	fake.SyncDuration, fake.VerifyDuration = time.Second, time.Second
+	t.Cleanup(func() { fake.SyncDuration, fake.VerifyDuration = sd, vd })
+	c := newCore(t)
+	ctx := context.Background()
+	rot, _ := c.Rotation("demo")
+	look := func() core.RotationState {
+		st := c.RotationStates(ctx)[0]
+		c.CheckUnpluggedForTest(ctx, rot, st, time.Now())
+		return st
+	}
+	if st := look(); !st.Disks[0].Mounted || st.Disks[0].Orphan {
+		t.Fatalf("disk A should be mounted: %+v", st.Disks[0])
+	}
+	disk, ok := fake.Current.Local.PullDisk("sdc")
+	if !ok {
+		t.Fatal("no sdc")
+	}
+	st := look()
+	if !st.Disks[0].Orphan || st.Disks[0].Present {
+		t.Fatalf("pulled disk: %+v", st.Disks[0])
+	}
+	if !strings.Contains(eventTitles(t, c), "wurde abgezogen, ohne ausgehängt zu werden") {
+		t.Fatalf("not reported:\n%s", eventTitles(t, c))
+	}
+	look() // reported once
+	if n := strings.Count(eventTitles(t, c), "ohne ausgehängt"); n != 1 {
+		t.Fatalf("reported %d times", n)
+	}
+	waitDisk(t, c, "stale mount should be removed", func(d core.DiskState) bool { return !d.Mounted && !d.Orphan })
+	// Plugged back in: copy, then read everything back.
+	fake.Current.Local.PlugDisk(disk)
+	start := time.Now().Unix()
+	if err := c.RunRotationDisk(ctx, rot, rot.Disks[0]); err != nil {
+		t.Fatal(err)
+	}
+	waitDisk(t, c, "copy and check", func(d core.DiskState) bool { return d.LastOK >= start && d.Phase == "" && !d.VerifyNext })
+	evs, _ := c.St.Events(ctx, "", 0, 20)
+	found := false
+	for _, e := range evs {
+		if strings.Contains(string(e.Details), "nach dem Abziehen ohne Aushängen vollständig zurückgelesen") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no read-back after the copy:\n%s", eventTitles(t, c))
+	}
+}

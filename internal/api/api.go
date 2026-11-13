@@ -46,6 +46,7 @@ func New(c *core.Core, web fs.FS, secure bool) *Server {
 	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}}
 	s.routes()
 	c.EnsureStorage = s.ensurePVEStorage
+	c.MonthlyHTML = func(rep core.MonthlyReport) []byte { return s.renderMonthly(rep, false) }
 	c.ReportHTML = func(run core.RestoreTestRun, images func(string) (string, []byte)) []byte {
 		b, _ := s.renderReport(run, images, false)
 		return b
@@ -116,6 +117,13 @@ func (s *Server) routes() {
 	a("PUT /api/pbs/{id}", s.savePBS)
 	a("DELETE /api/pbs/{id}", s.deletePBS)
 	a("POST /api/pbs/{id}/test-ssh", s.testSSH)
+	a("GET /api/serverhealth", s.listServerHealth)
+	a("GET /api/report/monthly", s.monthlyReport)
+	a("POST /api/report/monthly/send", s.sendMonthly)
+	a("GET /api/report/monthly/settings", s.getMonthly)
+	a("PUT /api/report/monthly/settings", s.putMonthly)
+	a("POST /api/pbs/{id}/health", s.checkServerHealth)
+	a("POST /api/pbs/{id}/reload", s.reloadServer)
 	a("GET /api/pbs/{id}/datastores", s.listDatastores)
 	a("POST /api/pbs/{id}/datastores", s.createDatastore)
 	a("PUT /api/pbs/{id}/datastores/{store}", s.updateDatastore)

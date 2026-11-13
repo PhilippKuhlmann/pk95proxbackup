@@ -681,6 +681,12 @@ PAGES["/"] = async (el, token) => {
     if (rt && rt.status === "error") issue("error", "Der letzte Restore-Test ist fehlgeschlagen", "/restoretests");
     if (notBacked) issue("warning", `${notBacked} ${notBacked === 1 ? "VM bzw. Container ist" : "VMs und Container sind"} in keinem Sicherungsjob`, "/sicherungen");
     for (const x of rots.filter((x) => x.overdue && !x.disks.some((d) => d.state === "ready"))) issue("warning", `${x.name}: USB-Kopie überfällig (zuletzt ${fmtAgo(x.last_copy)})`, "/wechselplatten");
+    for (const x of rots) for (const d of x.disks.filter((d) => d.orphan))
+      issue("warning", `Wechselplatte „${d.label}“ wurde abgezogen, ohne ausgehängt zu werden`, "/wechselplatten");
+    for (const h of r.server_health || []) {
+      if (h.restart_needed) issue("warning", `${h.name}: Dienste laufen noch mit ${h.running}, installiert ist ${h.installed} – neu laden`, "/verbindungen");
+      else if (h.reboot_needed) issue("warning", `${h.name}: Neustart nötig (neuer Kernel ${h.newest_kernel})`, "/verbindungen");
+    }
     for (const x of rots) for (const d of x.disks.filter((d) => d.damaged && !d.phase))
       issue("error", d.repair_failed ? `Wechselplatte „${d.label}“ speichert nicht zuverlässig – Gehäuse oder Platte tauschen` : `Wechselplatte „${d.label}“ ist beschädigt – neu aufsetzen`, "/wechselplatten");
     for (const x of rots.filter((x) => x.check_plan && x.plan_late && (x.plan_state === "swap" || x.plan_state === "missing")))
@@ -792,6 +798,17 @@ function eventRow(ev, compact) {
     </div></details>`;
 }
 
+// softwareCell shows the PBS version, a pending restart or reboot and the updates.
+function softwareCell(h, id) {
+  if (!h) return `<span class="small muted">noch nicht geprüft</span> <button class="link-btn small" type="button" data-swcheck="${id}">prüfen</button>`;
+  if (h.error) return `<span class="small bad">${esc(h.error)}</span> <button class="link-btn small" type="button" data-swcheck="${id}">erneut</button>`;
+  const state = h.restart_needed ? pill("Dienste neu laden", "amber", true) : h.reboot_needed ? pill("Neustart nötig", "amber", true) : pill("Aktuell gestartet", "green");
+  const upd = h.updates ? `${h.updates} ${h.updates === 1 ? "Update" : "Updates"} verfügbar${h.available ? ` (PBS ${esc(h.available.replace(/-\d+$/, ""))})` : ""}` : "keine Updates";
+  const why = h.restart_needed ? `installiert ${esc(h.installed)}, läuft ${esc(h.running)}` : h.reboot_needed ? `Kernel ${esc(h.newest_kernel)} installiert, läuft ${esc(h.kernel)}` : "";
+  return `${state}<div class="t-sub">PBS ${esc(h.running || "?")} · ${upd}</div>${why ? `<div class="t-sub warnc">${why}</div>` : ""}
+    <div class="flex" style="margin-top:4px;gap:6px">${h.restart_needed ? `<button class="btn sm" type="button" data-reload="${id}">${icon("refresh")} Dienste neu laden</button>` : ""}<button class="link-btn small" type="button" data-swcheck="${id}" title="Geprüft ${esc(fmtAgo(h.checked))}">prüfen</button></div>`;
+}
+
 // ---------- Verbindungen ----------
 PAGES["/verbindungen"] = async (el, token) => {
   const draw = async () => {
@@ -799,14 +816,16 @@ PAGES["/verbindungen"] = async (el, token) => {
     if (token !== pageToken) return;
     const st = Object.fromEntries((ovr.overview.servers || []).map((s) => [s.id, s]));
     const cst = Object.fromEntries((ovr.overview.clusters || []).map((s) => [s.id, s]));
+    const sh = Object.fromEntries((ovr.server_health || []).map((h) => [h.server_id, h]));
     el.innerHTML = pageHead("Verbindungen", "Proxmox VE und Proxmox Backup Server, die diese Appliance verwaltet. Zugang jeweils über einen API-Token.") +
       `<div class="panel flush"><div class="panel-head"><div class="panel-title">Backup-Server</div><div class="actions"><button class="btn" type="button" data-add-pbs>${icon("plus")} Backup-Server hinzufügen</button></div></div>
         <p class="panel-intro">Der PBS dieser Appliance trägt sich selbst ein. Einen vorhandenen PBS bindest du mit einem API-Token ein; für Freigaben (NFS/SMB) auf ihm braucht die Appliance zusätzlich SSH.</p>
-        ${state.servers.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Name</th><th>Adresse</th><th>Status</th><th>Kommandozeile</th><th></th></tr></thead><tbody>
+        ${state.servers.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Name</th><th>Adresse</th><th>Status</th><th>Software</th><th>Kommandozeile</th><th></th></tr></thead><tbody>
         ${state.servers.map((s) => { const x = st[s.id] || {}; return `<tr>
           <td data-l="Name"><div class="t-main">${esc(s.name)} ${s.local ? pill("Appliance", "blue") : ""}</div><div class="t-sub mono">${esc(s.auth_id)}</div></td>
           <td data-l="Adresse"><span class="mono small">${esc(s.local ? (s.public_host || "—") : s.host + ":" + (s.port || 8007))}</span><div class="t-sub">${esc(s.fingerprint.slice(0, 23))}…</div></td>
           <td data-l="Status">${x.online ? pill("Online", "green", true) + `<div class="t-sub">PBS ${esc(x.version)}</div>` : pill("Offline", "rose") + `<div class="t-sub">${esc(x.error || "")}</div>`}</td>
+          <td data-l="Software">${softwareCell(sh[s.id], s.id)}</td>
           <td data-l="Kommandozeile">${s.local ? '<span class="small">lokal</span>' : s.ssh_enabled ? '<span class="small">SSH ' + esc(s.ssh_user || "root") + "@" + esc(s.ssh_host || s.host) + "</span>" : '<span class="small muted">nur API</span>'}</td>
           <td class="act"><div class="row-actions">${!s.local && s.ssh_enabled ? `<button class="btn gray sm" type="button" data-ssh="${s.id}">SSH testen</button>` : ""}<button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit-pbs="${s.id}">${icon("pencil")}</button>${s.local ? "" : `<button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del-pbs="${s.id}">${icon("trash")}</button>`}</div></td></tr>`; }).join("")}
         </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Backup-Server", state.localPBS ? "Der lokale PBS wird gerade eingebunden …" : "Auf dieser Maschine ist kein Proxmox Backup Server installiert. Einen vorhandenen PBS hinzufügen.", "", "server")}</div>`}
@@ -839,6 +858,12 @@ PAGES["/verbindungen"] = async (el, token) => {
     qs("[data-add-pve]", el).onclick = () => pveForm(null, draw);
     qsa("[data-edit-pbs]", el).forEach((b) => b.onclick = () => pbsForm(state.servers.find((s) => s.id === b.dataset.editPbs), draw));
     qsa("[data-edit-pve]", el).forEach((b) => b.onclick = () => pveForm(state.clusters.find((s) => s.id === b.dataset.editPve), draw));
+    qsa("[data-swcheck]", el).forEach((b) => b.onclick = () => run(b, async () => { await POST(`/api/pbs/${b.dataset.swcheck}/health`); await draw(); }, "Geprüft."));
+    qsa("[data-reload]", el).forEach((b) => b.onclick = async () => {
+      const ok = await confirmDialog({ title: "Dienste neu laden?", tone: "", ic: "refresh", button: "Neu laden",
+        text: "proxmox-backup und proxmox-backup-proxy werden sanft neu geladen: Die installierte Version läuft danach, laufende Sicherungen und Kopien arbeiten im alten Prozess zu Ende. Die PBS-Oberfläche ist dabei wenige Sekunden nicht erreichbar." });
+      if (ok) run(b, async () => { await POST(`/api/pbs/${b.dataset.reload}/reload`); await draw(); }, "Dienste neu geladen.");
+    });
     qsa("[data-ssh]", el).forEach((b) => b.onclick = () => run(b, async () => {
       const r = await POST(`/api/pbs/${b.dataset.ssh}/test-ssh`);
       toast("SSH funktioniert: " + r.output.split("\n")[0] + (r.missing.length ? ` – es fehlt: ${r.missing.join(", ")} (apt install nfs-common cifs-utils)` : ""), r.missing.length ? "error" : "ok");
@@ -1383,6 +1408,9 @@ PAGES["/wechselplatten"] = async (el, token) => {
         ${x.error ? callout("red", "Backup-Server nicht erreichbar", esc(x.error)) : ""}
         ${x.overdue ? callout("yellow", "Kopie überfällig", `Letzte erfolgreiche Kopie: ${esc(fmtTime(x.last_copy, true))}.`) : ""}
         ${x.disks.filter((d) => d.damaged && !d.phase).map((d) => damageCallout(x, d)).join("")}
+        ${!x.unmount_on_done && x.disks.length ? callout("yellow", "Platten bleiben nach der Kopie eingehängt",
+          `Wer eine eingehängte Platte abzieht, riskiert Datenverlust auf der Platte. Empfehlung: „Nach der Kopie aushängen“ einschalten – dann kann jede fertige Platte gefahrlos gezogen werden.${x.disks.some((d) => d.unplugged_at) ? ` Zuletzt wurde eine Platte am ${esc(fmtTime(Math.max(...x.disks.map((d) => d.unplugged_at || 0))))} eingehängt abgezogen.` : ""}`,
+          `<button class="btn sm" type="button" data-autounmount="${x.id}">Einschalten</button>`) : ""}
         ${planCallout(x)}
         ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : `<div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
           <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? " · Platten werden nach der Kopie ausgehängt" : ""}</div></div></div>`}
@@ -1393,7 +1421,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
           const problem = d.damaged || busy ? "" : d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
           return `<tr class="disk-row ${cls}">
             <td data-l="Platte"><div class="disk-cell"><span class="disk-ic">${icon("disk")}</span><div><div class="t-main">${esc(d.label)}${d.today ? ` <span class="today-tag">heute dran</span>` : ""}</div><div class="t-sub"><span class="mono">${esc(d.store)}</span>${d.plan ? ` · ${esc(d.plan)}` : ""}</div></div></div></td>
-            <td data-l="Status">${d.damaged && !d.phase ? pill("Beschädigt", "rose", true) : pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running" || !!d.phase)}${d.stale ? `<div class="t-sub warnc">lange nicht angesteckt</div>` : ""}</td>
+            <td data-l="Status">${d.orphan ? pill("Abgezogen ohne Aushängen", "amber", true) : d.damaged && !d.phase ? pill("Beschädigt", "rose", true) : pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running" || !!d.phase)}${d.verify_next && !d.phase && !d.damaged ? `<div class="t-sub">wird nach der nächsten Kopie zurückgelesen</div>` : ""}${d.stale ? `<div class="t-sub warnc">lange nicht angesteckt</div>` : ""}</td>
             <td data-l="Letzte Kopie" class="nowrap">${d.last_ok ? `${esc(fmtAgo(d.last_ok))}<div class="t-sub">${esc(fmtTime(d.last_ok, true))}</div>` : '<span class="muted">noch keine</span>'}${problem ? `<div class="t-sub bad">${esc(problem)}</div>` : ""}</td>
             <td data-l="Belegung" class="bar-cell">${d.total ? usageBar(d.used, d.total) : '<span class="muted small">—</span>'}
               <div data-live="${esc(d.label)}" hidden><div class="flex small"><span class="grow" data-live-text></span><b class="mono" data-live-pct></b></div><div class="pbar"><span></span></div></div></td>
@@ -1419,6 +1447,11 @@ PAGES["/wechselplatten"] = async (el, token) => {
     bindArchives(el, archives, draw);
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => rotationForm(rots.find((x) => x.id === b.dataset.edit), draw));
     qsa("[data-plan]", el).forEach((b) => b.onclick = () => planForm(rots.find((x) => x.id === b.dataset.plan), draw));
+    qsa("[data-autounmount]", el).forEach((b) => b.onclick = () => run(b, async () => {
+      const x = rots.find((r1) => r1.id === b.dataset.autounmount);
+      await PUT(`/api/rotations/${x.id}`, { ...x, unmount_on_done: true });
+      await draw();
+    }, "Platten werden jetzt nach jeder Kopie ausgehängt."));
     qsa("[data-rebuild]", el).forEach((b) => b.onclick = async () => {
       const [rid, k] = b.dataset.rebuild.split("|");
       const x = rots.find((r1) => r1.id === rid), d = x.disks.find((d1) => d1.key === k);
@@ -1667,7 +1700,7 @@ function archivePanel(list) {
     const names = (a.contents || []).map((x) => `${guestKind(x.type)} ${x.id}${x.name ? " " + x.name : ""}`);
     return `<div class="disk ${cls}"><div class="disk-head"><span class="disk-ic">${icon("archive")}</span><div class="grow"><div class="disk-name">${esc(a.name)}</div>
         <div class="disk-meta mono">${esc(a.store)} · ${esc(a.server_name || a.server_id)}</div>
-        <div style="margin-top:6px" class="flex">${pill(l, t, true, busy)}${!busy && !pull && a.present ? pill(a.mounted ? "Eingehängt" : "Angesteckt", "blue") : ""}${a.missing ? pill("Datastore fehlt", "rose") : ""}</div></div></div>
+        <div style="margin-top:6px" class="flex">${pill(l, t, true, busy)}${!busy && !pull && a.present ? pill(a.mounted ? "Eingehängt" : "Angesteckt", "blue") : ""}${a.missing ? pill("Datastore fehlt", "rose") : ""}${a.orphan ? pill("Abgezogen ohne Aushängen", "amber") : ""}</div></div></div>
       ${a.total ? usageBar(a.used, a.total) : ""}
       <table class="kv">
         <tr><td>${a.imported ? "Eingelesen" : "Erstellt"}</td><td>${a.end ? fmtTime(a.end, true) : busy ? "läuft seit " + fmtTime(a.start) : "—"}</td></tr>
@@ -2636,6 +2669,7 @@ SET_PAGES[""] = async (box) => {
           <a href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a>
           <a href="/api/settings/preview?status=usb" target="_blank" rel="noopener"><span class="dot green"></span> USB fertig</a>
           <a href="/api/settings/preview?status=restoretest" target="_blank" rel="noopener"><span class="dot green"></span> Restore-Test</a></div></div>
+      <div class="panel" data-monthly></div>
     </div></form>`;
   const nf = qs("[data-notify]", box);
   const nv = () => { const v = formValues(nf); v.smtp_port = Number(v.smtp_port) || 587; return { notify: v }; };
@@ -2658,7 +2692,32 @@ SET_PAGES[""] = async (box) => {
     qsa('[name="tg_pick"]', tgBox).forEach((x) => x.onchange = () => set1(r.chats[+x.value]));
   });
   qs("[data-test]", box).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test?status=" + qs("[data-test-status]", box).value, nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
+  monthlyPanel(qs("[data-monthly]", box));
 };
+
+// monthlyPanel: the monthly report for the customer (settings, preview, send now).
+async function monthlyPanel(p) {
+  const m = await GET("/api/report/monthly/settings");
+  const prevName = new Date(m.previous + "-01T12:00:00").toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  p.innerHTML = `<div class="panel-head"><div class="panel-title">Monatsbericht</div></div>
+    <p class="panel-intro">Am 1. jedes Monats: alle Sicherungen, USB-Kopien, Restore-Tests, Festplatten und Hinweise des Vormonats – in der Nachricht kurz, als Datei vollständig (druckbar als PDF).</p>
+    <div class="form" data-mform><div class="form-error" hidden></div>
+      ${field({ name: "m_enabled", label: "Monatsbericht senden", type: "checkbox", value: m.enabled, wide: true })}
+      ${field({ name: "to", label: "An (optional)", value: m.to, placeholder: "Empfänger der Benachrichtigungen", hint: "Andere Adressen für den Bericht, z. B. die Geschäftsführung. Leer = wie die übrigen Mails; Telegram und Push bekommen ihn auch.", wide: true })}
+      <div class="flex"><button class="btn" type="button" data-msave>Speichern</button></div></div>
+    <div class="preview-links mt">
+      <a href="/api/report/monthly?month=${esc(m.previous)}" target="_blank" rel="noopener">${icon("external")} Bericht ${esc(prevName)} ansehen</a>
+      <a href="/api/report/monthly?month=${esc(new Date().toISOString().slice(0, 7))}" target="_blank" rel="noopener">${icon("external")} Laufender Monat bis heute</a>
+      <a href="#" data-msend>${icon("bell")} Bericht ${esc(prevName)} jetzt senden</a></div>
+    ${m.last_sent ? `<p class="small muted mt">Zuletzt automatisch versandt: ${esc(m.last_sent)}</p>` : ""}`;
+  const f = qs("[data-mform]", p);
+  qs("[data-msave]", p).onclick = (e) => run(e.currentTarget, async () => {
+    showErrors(f, null);
+    try { await PUT("/api/report/monthly/settings", { enabled: qs('[name="m_enabled"]', f).checked, to: qs('[name="to"]', f).value }); toast("Gespeichert."); }
+    catch (err) { showErrors(f, err); }
+  });
+  qs("[data-msend]", p).onclick = (e) => { e.preventDefault(); run(null, async () => { await POST("/api/report/monthly/send?month=" + m.previous); }, "Monatsbericht verschickt."); };
+}
 
 SET_PAGES.sicherung = async (box) => {
   box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Sicherung der Appliance</div></div><div data-selfbackup></div></div></div>`;

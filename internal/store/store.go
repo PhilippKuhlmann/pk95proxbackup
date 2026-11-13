@@ -352,3 +352,25 @@ func (s *Store) Backup(path string) error {
 	_, err := s.db.Exec("VACUUM INTO ?", path)
 	return err
 }
+
+// EventsBetween returns the events from..to (unix seconds, to exclusive), oldest first.
+func (s *Store) EventsBetween(ctx context.Context, from, to int64) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT id, ts, severity, source, title, body, details FROM events WHERE ts >= ? AND ts < ? ORDER BY ts, id", from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var e Event
+		var details string
+		if err := rows.Scan(&e.ID, &e.TS, &e.Severity, &e.Source, &e.Title, &e.Body, &details); err != nil {
+			return nil, err
+		}
+		if details != "" {
+			e.Details = json.RawMessage(details)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

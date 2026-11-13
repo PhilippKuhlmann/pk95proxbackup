@@ -243,6 +243,8 @@ type diskRuntime struct {
 	RepairFailed bool   `json:"repair_failed,omitempty"` // still damaged after the last rebuild
 	VerifyNext   bool   `json:"verify_next,omitempty"`   // read everything back after the next copy
 	DamageSeen   string `json:"damage_seen,omitempty"`   // failed run already looked at for damage
+	VerifyWhy    string `json:"verify_why,omitempty"`    // rebuild, unplugged
+	UnpluggedAt  int64  `json:"unplugged_at,omitempty"`
 }
 
 func rtKey(r Rotation, d RotDisk) string { return r.ID + "/" + d.Key }
@@ -315,6 +317,10 @@ type DiskState struct {
 	Damaged      string `json:"damaged,omitempty"`
 	RepairFailed bool   `json:"repair_failed,omitempty"`
 	RepairAt     int64  `json:"repair_at,omitempty"`
+	// Orphan: the datastore is still mounted but the disk is gone (pulled while mounted).
+	Orphan      bool  `json:"orphan,omitempty"`
+	UnpluggedAt int64 `json:"unplugged_at,omitempty"` // last time it was pulled while mounted
+	VerifyNext  bool  `json:"verify_next,omitempty"`  // read back after the next copy
 }
 
 // RotationState is the shown state of a rotation set.
@@ -342,6 +348,8 @@ type pbsFacts struct {
 	uuids map[string]bool
 	jobs  map[string]prox.Job
 	err   error
+	// disksOK: the disk list could be read (only then is a missing disk really missing).
+	disksOK bool
 }
 
 func (c *Core) facts(ctx context.Context, pbs *prox.PBS) pbsFacts {
@@ -360,6 +368,7 @@ func (c *Core) facts(ctx context.Context, pbs *prox.PBS) pbsFacts {
 		}
 	}
 	if disks, err := pbs.Disks(ctx); err == nil {
+		f.disksOK = true
 		for _, d := range disks {
 			for _, p := range d.Partitions {
 				if p.UUID != "" {
@@ -416,7 +425,12 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 				ds.Error = "Datastore " + d.Store + " gibt es auf dem Server nicht mehr"
 			}
 			ds.Mounted = u.MountStatus == "mounted"
-			ds.Present = ds.Mounted || (cfg.BackingDevice != "" && f.uuids[strings.ToLower(cfg.BackingDevice)])
+			attached := cfg.BackingDevice != "" && f.uuids[strings.ToLower(cfg.BackingDevice)]
+			ds.Present = ds.Mounted || attached
+			// Still mounted but the disk is gone: it was pulled without unmounting.
+			if ds.Mounted && f.disksOK && cfg.BackingDevice != "" && !attached {
+				ds.Present, ds.Orphan = false, true
+			}
 			ds.Total, ds.Used = u.Total, u.Used
 			if j, ok := f.jobs[r.SyncJobID(d)]; ok && f.err == nil {
 				if pbs := clients[r.ServerID]; pbs != nil {
@@ -429,6 +443,7 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 			c.mu.Lock()
 			ds.Phase, ds.LastOK, ds.LastFail, ds.LastError = rt.Phase, rt.LastOK, rt.LastFail, rt.LastError
 			ds.Damaged, ds.RepairFailed, ds.RepairAt = rt.Damaged, rt.RepairFailed, rt.RepairAt
+			ds.UnpluggedAt, ds.VerifyNext = rt.UnpluggedAt, rt.VerifyNext
 			done := rt.DoneAt
 			c.mu.Unlock()
 			switch {
@@ -588,12 +603,18 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 		c.EventDetails("critical", rotationSource, title, msg, det)
 		return
 	}
-	if c.tryBusy(key) {
-		go func() {
-			defer c.doneBusy(key)
-			c.aftercare(context.WithoutCancel(ctx), pbs, r, d, rt)
-		}()
-	}
+	// Something else may still work on the disk (e.g. removing a stale mount): wait for it
+	// instead of skipping the aftercare of this copy.
+	go func() {
+		for i := 0; !c.tryBusy(key); i++ {
+			if i >= 1800 {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+		defer c.doneBusy(key)
+		c.aftercare(context.WithoutCancel(ctx), pbs, r, d, rt)
+	}()
 }
 
 // aftercare prunes the disk, collects garbage once a week and unmounts it.
@@ -628,6 +649,21 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	rt.VerifyNext = false
 	c.mu.Unlock()
 	checked := ""
+	c.mu.Lock()
+	why := rt.VerifyWhy
+	rt.VerifyWhy = ""
+	c.mu.Unlock()
+	if verify && why == "unplugged" {
+		if bad := c.checkRebuilt(ctx, pbs, r, d, rt); bad != "" {
+			msg := c.noteDamage(r, d, rt, bad)
+			c.EventDetails("critical", rotationSource, "Festplatte „"+d.Label+"“ nach dem Abziehen beschädigt",
+				"Die Platte war im eingehängten Zustand abgezogen worden. Beim Zurücklesen nach der Kopie waren Daten nicht mehr lesbar. "+msg,
+				&notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Befund", Value: bad}}})
+			return
+		}
+		checked = "nach dem Abziehen ohne Aushängen vollständig zurückgelesen: alles in Ordnung"
+		verify = false
+	}
 	if verify {
 		if bad := c.checkRebuilt(ctx, pbs, r, d, rt); bad != "" {
 			c.mu.Lock()
@@ -833,6 +869,7 @@ func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, no
 			}
 		}
 		c.checkPlan(r, st, now)
+		c.checkUnplugged(ctx, r, st, now)
 		c.remind(r, st, now)
 	}
 }

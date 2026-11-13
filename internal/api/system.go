@@ -279,3 +279,31 @@ func (s *Server) doRestore(w http.ResponseWriter, r *http.Request, data []byte, 
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"host": man.Host, "created": man.Created, "version": man.Version, "pbs": man.PBS})
 }
+
+// ---- state of the Backup Servers ----
+
+func (s *Server) listServerHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"servers": s.C.ServerHealths()})
+}
+
+func (s *Server) checkServerHealth(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	h, err := s.C.CheckServerHealth(ctx, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h)
+}
+
+func (s *Server) reloadServer(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	h, err := s.C.ReloadServerServices(ctx, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h)
+}
