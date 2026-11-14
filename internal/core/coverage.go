@@ -76,7 +76,7 @@ type BackupRef struct {
 	Store      string `json:"store"`
 	Last       int64  `json:"last"`
 	Count      int    `json:"count"`
-	Kind       string `json:"kind"`           // fixed, usb, archive
+	Kind       string `json:"kind"`           // fixed, cloud (S3), usb, archive
 	Seen       int64  `json:"seen,omitempty"` // USB disk not plugged in: when its content was read
 	Label      string `json:"label,omitempty"`
 }
@@ -163,6 +163,12 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 		go func() {
 			defer wg.Done()
 			pbs := c.PBSClient(srv)
+			cloud := map[string]bool{}
+			if cfgs, err := pbs.Datastores(ctx); err == nil {
+				for _, d := range cfgs {
+					cloud[d.Name] = strings.Contains(d.Backend, "type=s3")
+				}
+			}
 			usage, err := pbs.Usage(ctx)
 			if err != nil {
 				mu.Lock()
@@ -177,6 +183,8 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 					kind, label = "usb", rd.rot.Name+" · "+rd.label
 				} else if name, ok := archiveOf[k]; ok {
 					kind, label = "archive", name
+				} else if cloud[u.Store] {
+					kind = "cloud"
 				}
 				var content StoreContent
 				seen := int64(0)
@@ -197,8 +205,8 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 				mu.Lock()
 				for g, x := range content.Groups {
 					refs[g] = append(refs[g], BackupRef{Server: srv.ID, ServerName: srv.Name, Store: u.Store, Last: x.Last, Count: x.Count, Kind: kind, Seen: seen, Label: label})
-					if kind == "fixed" && (strings.HasPrefix(g, "vm/") || strings.HasPrefix(g, "ct/")) {
-						fixedServers[srv.ID] = true
+					if (kind == "fixed" || kind == "cloud") && (strings.HasPrefix(g, "vm/") || strings.HasPrefix(g, "ct/")) {
+						fixedServers[srv.ID+"|"+kind] = true
 					}
 				}
 				mu.Unlock()
@@ -237,7 +245,15 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 
 	plans, _ := c.RestoreTestPlans()
 	runs := c.RestoreTestRuns()
-	twoServers := len(fixedServers) >= 2
+	// A copy outside is possible with a second server or a cloud datastore.
+	servers2 := map[string]bool{}
+	anyCloud := false
+	for k := range fixedServers {
+		id, kind, _ := strings.Cut(k, "|")
+		servers2[id] = true
+		anyCloud = anyCloud || kind == "cloud"
+	}
+	twoServers := len(servers2) >= 2 || anyCloud
 	unreadSets := map[string]bool{} // rotation sets none of whose disks was ever read
 	for _, r := range rots {
 		read := false
@@ -268,7 +284,7 @@ func (c *Core) chainOf(g *GuestCoverage, refs map[string][]BackupRef, rots []Rot
 	}
 	vmid := strconv.Itoa(g.VMID)
 	g.Backups, g.Seen = []BackupRef{}, []BackupRef{}
-	var fixed, usb []BackupRef
+	var fixed, cloud, usb []BackupRef
 	for _, r := range refs[typ+"/"+vmid] {
 		if r.Seen == 0 {
 			g.Backups = append(g.Backups, r)
@@ -278,6 +294,8 @@ func (c *Core) chainOf(g *GuestCoverage, refs map[string][]BackupRef, rots []Rot
 		switch r.Kind {
 		case "fixed":
 			fixed = append(fixed, r)
+		case "cloud":
+			cloud = append(cloud, r)
 		case "usb":
 			usb = append(usb, r)
 		}
@@ -314,21 +332,33 @@ func (c *Core) chainOf(g *GuestCoverage, refs map[string][]BackupRef, rots []Rot
 		ch.Backup.State, ch.Backup.Note = "bad", "in keinem Sicherungsjob"
 	}
 
-	// 2. copy on a second server
+	// 2. copy outside: on a second server or in the cloud
 	switch {
 	case !twoServers:
-		ch.Copy = Link{State: "none", Note: "kein zweiter Backup-Server"}
+		ch.Copy = Link{State: "none", Note: "kein zweiter Backup-Server, keine Cloud"}
 	case len(fixed) == 0 && !g.InJob:
 		ch.Copy = Link{State: "none", Note: "—"}
 	case len(fixed) == 0:
 		ch.Copy = Link{State: "bad", Note: "fehlt"}
 	default:
 		ch.Copy = Link{State: "bad", Note: "nur auf " + fixed[0].ServerName}
-		for _, f := range fixed {
-			if f.Server != fixed[0].Server {
-				ch.Copy = Link{State: age(f.Last, now, 3, 10), Last: f.Last, Where: f.ServerName + " / " + f.Store}
-				break
+		var best *BackupRef
+		for i := range fixed {
+			if fixed[i].Server != fixed[0].Server && (best == nil || fixed[i].Last > best.Last) {
+				best = &fixed[i]
 			}
+		}
+		for i := range cloud {
+			if best == nil || cloud[i].Last > best.Last {
+				best = &cloud[i]
+			}
+		}
+		if best != nil {
+			where := best.ServerName + " / " + best.Store
+			if best.Kind == "cloud" {
+				where = "Cloud: " + best.Store
+			}
+			ch.Copy = Link{State: age(best.Last, now, 3, 10), Last: best.Last, Where: where}
 		}
 	}
 

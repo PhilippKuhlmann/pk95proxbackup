@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"pk95proxbackup/internal/core"
+	"pk95proxbackup/internal/fake"
 )
 
 func guestOf(t *testing.T, gs []core.GuestCoverage, vmid int) core.GuestCoverage {
@@ -46,6 +47,14 @@ func TestCoverage(t *testing.T) {
 	}
 	if x := guestOf(t, gs, 112); x.Chain.State != "bad" || x.Chain.Backup.Note != "in keinem Sicherungsjob" {
 		t.Fatalf("112 not in a job: %+v", x.Chain)
+	}
+
+	// A copy in the cloud (S3 datastore on the same server) counts as copy outside.
+	fake.Current.Local.AddCloudStore("cloud", "hetzner-fsn1", "pbs-backup")
+	fake.Current.Local.AddSnapshot("cloud", "vm", "101", time.Now().Unix(), 420<<30)
+	gs, _ = c.Coverage(ctx)
+	if x := guestOf(t, gs, 101); x.Chain.Copy.State != "ok" || x.Chain.Copy.Where != "Cloud: cloud" || x.Chain.Backup.Where == "Cloud: cloud" {
+		t.Fatalf("cloud copy of 101: %+v", x.Chain)
 	}
 
 	// The USB disk is pulled: what was on it is still known.

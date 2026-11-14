@@ -12,6 +12,12 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 - **Wiederherstellen** aus jeder Sicherung als neuer Gast (das Original bleibt unberührt).
 - **Datastores** auf einer freien (virtuellen) Platte, einer **NFS-/SMB-Freigabe** oder in einem Verzeichnis,
   mit Aufbewahrung (keep-last/daily/weekly/…), Prüfung (Verify) und Speicherfreigabe (Garbage Collection) nach Zeitplan.
+- **Cloud-Speicher (S3):** Datastore im Bucket eines S3-Anbieters (Proxmox Backup Server 4) als Kopie außer Haus.
+  Der Assistent unter Datastores → „Cloud (S3)“ kennt Hetzner Object Storage, Backblaze B2, Wasabi, Amazon S3,
+  Cloudflare R2 und eigene S3-Server (MinIO, Ceph …): Anbieter und Schlüssel eintragen, Bucket wählen und prüfen,
+  Cache-Verzeichnis (64–128 GiB empfohlen), Aufbewahrung und auf Wunsch den nächtlichen Kopierjob anlegen. Falsche
+  Schlüssel fallen sofort auf; der Secret Key wird nur an den Backup-Server weitergegeben. Die Sicherungskette zählt
+  die Cloud als Kopie außer Haus.
 - **Vorhandener PBS:** weitere Backup-Server per API-Token einbinden; Kopierjobs zwischen den Servern (z. B. Außer-Haus-Kopie).
   Der Kopierjob-Dialog verbindet die beiden Server selbst: Er zeigt die Adresse, unter der das Ziel die Quelle erreicht
   (TCP 8007 vom Ziel zur Quelle), prüft die Verbindung vom Ziel aus und legt auf der Quelle einen eigenen Token an,

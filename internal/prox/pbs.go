@@ -2,6 +2,7 @@ package prox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,6 +64,7 @@ type DatastoreConfig struct {
 	GCSchedule    string `json:"gc-schedule,omitempty"`
 	BackingDevice string `json:"backing-device,omitempty"`
 	Maintenance   string `json:"maintenance-mode,omitempty"`
+	Backend       string `json:"backend,omitempty"` // type=s3,client=<endpoint>,bucket=<bucket>
 }
 
 // Datastores lists the configured datastores.
@@ -431,6 +433,62 @@ func (p *PBS) NewToken(ctx context.Context, userid, name, comment string) (strin
 // SetACL grants a role on a path to an auth id.
 func (p *PBS) SetACL(ctx context.Context, path, role, authID string) error {
 	return p.Do(ctx, http.MethodPut, "/access/acl", Params{"path": path, "role": role, "auth-id": authID, "propagate": true}, nil)
+}
+
+// S3Endpoint is an S3 object store the server can put datastores into (/config/s3).
+type S3Endpoint struct {
+	ID          string `json:"id"`
+	Endpoint    string `json:"endpoint"`
+	Region      string `json:"region,omitempty"`
+	AccessKey   string `json:"access-key,omitempty"`
+	Port        int    `json:"port,omitempty"`
+	PathStyle   bool   `json:"path-style,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+// S3Endpoints lists the S3 endpoints.
+func (p *PBS) S3Endpoints(ctx context.Context) ([]S3Endpoint, error) {
+	var out []S3Endpoint
+	err := p.Do(ctx, http.MethodGet, "/config/s3", nil, &out)
+	return out, err
+}
+
+// CreateS3Endpoint adds an S3 endpoint (id, endpoint, region, access-key, secret-key, …).
+func (p *PBS) CreateS3Endpoint(ctx context.Context, params Params) error {
+	return p.Do(ctx, http.MethodPost, "/config/s3", params, nil)
+}
+
+// DeleteS3Endpoint removes an S3 endpoint.
+func (p *PBS) DeleteS3Endpoint(ctx context.Context, id string) error {
+	return p.Do(ctx, http.MethodDelete, "/config/s3/"+url.PathEscape(id), nil, nil)
+}
+
+// S3Buckets lists the buckets the access key of an endpoint may see.
+func (p *PBS) S3Buckets(ctx context.Context, id string) ([]string, error) {
+	var raw []json.RawMessage
+	if err := p.DoSlow(ctx, http.MethodGet, "/config/s3/"+url.PathEscape(id)+"/list-buckets", nil, &raw); err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, r := range raw {
+		var name string
+		if json.Unmarshal(r, &name) == nil {
+			out = append(out, name)
+			continue
+		}
+		var obj struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(r, &obj) == nil && obj.Name != "" {
+			out = append(out, obj.Name)
+		}
+	}
+	return out, nil
+}
+
+// S3Check tests whether the endpoint can write to a bucket (with the datastore name as prefix).
+func (p *PBS) S3Check(ctx context.Context, id, bucket, prefix string) error {
+	return p.DoSlow(ctx, http.MethodPut, "/admin/s3/"+url.PathEscape(id)+"/check", Params{"bucket": bucket, "store-prefix": emptyNil(prefix)}, nil)
 }
 
 // RemoveACL takes a role on a path away from a user or token.

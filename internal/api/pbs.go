@@ -407,6 +407,9 @@ func (s *Server) createDatastore(w http.ResponseWriter, r *http.Request) {
 		FS      string `json:"fs"`
 		ShareID string `json:"share_id"`
 		Path    string `json:"path"`
+		S3      string `json:"s3"`     // kind s3: endpoint id …
+		Bucket  string `json:"bucket"` // … bucket …
+		Reuse   bool   `json:"reuse"`  // … take over the datastore of a former server
 		retention
 	}
 	if !decode(w, r, &req) {
@@ -442,6 +445,17 @@ func (s *Server) createDatastore(w http.ResponseWriter, r *http.Request) {
 			errs["path"] = "Absoluter Pfad, z. B. /srv/backup/" + req.Name
 		}
 		path = req.Path
+	case "s3":
+		if req.S3 == "" {
+			errs["s3"] = "S3-Ziel wählen."
+		}
+		if !bucketRe.MatchString(req.Bucket) {
+			errs["bucket"] = "Bucket-Name: 3–63 Zeichen, Kleinbuchstaben, Ziffern, Punkt und Bindestrich."
+		}
+		if !pathRe.MatchString(req.Path) || strings.Contains(req.Path, "..") {
+			errs["path"] = "Verzeichnis für den Cache, z. B. /mnt/datastore/" + req.Name + "-cache"
+		}
+		path = req.Path
 	default:
 		errs["kind"] = "Art wählen."
 	}
@@ -461,9 +475,22 @@ func (s *Server) createDatastore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Kind == "disk" {
+	switch req.Kind {
+	case "s3":
+		// The bucket must be writable before PBS creates the datastore in it.
+		if err := pbs.S3Check(ctx, req.S3, req.Bucket, req.Name); err != nil {
+			fieldErrs(w, map[string]string{"bucket": s3Error(err)})
+			return
+		}
+		p := prox.Params{"name": req.Name, "path": path, "comment": req.Comment, "gc-schedule": req.GCSched,
+			"backend": "type=s3,client=" + req.S3 + ",bucket=" + req.Bucket}
+		if req.Reuse {
+			p["reuse-datastore"], p["overwrite-in-use"] = true, true
+		}
+		err = pbs.CreateDatastore(ctx, p)
+	case "disk":
 		err = s.C.PrepareDisk(ctx, srv.ID, req.Disk, req.Name, req.FS, false)
-	} else {
+	default:
 		err = pbs.CreateDatastore(ctx, prox.Params{"name": req.Name, "path": path, "comment": req.Comment, "gc-schedule": req.GCSched})
 	}
 	if err != nil {
@@ -478,7 +505,11 @@ func (s *Server) createDatastore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "Datastore angelegt, aber Aufbewahrung nicht gespeichert: "+err.Error())
 		return
 	}
-	s.C.Event("info", srv.Name, "Datastore "+req.Name+" angelegt", path)
+	what := path
+	if req.Kind == "s3" {
+		what = "im Bucket " + req.Bucket + " (S3-Ziel " + req.S3 + "), Cache " + path
+	}
+	s.C.Event("info", srv.Name, "Datastore "+req.Name+" angelegt", what)
 	s.C.RequestRefresh()
 	ok(w)
 }

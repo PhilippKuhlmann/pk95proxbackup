@@ -59,6 +59,7 @@ type PBS struct {
 	mu        sync.Mutex
 	node      string
 	root      int64
+	s3        map[string]fakeS3
 	stores    map[string]*store
 	disks     []prox.Disk
 	jobs      map[string]*job
@@ -183,6 +184,18 @@ func (p *PBS) AddSnapshot(st, typ, id string, t, size int64) {
 	s.snaps = append(s.snaps, prox.Snapshot{Type: typ, ID: id, Time: t, Size: size, Owner: "pk95-pve@pbs!pve-cluster", Verification: &struct {
 		State string `json:"state"`
 	}{State: "ok"}})
+}
+
+type fakeS3 struct {
+	prox.S3Endpoint
+	secret string
+}
+
+// AddCloudStore adds a datastore that lies in an S3 bucket.
+func (p *PBS) AddCloudStore(name, client, bucket string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stores[name] = &store{cfg: prox.DatastoreConfig{Name: name, Path: "/mnt/datastore/" + name + "-cache", Backend: "type=s3,client=" + client + ",bucket=" + bucket}, total: 128 * gib, mounted: true}
 }
 
 // SetGrowth sets how fast a datastore grew over the last year (usage history, bytes a day).
@@ -357,14 +370,76 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, s.cfg)
 		}
 		data(w, out)
+	case path == "/config/s3" && m == "GET":
+		out := []prox.S3Endpoint{}
+		for _, e := range p.s3 {
+			out = append(out, e.S3Endpoint)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+		data(w, out)
+	case path == "/config/s3" && m == "POST":
+		if p.s3 == nil {
+			p.s3 = map[string]fakeS3{}
+		}
+		id := f.Get("id")
+		if _, ok := p.s3[id]; ok {
+			apiErr(w, 400, "s3 endpoint '"+id+"' already exists")
+			return
+		}
+		p.s3[id] = fakeS3{S3Endpoint: prox.S3Endpoint{ID: id, Endpoint: f.Get("endpoint"), Region: f.Get("region"), AccessKey: f.Get("access-key"),
+			Port: atoi(f.Get("port")), PathStyle: boolv(f.Get("path-style")), Fingerprint: f.Get("fingerprint")}, secret: f.Get("secret-key")}
+		data(w, nil)
+	case len(seg) == 3 && seg[0] == "config" && seg[1] == "s3" && m == "DELETE":
+		delete(p.s3, seg[2])
+		data(w, nil)
+	case len(seg) == 4 && seg[0] == "config" && seg[1] == "s3" && seg[3] == "list-buckets":
+		e, ok := p.s3[seg[2]]
+		if !ok {
+			apiErr(w, 404, "no such s3 endpoint")
+			return
+		}
+		if e.secret == "falsch" {
+			apiErr(w, 400, "failed to list buckets: SignatureDoesNotMatch")
+			return
+		}
+		if e.AccessKey == "nurbucket" { // key limited to one bucket: may not list
+			apiErr(w, 400, "failed to list buckets: AccessDenied")
+			return
+		}
+		data(w, []map[string]any{{"name": "pbs-backup", "creation-date": "2026-01-10T09:00:00Z"}, {"name": "fotos", "creation-date": "2025-03-01T09:00:00Z"}})
+	case len(seg) == 4 && seg[0] == "admin" && seg[1] == "s3" && seg[3] == "check":
+		e, ok := p.s3[seg[2]]
+		switch {
+		case !ok:
+			apiErr(w, 404, "no such s3 endpoint")
+		case e.secret == "falsch":
+			apiErr(w, 400, "s3 check failed: SignatureDoesNotMatch - The request signature we calculated does not match the signature you provided.")
+		case f.Get("bucket") == "gibtsnicht":
+			apiErr(w, 400, "s3 check failed: NoSuchBucket")
+		default:
+			data(w, nil)
+		}
 	case path == "/config/datastore" && m == "POST":
 		name := f.Get("name")
 		if p.stores[name] != nil {
 			apiErr(w, 400, "datastore '"+name+"' already exists.")
 			return
 		}
-		st := &store{cfg: prox.DatastoreConfig{Name: name, Path: f.Get("path"), Comment: f.Get("comment"), GCSchedule: f.Get("gc-schedule"), BackingDevice: f.Get("backing-device")}, total: 4000 * gib, mounted: f.Get("backing-device") == ""}
-		if boolv(f.Get("reuse-datastore")) {
+		st := &store{cfg: prox.DatastoreConfig{Name: name, Path: f.Get("path"), Comment: f.Get("comment"), GCSchedule: f.Get("gc-schedule"), BackingDevice: f.Get("backing-device"), Backend: f.Get("backend")}, total: 4000 * gib, mounted: f.Get("backing-device") == ""}
+		if b := f.Get("backend"); b != "" {
+			client := ""
+			for _, kv := range strings.Split(b, ",") {
+				if k, v, _ := strings.Cut(kv, "="); k == "client" {
+					client = v
+				}
+			}
+			if _, ok := p.s3[client]; !ok {
+				apiErr(w, 400, "no such s3 endpoint '"+client+"'")
+				return
+			}
+			st.total = 128 * gib // the local cache
+		}
+		if boolv(f.Get("reuse-datastore")) && f.Get("backend") == "" {
 			snaps, ok := p.foreign[strings.ToLower(f.Get("backing-device"))+"/"+f.Get("path")]
 			if !ok {
 				apiErr(w, 400, "datastore path '"+f.Get("path")+"' is not a valid datastore (missing .chunks)")

@@ -1181,17 +1181,17 @@ PAGES["/datastores"] = async (el, token) => {
   if (!sid) return noServer(el, "Datastores");
   const srv = state.servers.find((s) => s.id === sid);
   const draw = async () => {
-    const r = await GET(`/api/pbs/${sid}/datastores`);
+    const [r, s3] = await Promise.all([GET(`/api/pbs/${sid}/datastores`), GET(`/api/pbs/${sid}/s3`).catch(() => null)]);
     if (token !== pageToken) return;
     const list = r.datastores;
     el.innerHTML = pageHead("Datastores", `Speicherorte der Sicherungen auf <b>${esc(srv.name)}</b>. Aufbewahrung, Prüfung und Speicherfreigabe laufen nach Zeitplan auf dem Backup-Server.`,
-      `${serverPicker(sid)}<button class="btn" type="button" data-add>${icon("plus")} Datastore anlegen</button>`) +
+      `${serverPicker(sid)}${s3 ? `<button class="btn gray" type="button" data-s3>${icon("globe")} Cloud (S3)</button>` : ""}<button class="btn" type="button" data-add>${icon("plus")} Datastore anlegen</button>`) +
       (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Datastore</th><th style="min-width:180px">Belegung</th><th>Aufbewahrung</th><th>Zeitpläne</th><th></th></tr></thead><tbody>
       ${list.map((d) => {
         const mounted = d["mount-status"] !== "notmounted";
         return `<tr class="${mounted ? "" : "off"}">
-        <td data-l="Datastore"><div class="t-main">${esc(d.name)} ${d.removable ? pill(mounted ? "USB eingehängt" : "USB ausgehängt", mounted ? "blue" : "") : ""} ${d.share ? pill("Freigabe", "blue") : ""} ${d["maintenance-mode"] ? pill("Wartung", "amber") : ""}</div>
-          <div class="t-sub mono">${esc(d.path)}</div>${d.comment ? `<div class="t-sub">${esc(d.comment)}</div>` : ""}${d.rotation ? `<div class="t-sub">Wechselplatte: ${esc(d.rotation)}</div>` : ""}${d.share ? `<div class="t-sub">auf „${esc(d.share)}“</div>` : ""}</td>
+        <td data-l="Datastore"><div class="t-main">${esc(d.name)} ${d.removable ? pill(mounted ? "USB eingehängt" : "USB ausgehängt", mounted ? "blue" : "") : ""} ${d.share ? pill("Freigabe", "blue") : ""} ${s3Of(d) ? pill("Cloud (S3)", "blue") : ""} ${d["maintenance-mode"] ? pill("Wartung", "amber") : ""}</div>
+          ${s3Of(d) ? `<div class="t-sub">Bucket <b>${esc(s3Of(d).bucket)}</b> · S3-Ziel ${esc(s3Of(d).client)} · Cache <span class="mono">${esc(d.path)}</span></div>` : `<div class="t-sub mono">${esc(d.path)}</div>`}${d.comment ? `<div class="t-sub">${esc(d.comment)}</div>` : ""}${d.rotation ? `<div class="t-sub">Wechselplatte: ${esc(d.rotation)}</div>` : ""}${d.share ? `<div class="t-sub">auf „${esc(d.share)}“</div>` : ""}</td>
         <td data-l="Belegung">${d.total ? usageBar(d.used, d.total) + `<div class="t-sub">${fmtBytes(d.used)} von ${fmtBytes(d.total)}</div>` : `<span class="small muted">${esc(d.error || (mounted ? "—" : "Platte nicht eingehängt"))}</span>`}
           ${fcLine(d.forecast, d.name)}</td>
         <td data-l="Aufbewahrung" class="small">${d.prune ? esc(keepText(d.prune)) + `<div class="t-sub">${esc(d.prune.schedule)}${d.prune["last-run-state"] && d.prune["last-run-state"] !== "OK" ? ' · <span class="bad">' + esc(d.prune["last-run-state"]) + "</span>" : ""}</div>` : d.rotation ? '<span class="muted">über Wechselplatten-Satz</span>' : '<span class="muted">alles behalten</span>'}</td>
@@ -1204,10 +1204,21 @@ PAGES["/datastores"] = async (el, token) => {
           <button class="ib" type="button" title="Aufbewahrung und Zeitpläne" aria-label="Einstellungen" data-edit="${esc(d.name)}">${icon("cog")}</button>
           <button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del="${esc(d.name)}">${icon("trash")}</button></div></td></tr>`; }).join("")}
       </tbody></table></div></div>` : empty("Noch kein Datastore", "Ein Datastore kann auf einer freien Platte der VM, auf einer NFS/SMB-Freigabe oder in einem Verzeichnis liegen. USB-Wechselplatten richtest du unter „Wechselplatten“ ein.", `<button class="btn" type="button" data-add2>${icon("plus")} Datastore anlegen</button>`, "database")) +
+      (s3 && s3.endpoints.length ? `<div class="panel"><div class="panel-head"><div class="panel-title">Cloud-Ziele (S3)</div></div>
+        <div class="table-wrap"><table class="resp"><thead><tr><th>Ziel</th><th>Anbieter</th><th>Datastores</th><th></th></tr></thead><tbody>
+        ${s3.endpoints.map((e) => `<tr><td data-l="Ziel"><div class="t-main mono">${esc(e.id)}</div><div class="t-sub mono">${esc(e.endpoint)}${e.region ? " · " + esc(e.region) : ""}</div></td><td data-l="Anbieter">${esc(e.provider)}</td>
+          <td data-l="Datastores">${e.stores.length ? e.stores.map(esc).join(", ") : '<span class="muted small">noch keiner</span>'}</td>
+          <td class="act"><button class="ib red" type="button" title="S3-Ziel austragen" aria-label="S3-Ziel ${esc(e.id)} austragen" data-s3del="${esc(e.id)}" ${e.stores.length ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div></div>` : "") +
       `<div class="callout"><div class="ct"><div class="ch">So funktioniert das Aufräumen</div><div class="cb">„Aufbewahrung“ entfernt alte Sicherungen nach Regeln (z. B. 7 tägliche, 4 wöchentliche). Den Platz gibt erst „Speicher freigeben“ (Garbage Collection) frei – deshalb läuft beides nach Zeitplan. „Prüfen“ liest die Sicherungen und erkennt beschädigte Daten.</div></div></div>`;
     bindPicker(el);
     const add = () => datastoreCreate(srv, draw);
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = add);
+    const s3b = qs("[data-s3]", el);
+    if (s3b) s3b.onclick = () => s3Wizard(srv, s3, list, draw);
+    qsa("[data-s3del]", el).forEach((b) => b.onclick = async () => {
+      if (await confirmDialog({ title: `S3-Ziel ${b.dataset.s3del} austragen?`, text: "Der Backup-Server vergisst Adresse und Schlüssel. Die Daten im Bucket bleiben unverändert.", button: "Austragen" }))
+        run(b, async () => { await DEL(`/api/pbs/${sid}/s3/${enc(b.dataset.s3del)}`); await draw(); }, "Ausgetragen.");
+    });
     qsa("[data-act]", el).forEach((b) => b.onclick = () => run(b, async () => {
       const r = await POST(`/api/pbs/${sid}/datastores/${enc(b.dataset.store)}/${b.dataset.act}`);
       showTask("pbs:" + sid, r.upid, (b.dataset.act === "gc" ? "Speicher freigeben: " : "Prüfung: ") + b.dataset.store);
@@ -1327,6 +1338,117 @@ const retentionFields = (v = {}) => [
   { name: "keep_yearly", label: "Jährlich", type: "number", min: 0, value: v["keep-yearly"] || "" },
   { name: "prune_schedule", label: "Aufräumen um", value: v.schedule || "daily", mono: true, hint: "PBS-Zeitplan: daily, 03:00, sat 02:00 …" },
 ];
+
+// ---------- Cloud (S3) ----------
+function s3Of(d) {
+  const b = d.backend || "";
+  if (!b.includes("type=s3")) return null;
+  const kv = Object.fromEntries(b.split(",").map((x) => x.split("=")));
+  return { client: kv.client || "", bucket: kv.bucket || "" };
+}
+
+// s3Wizard: provider and keys → bucket → datastore with cache, retention and nightly copy.
+function s3Wizard(srv, s3, stores, done) {
+  const P = s3.providers;
+  let prov = P[0], ep = null;
+  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("globe")}</span><div class="grow"><div class="dlg-title">Cloud-Speicher (S3) anbinden</div>
+      <p class="dlg-text">Ein Datastore im Bucket eines S3-Anbieters, als Kopie außer Haus. Der Backup-Server legt die Daten dort ab und hält einen lokalen Cache. Anbieter berechnen Speicher, Abrufe und teils Übertragung – die Kosten im Blick behalten.</p></div></div>
+    <div class="dlg-body" data-step></div>`, "wide");
+  d.dataset.busy = "1";
+  const box = qs("[data-step]", d);
+  const cancel = async () => { if (ep) { try { await DEL(`/api/pbs/${srv.id}/s3/${enc(ep.id)}`); } catch (e) { /* stays listed */ } } d.close(); };
+
+  const step1 = () => {
+    box.innerHTML = `<form novalidate data-f1><div class="form-error" hidden></div>
+      ${field({ name: "provider", type: "radio", label: "Anbieter", value: prov.id, options: P.map((p) => [p.id, p.name, ""]) })}
+      <div class="callout" style="margin:0 0 12px" data-help></div>
+      <div class="form-grid" data-pf></div>
+      <div class="dlg-foot" style="padding:16px 0 0"><span class="spacer"></span><button class="btn gray" type="button" data-x>Abbrechen</button><button class="btn" type="submit">Weiter</button></div></form>`;
+    const f = qs("[data-f1]", box);
+    const fields = () => {
+      qs("[data-help]", box).innerHTML = `<div class="ct"><div class="cb">${esc(prov.help)}</div></div>`;
+      const fs = [];
+      if (prov.custom) {
+        fs.push({ name: "endpoint", label: "Adresse des S3-Servers", placeholder: "s3.example.org oder 192.168.1.20", mono: true, wide: true },
+          { name: "port", label: "Port", type: "number", placeholder: "443" }, { name: "region", label: "Region (optional)", placeholder: "us-east-1", mono: true },
+          { name: "path_style", type: "checkbox", label: "Bucket im Pfad (path style)", value: true, wide: true, hint: "Für MinIO, Ceph und die meisten eigenen Server richtig." },
+          { name: "fingerprint", label: "Fingerabdruck (bei selbst signiertem Zertifikat)", mono: true, wide: true });
+      } else if (prov.account) {
+        fs.push({ name: "account", label: "Konto-ID", mono: true, wide: true, placeholder: "32 Zeichen" });
+      } else {
+        fs.push({ name: "region", label: "Region", type: "select", value: prov.region, options: prov.regions.map((r) => [r, r]), wide: true });
+      }
+      fs.push({ name: "access_key", label: "Access Key", mono: true, autocomplete: "off" }, { name: "secret_key", label: "Secret Key", type: "password", mono: true, autocomplete: "new-password" });
+      qs("[data-pf]", box).innerHTML = fs.map(field).join("");
+    };
+    fields();
+    qsa('[name="provider"]', f).forEach((x) => x.onchange = () => { prov = P.find((p) => p.id === x.value); fields(); });
+    qs("[data-x]", f).onclick = cancel;
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = qs('button[type="submit"]', f);
+      const v = formValues(f);
+      try {
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Prüfe Zugang …`; showErrors(f, null);
+        ep = await POST(`/api/pbs/${srv.id}/s3`, { ...v, port: Number(v.port) || 0 });
+        step2();
+      } catch (err) { showErrors(f, err); } finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = "Weiter"; } }
+    };
+  };
+
+  const step2 = () => {
+    const fixed = stores.filter((x) => !x.removable && !s3Of(x));
+    const free = s3.root_free;
+    const freeHint = free >= 0 ? ` Auf der Systemplatte des Backup-Servers sind ${fmtBytes(free)} frei${free < 64 * 2 ** 30 ? " – das ist knapp; besser ein Verzeichnis auf einer eigenen Platte nehmen" : ""}.` : "";
+    box.innerHTML = `<form novalidate data-f2><div class="form-error" hidden></div>
+      <div class="callout green" style="margin:0 0 12px"><div class="ct"><div class="ch">Zugang ${esc(ep.id)} funktioniert</div><div class="cb">${ep.buckets.length ? `${ep.buckets.length} ${ep.buckets.length === 1 ? "Bucket" : "Buckets"} gefunden.` : esc(ep.list_error || "Keine Buckets gefunden – den Namen eintippen oder zuerst beim Anbieter einen anlegen.")}</div></div></div>
+      <div class="form-grid">
+        ${ep.buckets.length ? field({ name: "bucket", label: "Bucket", type: "select", options: ep.buckets.map((b) => [b, b]) }) : field({ name: "bucket", label: "Bucket", mono: true, placeholder: "pbs-backup" })}
+        ${field({ name: "name", label: "Name des Datastores", value: "cloud", mono: true, hint: "Steht im Bucket als Ordner – ein Bucket kann mehrere Datastores tragen." })}
+        ${field({ name: "path", label: "Lokaler Cache", value: "/mnt/datastore/cloud-cache", mono: true, wide: true, hint: "Verzeichnis auf dem Backup-Server; empfohlen sind 64–128 GiB." + freeHint })}
+        ${field({ name: "reuse", type: "checkbox", label: "Vorhandenen Cloud-Datastore übernehmen", wide: true, hint: "Nach einer Neuinstallation: gleicher Bucket und gleicher Name wie vorher, die Sicherungen darin bleiben." })}
+        ${field({ type: "html", wide: true, html: `<div class="section-title">Aufbewahrung in der Cloud</div>` })}
+        ${field({ name: "keep_daily", label: "Täglich", type: "number", min: 0, value: 7 })}
+        ${field({ name: "keep_weekly", label: "Wöchentlich", type: "number", min: 0, value: 4 })}
+        ${field({ name: "keep_monthly", label: "Monatlich", type: "number", min: 0, value: 6 })}
+        ${fixed.length ? field({ type: "html", wide: true, html: `<div class="section-title">Jede Nacht hineinkopieren</div>` }) +
+          field({ name: "copy", type: "checkbox", label: "Kopierjob anlegen", value: true, wide: true }) +
+          field({ name: "source", label: "Aus Datastore", type: "select", options: fixed.map((x) => [x.name, x.name]) }) +
+          field({ name: "time", label: "Uhrzeit", value: "03:30", mono: true }) +
+          field({ name: "transfer_last", label: "Nur die neuesten (je Server)", type: "number", min: 0, value: 3, hint: "Beim ersten Lauf nicht die ganze Geschichte hochladen; danach kommt jede neue Sicherung dazu. 0 = alle." }) : ""}
+      </div>
+      <div class="dlg-foot" style="padding:16px 0 0"><button class="btn gray" type="button" data-back>${icon("back")} Zurück</button><span class="spacer"></span><button class="btn gray" type="button" data-x>Abbrechen</button><button class="btn" type="submit">Anlegen</button></div></form>`;
+    const f = qs("[data-f2]", box);
+    const nm = qs('[name="name"]', f), pa = qs('[name="path"]', f);
+    let pathEdited = false;
+    pa.oninput = () => { pathEdited = true; };
+    nm.oninput = () => { if (!pathEdited) pa.value = `/mnt/datastore/${nm.value}-cache`; };
+    qs("[data-x]", f).onclick = cancel;
+    qs("[data-back]", f).onclick = async () => { const old = ep; ep = null; try { await DEL(`/api/pbs/${srv.id}/s3/${enc(old.id)}`); } catch (e) { /* ignore */ } step1(); };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = qs('button[type="submit"]', f);
+      const v = formValues(f);
+      try {
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Lege an …`; showErrors(f, null);
+        await POST(`/api/pbs/${srv.id}/datastores`, { name: v.name, kind: "s3", s3: ep.id, bucket: v.bucket, path: v.path, reuse: v.reuse,
+          keep_daily: v.keep_daily, keep_weekly: v.keep_weekly, keep_monthly: v.keep_monthly, prune_schedule: "daily", gc_schedule: "daily" });
+        let copied = false;
+        if (v.copy && v.source) {
+          try {
+            await POST(`/api/pbs/${srv.id}/sync`, { store: v.name, source_server: srv.id, source_store: v.source, schedule: v.time, transfer_last: v.transfer_last, comment: "In die Cloud" });
+            copied = true;
+          } catch (err) { toastErr(err); }
+        }
+        ep = null;
+        d.close();
+        toast(copied ? `Datastore ${v.name} in der Cloud angelegt – jede Nacht um ${v.time} kommen die Sicherungen hinein.` : `Datastore ${v.name} in der Cloud angelegt.`);
+        done();
+      } catch (err) { showErrors(f, err); } finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = "Anlegen"; } }
+    };
+  };
+  step1();
+}
 
 function datastoreCreate(srv, done) {
   formDialog({
@@ -2247,15 +2369,15 @@ PAGES["/sicherungen"] = async (el, token) => {
     });
     const cnt = (st) => data.guests.filter((g) => g.chain.state === st).length;
     const summary = data.guests.length ? `<div class="chain-summary"><span><span class="chain-dot green"></span> ${cnt("ok")} vollständig</span><span><span class="chain-dot amber"></span> ${cnt("warn")} bald fällig</span><span><span class="chain-dot rose"></span> ${cnt("bad")} mit Lücke</span>
-      <span class="muted small">Kette: Sicherung → Kopie auf zweitem Server → USB-Platte → Restore-Test. Grau = für diesen Gast nicht vorgesehen.</span></div>` : "";
+      <span class="muted small">Kette: Sicherung → Kopie außer Haus (zweiter Server oder Cloud) → USB-Platte → Restore-Test. Grau = für diesen Gast nicht vorgesehen.</span></div>` : "";
     qs("[data-list]", el).innerHTML = (data.errors || []).map((e) => {
       const c = state.clusters.find((x) => e.startsWith(x.name + ": "));
       return c && e.includes("fehlen Rechte") ? `<div style="margin:12px">${permCallout(c, (e.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean))}</div>` : callout("red", "Nicht alles erreichbar", esc(e));
-    }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Zweiter Server</th><th>USB-Platte</th><th>Restore-Test</th><th></th></tr></thead><tbody>
+    }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Außer Haus</th><th>USB-Platte</th><th>Restore-Test</th><th></th></tr></thead><tbody>
       ${list.map((g) => { const where = [...g.backups, ...g.seen].map((b) => `${b.server_name} / ${b.store}: ${b.count} ${b.count === 1 ? "Stand" : "Stände"}${b.seen ? " (Platte zuletzt gelesen " + fmtAgo(b.seen) + ")" : ""}`).join("\n"); return `<tr>
         <td data-l="Gast"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} · ${esc(g.node)}${state.clusters.length > 1 ? " · " + esc(g.cluster_name) : ""}</div></td>
         <td data-l="Sicherung"${where ? ` title="${esc(where)}"` : ""}>${chainCell(g.chain.backup, "Sicherung")}</td>
-        <td data-l="Zweiter Server">${chainCell(g.chain.copy, "Kopie auf zweitem Server")}</td>
+        <td data-l="Außer Haus">${chainCell(g.chain.copy, "Kopie außer Haus (zweiter Server oder Cloud)")}</td>
         <td data-l="USB-Platte">${chainCell(g.chain.usb, "USB-Platte")}</td>
         <td data-l="Restore-Test">${chainCell(g.chain.test, "Restore-Test")}</td>
         <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-backup="${g.cluster}|${g.vmid}">${icon("download")} Jetzt sichern</button>
