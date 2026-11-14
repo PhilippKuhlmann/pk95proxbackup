@@ -363,7 +363,7 @@ func Setup(c *core.Core) (func(), error) {
 	pve.AddGuest(130, "pbs-buero", "pve2", "qemu", "running")
 	pve.SetVMDisks(130, map[string]string{"scsi0": "tank:vm-130-disk-0,size=32G", "scsi1": "tank:vm-130-disk-1,size=3500G"})
 	pve.SetNodeLayout("pve2", NodeLayout{LVM: map[string][]string{"pve": {"/dev/sda3"}}, ZFS: map[string][]string{"tank": {"sdb"}}})
-	pve.AddJob(prox.BackupJob{ID: "backup-nightly", Schedule: "21:00", Storage: "pbs-appliance", Mode: "snapshot", All: 1, Exclude: "112,120", Comment: "Jede Nacht alles", NotesTemplate: "{{guestname}}", NotificationMode: "notification-system"})
+	pve.AddJob(prox.BackupJob{ID: "backup-nightly", Schedule: "21:00", Storage: "pbs-appliance", Mode: "snapshot", All: 1, Exclude: "112,120,130", Comment: "Jede Nacht alles", NotesTemplate: "{{guestname}}", NotificationMode: "notification-system"})
 
 	var x struct{}
 	if c.St.Get(core.KindShare, "nas", &x) != nil {

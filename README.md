@@ -5,6 +5,10 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 
 - **Sichern:** Sicherungsjobs in Proxmox VE anlegen, bearbeiten und sofort starten; einzelne VMs und
   Container „jetzt sichern“; Übersicht, welche Gäste wann wohin gesichert wurden und welche in keinem Job sind.
+- **Sicherungskette je Gast** (VMs & Container): Sicherung → Kopie auf einem zweiten Backup-Server → USB-Platte →
+  Restore-Test, jedes Glied mit Alter und Ampel. Was auf USB-Platten liegt, merkt sich die Appliance beim Lesen und nach
+  jeder Kopie – auch abgezogene Platten zählen. Reißt die Kette (z. B. gesichert, aber seit drei Wochen auf keiner
+  Platte), erscheint ein Hinweis in der Übersicht.
 - **Wiederherstellen** aus jeder Sicherung als neuer Gast (das Original bleibt unberührt).
 - **Datastores** auf einer freien (virtuellen) Platte, einer **NFS-/SMB-Freigabe** oder in einem Verzeichnis,
   mit Aufbewahrung (keep-last/daily/weekly/…), Prüfung (Verify) und Speicherfreigabe (Garbage Collection) nach Zeitplan.

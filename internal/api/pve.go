@@ -620,128 +620,31 @@ func idSet(list string) map[string]bool {
 
 // ---- guests ----
 
-type backupRef struct {
-	Server     string `json:"server"`
-	ServerName string `json:"server_name"`
-	Store      string `json:"store"`
-	Last       int64  `json:"last"`
-	Count      int    `json:"count"`
-}
-
-type guestView struct {
-	prox.Guest
-	Cluster     string      `json:"cluster"`
-	ClusterName string      `json:"cluster_name"`
-	InJob       bool        `json:"in_job"`
-	Backups     []backupRef `json:"backups"`
-	LastBackup  int64       `json:"last_backup"`
-}
-
+// guests lists all guests with their backups and their backup chain (backup → second server →
+// USB disk → restore test).
 func (s *Server) guests(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
-	clusters, _ := s.C.Clusters()
-	servers, _ := s.C.Servers()
-	var mu sync.Mutex
+	var perms []string
 	var wg sync.WaitGroup
-	backups := map[string][]backupRef{} // "vm/100" → refs
-	var errs []string
-	for _, srv := range servers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			pbs := s.C.PBSClient(srv)
-			usage, err := pbs.Usage(ctx)
-			if err != nil {
-				mu.Lock()
-				errs = append(errs, srv.Name+": "+err.Error())
-				mu.Unlock()
-				return
-			}
-			for _, u := range usage {
-				if u.MountStatus == "notmounted" {
-					continue
-				}
-				groups, err := pbs.Groups(ctx, u.Store)
-				if err != nil {
-					continue
-				}
-				mu.Lock()
-				for _, g := range groups {
-					k := g.Type + "/" + g.ID
-					backups[k] = append(backups[k], backupRef{Server: srv.ID, ServerName: srv.Name, Store: u.Store, Last: g.LastBackup, Count: g.Count})
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	out := []guestView{}
+	var mu sync.Mutex
+	clusters, _ := s.C.Clusters()
 	for _, cl := range clusters {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			pve := s.C.PVEClient(cl)
-			list, err := pve.Guests(ctx)
-			if err != nil {
-				mu.Lock()
-				errs = append(errs, cl.Name+": "+err.Error())
-				mu.Unlock()
-				return
-			}
-			if perms, err := pve.Permissions(ctx); err == nil {
-				if missing := prox.MissingPrivs(perms); len(missing) > 0 {
+			if p, err := s.C.PVEClient(cl).Permissions(ctx); err == nil {
+				if missing := prox.MissingPrivs(p); len(missing) > 0 {
 					mu.Lock()
-					errs = append(errs, cl.Name+": "+permHint(cl.TokenID, missing))
+					perms = append(perms, cl.Name+": "+permHint(cl.TokenID, missing))
 					mu.Unlock()
 				}
 			}
-			nb := map[int]bool{}
-			if nbs, err := pve.NotBackedUp(ctx); err == nil {
-				for _, g := range nbs {
-					nb[g.VMID] = true
-				}
-			}
-			mu.Lock()
-			for _, g := range list {
-				if g.Template != 0 {
-					continue
-				}
-				out = append(out, guestView{Guest: g, Cluster: cl.ID, ClusterName: cl.Name, InJob: !nb[g.VMID]})
-			}
-			mu.Unlock()
 		}()
 	}
+	out, errs := s.C.Coverage(ctx)
 	wg.Wait()
-	for i := range out {
-		typ := "vm"
-		if out[i].Type == "lxc" {
-			typ = "ct"
-		}
-		out[i].Backups = backups[typ+"/"+strconv.Itoa(out[i].VMID)]
-		if out[i].Backups == nil {
-			out[i].Backups = []backupRef{}
-		}
-		// The appliance's own server first, then the newest backup.
-		bs := out[i].Backups
-		sort.SliceStable(bs, func(a, b int) bool {
-			if (bs[a].Server == "local") != (bs[b].Server == "local") {
-				return bs[a].Server == "local"
-			}
-			return bs[a].Last > bs[b].Last
-		})
-		for _, b := range out[i].Backups {
-			if b.Last > out[i].LastBackup {
-				out[i].LastBackup = b.Last
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].ClusterName != out[j].ClusterName {
-			return out[i].ClusterName < out[j].ClusterName
-		}
-		return out[i].VMID < out[j].VMID
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"guests": out, "errors": errs})
+	writeJSON(w, http.StatusOK, map[string]any{"guests": out, "errors": append(errs, perms...)})
 }
 
 func (s *Server) backupGuest(w http.ResponseWriter, r *http.Request) {

@@ -751,3 +751,9 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 
 .diskmap { padding: 12px 16px; } .diskmap summary { cursor: pointer; font-weight: 600; }
 .diskmap ul { margin: 10px 0 0; padding-left: 20px; font-size: 13px; } .diskmap li { margin: 3px 0; overflow-wrap: anywhere; }
+
+/* Sicherungskette */
+.chain-dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: var(--faint); margin-right: 6px; vertical-align: 1px; flex: none; }
+.chain-dot.green { background: #16a34a; } .chain-dot.amber { background: #d97706; } .chain-dot.rose { background: #e11d48; }
+.chain-cell { display: flex; align-items: center; font-size: 14px; white-space: nowrap; }
+.chain-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 0 0 12px; padding: 0 4px; font-size: 14px; }

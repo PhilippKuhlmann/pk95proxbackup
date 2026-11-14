@@ -688,6 +688,10 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 			}
 		}
 	}
+	// What the disk holds now (it is unreadable once it is pulled).
+	if gs, err := pbs.Groups(ctx, d.Store); err == nil {
+		c.SaveContent(r.ServerID, d.Store, gs)
+	}
 	if r.UnmountOnDone {
 		c.setPhase(key, rt, "unmounting")
 		if err := c.unmountStore(ctx, pbs, d.Store); err != nil {

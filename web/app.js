@@ -809,6 +809,8 @@ PAGES["/"] = async (el, token) => {
     }
     for (const a of r.stale_archives || []) issue("warning", `Archiv-Platte „${a.name}“ zuletzt angesteckt ${fmtAgo(a.last_seen)} – einmal prüfen`, "/wechselplatten");
     for (const x of r.space || []) issue(x.state === "critical" ? "error" : "warning", `Datastore ${x.store} auf ${x.server}: ${x.days_left <= 0 ? "voll" : `voraussichtlich in ${x.days_left} ${x.days_left === 1 ? "Tag" : "Tagen"} voll`}`, `/datastores?server=${x.server_id}`);
+    const cov = r.coverage || {};
+    if (cov.bad) issue("warning", `${cov.bad} ${cov.bad === 1 ? "VM bzw. Container hat" : "VMs und Container haben"} eine Lücke in der Sicherungskette${cov.names?.length ? " (" + cov.names.join(", ") + (cov.bad > cov.names.length ? ", …" : "") + ")" : ""}`, "/sicherungen?luecken=1");
     for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
     const sb = r.selfbackup || {};
     if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen/sicherung");
@@ -2219,27 +2221,43 @@ async function passthroughDialog() {
 }
 
 // ---------- VMs & Container ----------
+// chainCell shows one link of the backup chain: traffic light, age, where.
+const CHAIN_TONE = { ok: "green", warn: "amber", bad: "rose", none: "" };
+function chainCell(l, label) {
+  if (!l) return "—";
+  const tone = CHAIN_TONE[l.state] || "";
+  const when = l.last ? fmtAgo(l.last) : "";
+  const main = l.state === "none" ? `<span class="muted small">${esc(l.note || "—")}</span>`
+    : `<span class="chain-dot ${tone}" aria-hidden="true"></span><span class="${l.state === "bad" ? "bad" : l.state === "warn" ? "warnc" : ""}">${esc(when || l.note || "")}</span>`;
+  const sub = l.state === "none" ? "" : [l.where, when && l.note ? l.note : ""].filter(Boolean).map(esc).join(" · ");
+  const tip = `${label}: ${{ ok: "in Ordnung", warn: "bald fällig", bad: "fehlt oder zu alt", none: "nicht vorgesehen" }[l.state] || ""}${l.last ? " – " + fmtTime(l.last, true) : ""}`;
+  return `<div class="chain-cell" title="${esc(tip)}">${main}</div>${sub ? `<div class="t-sub">${sub}</div>` : ""}`;
+}
+
 PAGES["/sicherungen"] = async (el, token) => {
   await loadConn();
-  let filter = "", onlyIssues = false;
+  let filter = "", onlyIssues = new URLSearchParams(location.search).get("luecken") === "1";
   let data = null;
   const draw = () => {
     if (token !== pageToken || !data) return;
-    const now = Date.now() / 1000;
     const list = data.guests.filter((g) => {
       if (filter && !`${g.vmid} ${g.name} ${g.node} ${g.cluster_name}`.toLowerCase().includes(filter)) return false;
-      if (onlyIssues) return !g.in_job || !g.last_backup || now - g.last_backup > 2 * 86400;
+      if (onlyIssues) return g.chain.state !== "ok";
       return true;
     });
+    const cnt = (st) => data.guests.filter((g) => g.chain.state === st).length;
+    const summary = data.guests.length ? `<div class="chain-summary"><span><span class="chain-dot green"></span> ${cnt("ok")} vollständig</span><span><span class="chain-dot amber"></span> ${cnt("warn")} bald fällig</span><span><span class="chain-dot rose"></span> ${cnt("bad")} mit Lücke</span>
+      <span class="muted small">Kette: Sicherung → Kopie auf zweitem Server → USB-Platte → Restore-Test. Grau = für diesen Gast nicht vorgesehen.</span></div>` : "";
     qs("[data-list]", el).innerHTML = (data.errors || []).map((e) => {
       const c = state.clusters.find((x) => e.startsWith(x.name + ": "));
       return c && e.includes("fehlen Rechte") ? `<div style="margin:12px">${permCallout(c, (e.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean))}</div>` : callout("red", "Nicht alles erreichbar", esc(e));
-    }).join("") + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Knoten</th><th>Letzte Sicherung</th><th>Gesichert auf</th><th></th></tr></thead><tbody>
-      ${list.map((g) => { const age = g.last_backup ? now - g.last_backup : 0; return `<tr>
-        <td data-l="Gast"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} ${g.in_job ? "" : ' · <span class="bad">in keinem Sicherungsjob</span>'}</div></td>
-        <td data-l="Knoten"><div class="small">${esc(g.node)}</div><div class="t-sub">${esc(g.cluster_name)}</div></td>
-        <td data-l="Letzte Sicherung">${g.last_backup ? `<span class="${age > 2 * 86400 ? "bad" : ""}">${fmtTime(g.last_backup, true)}</span><div class="t-sub">${fmtAgo(g.last_backup)}</div>` : '<span class="bad">noch nie</span>'}</td>
-        <td data-l="Gesichert auf" class="small">${g.backups.map((b) => `<div>${esc(b.server_name)} / <b>${esc(b.store)}</b> <span class="muted">(${b.count})</span></div>`).join("") || "—"}</td>
+    }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Zweiter Server</th><th>USB-Platte</th><th>Restore-Test</th><th></th></tr></thead><tbody>
+      ${list.map((g) => { const where = [...g.backups, ...g.seen].map((b) => `${b.server_name} / ${b.store}: ${b.count} ${b.count === 1 ? "Stand" : "Stände"}${b.seen ? " (Platte zuletzt gelesen " + fmtAgo(b.seen) + ")" : ""}`).join("\n"); return `<tr>
+        <td data-l="Gast"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} · ${esc(g.node)}${state.clusters.length > 1 ? " · " + esc(g.cluster_name) : ""}</div></td>
+        <td data-l="Sicherung"${where ? ` title="${esc(where)}"` : ""}>${chainCell(g.chain.backup, "Sicherung")}</td>
+        <td data-l="Zweiter Server">${chainCell(g.chain.copy, "Kopie auf zweitem Server")}</td>
+        <td data-l="USB-Platte">${chainCell(g.chain.usb, "USB-Platte")}</td>
+        <td data-l="Restore-Test">${chainCell(g.chain.test, "Restore-Test")}</td>
         <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-backup="${g.cluster}|${g.vmid}">${icon("download")} Jetzt sichern</button>
           <button class="btn gray sm" type="button" data-restore="${g.cluster}|${g.vmid}" ${g.backups.length ? "" : "disabled"}>${icon("restore")} Wiederherstellen</button></div></td></tr>`; }).join("")}
       </tbody></table></div></div>` : empty(data.guests.length ? "Nichts gefunden" : "Keine VMs oder Container", data.guests.length ? "" : "Zuerst unter Verbindungen Proxmox VE eintragen.", "", "archive"));
@@ -2249,7 +2267,7 @@ PAGES["/sicherungen"] = async (el, token) => {
     qsa("[data-restore]", el).forEach((b) => b.onclick = () => { const g = find(b.dataset.restore); go(`/wiederherstellen?cluster=${enc(g.cluster)}&vmid=${g.vmid}`); });
   };
   el.innerHTML = pageHead("VMs & Container", "Alle Gäste der verbundenen Proxmox-VE-Systeme mit ihren Sicherungen auf den Backup-Servern.",
-    `<input type="search" data-q placeholder="Suchen: Name, ID, Knoten …" style="width:240px"><label class="check"><input type="checkbox" data-issues><span>nur Problemfälle</span></label>`) + `<div data-list><div class="panel flex"><span class="spinner"></span> Lade …</div></div>`;
+    `<input type="search" data-q placeholder="Suchen: Name, ID, Knoten …" style="width:240px"><label class="check"><input type="checkbox" data-issues ${onlyIssues ? "checked" : ""}><span>nur Lücken</span></label>`) + `<div data-list><div class="panel flex"><span class="spinner"></span> Lade …</div></div>`;
   qs("[data-q]", el).oninput = (e) => { filter = e.target.value.trim().toLowerCase(); draw(); };
   qs("[data-issues]", el).onchange = (e) => { onlyIssues = e.target.checked; draw(); };
   const load = async () => { data = await GET("/api/guests"); draw(); };

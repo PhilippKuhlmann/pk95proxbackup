@@ -60,3 +60,14 @@ func TestMatchNodeDisk(t *testing.T) {
 		t.Error("unknown device matched")
 	}
 }
+
+func TestChainAge(t *testing.T) {
+	now := time.Now()
+	day := func(d int) int64 { return now.Add(-time.Duration(d) * 24 * time.Hour).Unix() }
+	if age(day(1), now, 3, 10) != "ok" || age(day(5), now, 3, 10) != "warn" || age(day(22), now, 10, 21) != "bad" {
+		t.Fatal("age")
+	}
+	if worse("ok", "none") != "ok" || worse("warn", "bad") != "bad" || worse("bad", "ok") != "bad" {
+		t.Fatal("worse")
+	}
+}
