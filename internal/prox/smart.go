@@ -144,6 +144,7 @@ type NodeDisk struct {
 	Health  string     `json:"health"`
 	Wearout flexString `json:"wearout"` // number or "N/A"
 	Used    string     `json:"used"`
+	WWN     string     `json:"wwn,omitempty"` // eui.0025… (NVMe) or 0x5000… – ZFS and by-id names use it
 }
 
 // NodeDisks lists the physical disks of a Proxmox VE node (with SMART health).

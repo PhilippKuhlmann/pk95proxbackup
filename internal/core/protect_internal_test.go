@@ -38,7 +38,8 @@ func TestWantedProtected(t *testing.T) {
 }
 
 func TestMatchNodeDisk(t *testing.T) {
-	disks := []prox.NodeDisk{{DevPath: "/dev/sda", Serial: "WD-WCC4NJPSFNKL"}, {DevPath: "/dev/nvme0n1", Serial: "S73JNJ0X501388B"}, {DevPath: "/dev/sdb", Serial: "ZGY8ABCD"}}
+	disks := []prox.NodeDisk{{DevPath: "/dev/sda", Serial: "WD-WCC4NJPSFNKL"}, {DevPath: "/dev/nvme0n1", Serial: "S73JNJ0X501388B"}, {DevPath: "/dev/sdb", Serial: "ZGY8ABCD"},
+		{DevPath: "/dev/nvme1n1", Serial: "S73JNJ0X501442X", WWN: "eui.0025384541401846"}, {DevPath: "/dev/sdc", Serial: "X1", WWN: "0x5000c500a1b2c3d4"}}
 	for name, want := range map[string]string{
 		"/dev/sda3":      "/dev/sda",
 		"/dev/nvme0n1p3": "/dev/nvme0n1",
@@ -47,13 +48,15 @@ func TestMatchNodeDisk(t *testing.T) {
 		"nvme-Samsung_SSD_990_PRO_with_Heatsink_1TB_S73JNJ0X501388B-part3": "/dev/nvme0n1",
 		"ata-WDC_WD30EZRX-00D8PB0_WD-WCC4NJPSFNKL-part1":                   "/dev/sda",
 		"/dev/disk/by-id/ata-ST4000VN008-2DR166_ZGY8ABCD":                  "/dev/sdb",
+		"/dev/disk/by-id/nvme-eui.0025384541401846-part3":                  "/dev/nvme1n1",
+		"wwn-0x5000c500a1b2c3d4-part1":                                     "/dev/sdc",
 	} {
 		d, ok := matchDisk(name, disks)
 		if !ok || d.DevPath != want {
 			t.Errorf("%s → %q (%v), want %s", name, d.DevPath, ok, want)
 		}
 	}
-	if _, ok := matchDisk("wwn-0x5000c500a1b2c3d4", disks); ok {
+	if _, ok := matchDisk("wwn-0x5000c500ffffffff", disks); ok {
 		t.Error("unknown device matched")
 	}
 }

@@ -104,6 +104,19 @@ func matchDisk(name string, disks []prox.NodeDisk) (prox.NodeDisk, bool) {
 			return d, true
 		}
 	}
+	// by-id names after the WWN/EUI: nvme-eui.0025384541401846-part3, wwn-0x5000c500a1b2c3d4
+	lower := strings.ToLower(name)
+	for _, d := range disks {
+		w := strings.ToLower(strings.TrimSpace(d.WWN))
+		if w == "" || w == "unknown" {
+			continue
+		}
+		for _, cand := range []string{w, strings.TrimPrefix(w, "eui."), strings.TrimPrefix(w, "0x")} {
+			if len(cand) >= 8 && strings.Contains(lower, cand) {
+				return d, true
+			}
+		}
+	}
 	return prox.NodeDisk{}, false
 }
 
