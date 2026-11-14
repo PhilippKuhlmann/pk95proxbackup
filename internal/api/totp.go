@@ -142,7 +142,12 @@ func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	resp := map[string]any{"user": u.Username}
+	how := "Anmeldung mit Code"
+	if usedRecovery {
+		how = "Anmeldung mit Wiederherstellungscode"
+	}
+	s.loggedIn(r, u, how)
+	resp := map[string]any{"user": u.Username, "role": u.Role, "totp_required": s.mustSetUpTOTP(u)}
 	if usedRecovery {
 		resp["recovery_left"] = len(st.Recovery)
 		s.C.Event("warning", "Appliance", "Anmeldung mit Wiederherstellungscode",

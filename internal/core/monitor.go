@@ -280,6 +280,7 @@ func (c *Core) Run(ctx context.Context) {
 		prev = &ov
 		_ = c.St.PruneSessions()
 		_ = c.St.PruneEvents(180 * 24 * time.Hour)
+		_ = c.St.PruneAudit(400 * 24 * time.Hour)
 		select {
 		case <-ctx.Done():
 			return

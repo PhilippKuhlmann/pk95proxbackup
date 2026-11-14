@@ -2,7 +2,6 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -85,7 +84,16 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/setup", s.setup)
 	m.HandleFunc("POST /api/setup/restore", s.setupRestore)
 
-	a := func(pattern string, h http.HandlerFunc) { m.Handle(pattern, s.auth(h)) }
+	a := func(pattern string, h http.HandlerFunc) { m.Handle(pattern, s.auth(pattern, h)) }
+
+	// Accounts and audit log
+	a("GET /api/users", s.listUsers)
+	a("POST /api/users", s.createUser)
+	a("PUT /api/users/{id}", s.updateUser)
+	a("DELETE /api/users/{id}", s.deleteUser)
+	a("POST /api/users/{id}/password", s.setUserPassword)
+	a("POST /api/users/{id}/totp-reset", s.resetUserTOTP)
+	a("GET /api/audit", s.listAudit)
 
 	a("GET /api/overview", s.overview)
 	a("GET /api/events", s.events)
@@ -313,28 +321,6 @@ func (s *Server) clientIP(r *http.Request) string {
 
 // ---- auth ----
 
-func (s *Server) auth(next http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(cookieName)
-		if err != nil {
-			writeErr(w, http.StatusUnauthorized, "Bitte anmelden.")
-			return
-		}
-		u, err := s.C.St.SessionUser(c.Value)
-		if err != nil {
-			writeErr(w, http.StatusUnauthorized, "Sitzung abgelaufen, bitte neu anmelden.")
-			return
-		}
-		// Mutating requests must come from our own page (custom header forces a CORS preflight).
-		if r.Method != http.MethodGet && r.Header.Get("X-PK95") != "1" {
-			writeErr(w, http.StatusForbidden, "Anfrage abgelehnt.")
-			return
-		}
-		ctx := context.WithValue(r.Context(), ctxKey{}, u)
-		next(w, r.WithContext(ctx))
-	})
-}
-
 func currentUser(r *http.Request) store.User {
 	u, _ := r.Context().Value(ctxKey{}).(store.User)
 	return u
@@ -356,7 +342,7 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"setup": n == 0, "version": s.C.Version}
 	if c, err := r.Cookie(cookieName); err == nil {
 		if u, err := s.C.St.SessionUser(c.Value); err == nil {
-			resp["user"] = u.Username
+			resp["user"], resp["role"], resp["totp_required"] = u.Username, u.Role, s.mustSetUpTOTP(u)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -404,6 +390,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	u, err := s.C.St.UserByName(strings.TrimSpace(req.Username))
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(u.Hash), []byte(req.Password)) != nil {
 		s.failed(ip)
+		_ = s.C.St.AddAudit(store.AuditEntry{TS: time.Now().Unix(), User: strings.TrimSpace(req.Username), IP: ip, Action: "Anmeldung fehlgeschlagen", Status: http.StatusUnauthorized})
 		time.Sleep(400 * time.Millisecond)
 		writeErr(w, http.StatusUnauthorized, "Benutzername oder Passwort falsch.")
 		return
@@ -416,11 +403,21 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u.Username})
+	s.loggedIn(r, u, "Anmeldung")
+	writeJSON(w, http.StatusOK, map[string]any{"user": u.Username, "role": u.Role, "totp_required": s.mustSetUpTOTP(u)})
+}
+
+// loggedIn notes a sign-in.
+func (s *Server) loggedIn(r *http.Request, u store.User, how string) {
+	_ = s.C.St.NoteLogin(u.ID)
+	_ = s.C.St.AddAudit(store.AuditEntry{TS: time.Now().Unix(), User: u.Username, IP: s.clientIP(r), Action: how, Status: http.StatusOK})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName); err == nil {
+		if u, err := s.C.St.SessionUser(c.Value); err == nil {
+			_ = s.C.St.AddAudit(store.AuditEntry{TS: time.Now().Unix(), User: u.Username, IP: s.clientIP(r), Action: "Abmeldung", Status: http.StatusOK})
+		}
 		_ = s.C.St.DeleteSession(c.Value)
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.Secure, SameSite: http.SameSiteStrictMode})

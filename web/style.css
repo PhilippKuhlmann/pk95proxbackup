@@ -767,3 +767,5 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .wiz-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .wiz-actions .spacer { flex: 1; }
 @media (max-width: 560px) { .form-grid.cols-2, .form-grid.cols-3 { grid-template-columns: minmax(0, 1fr); } }
+
+.uname .urole { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); line-height: 1.1; }

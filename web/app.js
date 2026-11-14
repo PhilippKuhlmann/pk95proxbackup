@@ -129,6 +129,7 @@ async function api(method, path, body) {
   if (res.status === 401 && !path.startsWith("/api/login") && !path.startsWith("/api/setup")) {
     state.user = null; render(); throw new Error(data.error || "Bitte anmelden.");
   }
+  if (res.status === 403 && data.totp_required && !state.totpRequired) { state.totpRequired = true; go("/einstellungen/konto"); }
   if (!res.ok) throw Object.assign(new Error(data.error || `Fehler ${res.status}`), { fields: data.fields || null, status: res.status });
   return data;
 }
@@ -412,7 +413,8 @@ async function run(btn, fn, okText) {
 }
 
 // ---------- state, router ----------
-const state = { user: null, setup: false, version: "", ov: null, servers: [], clusters: [] };
+const state = { user: null, role: "admin", totpRequired: false, setup: false, version: "", ov: null, servers: [], clusters: [] };
+const ROLE_NAMES = { admin: "Administrator", operator: "Bediener", viewer: "Nur lesen" };
 let pageTimer = null;
 let pageToken = 0;
 
@@ -432,7 +434,7 @@ const NAV = [
   { path: "/kopierjobs", label: "Kopierjobs", icon: "sync" },
   { head: "Verwaltung" },
   { path: "/verbindungen", label: "Verbindungen", icon: "link" },
-  { path: "/benachrichtigungen", label: "Benachrichtigungen", icon: "bell" },
+  { path: "/benachrichtigungen", label: "Benachrichtigungen", icon: "bell", admin: true },
   { path: "/ereignisse", label: "Ereignisse", icon: "clock" },
   { path: "/einstellungen", label: "Einstellungen", icon: "cog" },
 ];
@@ -480,14 +482,14 @@ function shell() {
         <div class="run-wrap"><button class="bar-btn run-btn" type="button" data-run-toggle aria-expanded="false" aria-haspopup="true" title="Laufende Aufgaben">${icon("refresh")}<span class="run-text" hidden></span><span class="run-count" hidden></span></button>
           <div class="run-panel" data-run-panel hidden></div></div>
         <button class="bar-btn" type="button" data-theme-icon title="Zwischen hellem und dunklem Erscheinungsbild wechseln" aria-label="Erscheinungsbild wechseln">${themeIcon()}</button>
-        <span class="user-chip"><span class="avatar">${esc((state.user || "?").slice(0, 2))}</span><span class="uname">${esc(state.user)}</span></span>
+        <span class="user-chip" title="${esc(state.user)} · ${esc(ROLE_NAMES[state.role] || "")}"><span class="avatar">${esc((state.user || "?").slice(0, 2))}</span><span class="uname">${esc(state.user)}${state.role !== "admin" ? `<small class="urole">${esc(ROLE_NAMES[state.role] || "")}</small>` : ""}</span></span>
         <button class="bar-btn" type="button" data-logout title="Abmelden" aria-label="Abmelden">${icon("logout")}</button>
       </div>
     </nav>
     <div class="scrim" data-scrim></div>
     <aside class="sidebar" aria-label="Seitenleiste">
       <ul class="nav-list">
-        ${NAV.map((n) => n.head ? `<li class="nav-head">${esc(n.head)}</li>` :
+        ${NAV.filter((n) => !n.admin || state.role === "admin").map((n) => n.head ? `<li class="nav-head">${esc(n.head)}</li>` :
           `<li><a class="nav-link" href="${n.path}" data-go ${cur === n.path || (n.path !== "/" && cur.startsWith(n.path)) ? 'aria-current="page"' : ""}>${icon(n.icon)}<span>${esc(n.label)}</span></a></li>`).join("")}
       </ul>
       <a href="/einstellungen" data-go class="side-foot" style="text-decoration:none">PK95 ProxBackup v${esc(state.version)}</a>
@@ -599,13 +601,15 @@ async function render() {
   if (!state.user) {
     try {
       const s = await GET("/api/session");
-      state.setup = s.setup; state.version = s.version; state.user = s.user || null;
+      state.setup = s.setup; state.version = s.version; state.user = s.user || null; state.role = s.role || "admin"; state.totpRequired = !!s.totp_required;
     } catch (e) {
       app.innerHTML = `<div class="sheet-page"><div class="sheet"><div class="sheet-body">${esc(e.message)}</div></div></div>`;
       return;
     }
   }
   if (!state.user) { document.body.classList.remove("collapsed"); return state.setup ? setupPage() : loginPage(); }
+  // An account that must set up two-factor sign-in first only sees its account page.
+  if (state.totpRequired && location.pathname !== "/einstellungen/konto") history.replaceState({}, "", "/einstellungen/konto");
   if (!qs(".topbar")) shell();
   else {
     qsa(".nav-link").forEach((a) => {
@@ -670,7 +674,7 @@ function loginPage() {
   };
 }
 function loggedIn(r) {
-  state.user = r.user; app.innerHTML = ""; render();
+  state.user = r.user; state.role = r.role || "admin"; state.totpRequired = !!r.totp_required; app.innerHTML = ""; render();
   if (r.recovery_left !== undefined) toast(`Mit Wiederherstellungscode angemeldet. Noch ${r.recovery_left} Codes übrig${r.recovery_left < 4 ? " – bitte unter Einstellungen → Konto neue erzeugen" : ""}.`);
 }
 // totpStep asks for the code of the authenticator app after the password was accepted.
@@ -715,7 +719,7 @@ function setupPage() {
   qs("input", form).focus();
   form.onsubmit = async (e) => {
     e.preventDefault();
-    try { const r = await POST("/api/setup", formValues(form)); state.user = r.user; state.setup = false; app.innerHTML = ""; history.replaceState({}, "", "/verbindungen"); render(); }
+    try { const r = await POST("/api/setup", formValues(form)); state.user = r.user; state.role = "admin"; state.setup = false; app.innerHTML = ""; history.replaceState({}, "", "/verbindungen"); render(); }
     catch (err) { showErrors(form, err); }
   };
 }
@@ -3231,13 +3235,14 @@ PAGES["/festplatten"] = async (el, token) => {
 // ---------- Einstellungen ----------
 const SET_TABS = [
   ["sicherung", "Sicherung der Appliance", "archive"], ["verschluesselung", "Verschlüsselung", "lock"], ["loeschschutz", "Löschschutz", "shield"], ["aktualisierung", "Aktualisierung", "download"],
-  ["zugriff", "Zugriff", "globe"], ["system", "System", "server"], ["konto", "Konto", "user"],
+  ["zugriff", "Zugriff", "globe"], ["system", "System", "server"], ["konten", "Konten", "user"], ["protokoll", "Protokoll", "list"], ["konto", "Mein Konto", "key"],
 ];
 
 PAGES["/einstellungen"] = async (el) => {
   const tab = location.pathname.replace(/^\/einstellungen\/?/, "").split("/")[0];
-  const cur = SET_TABS.find((t) => t[0] === tab) || SET_TABS[0];
-  const head = pageHead("Einstellungen") + `<nav class="tabbar" aria-label="Bereiche der Einstellungen">${SET_TABS.map(([k, l, ic]) =>
+  const tabs = state.role === "admin" ? SET_TABS : SET_TABS.filter((t) => t[0] === "konto");
+  const cur = tabs.find((t) => t[0] === tab) || tabs[0];
+  const head = pageHead("Einstellungen") + `<nav class="tabbar" aria-label="Bereiche der Einstellungen">${tabs.map(([k, l, ic]) =>
     `<a href="/einstellungen${k ? "/" + k : ""}" data-go ${k === cur[0] ? 'aria-current="page"' : ""}>${icon(ic)}<span>${esc(l)}</span>${k === "aktualisierung" ? '<span class="tab-dot" data-update-dot hidden></span>' : ""}</a>`).join("")}</nav>`;
   el.innerHTML = head + `<div class="settings-body" data-tab></div>`;
   GET("/api/update").then((u) => { const d = qs("[data-update-dot]", el); if (d && u.available) d.hidden = false; }).catch(() => {});
@@ -3421,7 +3426,8 @@ SET_PAGES.system = async (box) => {
 
 SET_PAGES.konto = async (box) => {
   const [sys, tf] = await Promise.all([GET("/api/system"), GET("/api/account/totp")]);
-  box.innerHTML = `<div class="settings-narrow"><div class="panel" data-totp></div><div class="panel"><div class="panel-head"><div class="panel-title">Passwort ändern</div><span class="muted small">Angemeldet als <b>${esc(sys.user)}</b></span></div>
+  if (tf.enabled && state.totpRequired) { state.totpRequired = false; app.innerHTML = ""; return render(); }
+  box.innerHTML = `<div class="settings-narrow">${state.totpRequired ? callout("yellow", "Zwei-Faktor-Anmeldung einrichten", "Für dein Konto ist die Anmeldung mit Code aus einer Authenticator-App vorgeschrieben. Bitte jetzt einrichten – danach stehen dir alle Seiten offen.") : ""}<div class="panel" data-totp></div><div class="panel"><div class="panel-head"><div class="panel-title">Passwort ändern</div><span class="muted small">Angemeldet als <b>${esc(sys.user)}</b></span></div>
     <form class="form" data-pw novalidate><div class="form-error" hidden></div><div class="form-grid">
       ${field({ name: "current", label: "Aktuelles Passwort", type: "password", autocomplete: "current-password", wide: true })}
       ${field({ name: "new", label: "Neues Passwort", type: "password", hint: "Mindestens 10 Zeichen. Andere Sitzungen werden danach abgemeldet.", autocomplete: "new-password", wide: true })}
@@ -3622,6 +3628,82 @@ async function keyDialog(id, reload, fresh) {
   if (sv) sv.onclick = () => run(sv, async () => { await PUT(`/api/enckeys/${id}`, { saved: true }); d.close(); }, "Vermerkt.");
   d.addEventListener("close", () => { if (reload) reload(); });
 }
+
+// ---------- Konten und Protokoll ----------
+const ROLE_HELP = {
+  admin: "Alles, auch Einstellungen, Verbindungen, Schlüssel und Konten.",
+  operator: "Alltag: jetzt sichern, wiederherstellen, Restore-Tests und Kopien starten, USB-Platten ein- und aushängen, prüfen und freigeben. Keine Einstellungen.",
+  viewer: "Sieht alles, ändert nichts. Keine Dateien aus Sicherungen, keine Schlüssel.",
+};
+const roleOptions = () => Object.keys(ROLE_HELP).map((k) => [k, ROLE_NAMES[k], ROLE_HELP[k]]);
+
+SET_PAGES.konten = async (box) => {
+  const r = await GET("/api/users");
+  const reload = () => SET_PAGES.konten(box);
+  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Konten</div><button class="btn sm" type="button" data-uadd>${icon("plus")} Konto anlegen</button></div>
+    <p class="panel-intro">Wer sich an der Appliance anmeldet und was er darf. Jede Änderung und jeder Zugriff auf Schlüssel und Dateien aus Sicherungen steht im Protokoll.</p>
+    <div class="table-wrap"><table class="resp"><thead><tr><th>Konto</th><th>Rolle</th><th>Zwei-Faktor</th><th>Zuletzt angemeldet</th><th></th></tr></thead><tbody>
+    ${r.users.map((u) => `<tr><td data-l="Konto"><div class="t-main">${esc(u.username)} ${u.me ? pill("du", "blue") : ""}</div><div class="t-sub">angelegt ${esc(fmtTime(u.created, true))}</div></td>
+      <td data-l="Rolle">${esc(ROLE_NAMES[u.role] || u.role)}</td>
+      <td data-l="Zwei-Faktor">${u.totp ? pill("an", "green", true) : u.must_set_up ? pill("vorgeschrieben, nicht eingerichtet", "amber") : pill("aus")}${u.totp_required && u.totp ? `<div class="t-sub">vorgeschrieben</div>` : ""}</td>
+      <td data-l="Zuletzt angemeldet" class="small">${u.last_login ? esc(fmtAgo(u.last_login)) : '<span class="muted">nie</span>'}</td>
+      <td class="act"><div class="row-actions"><button class="ib" type="button" title="Rolle und Zwei-Faktor" aria-label="${esc(u.username)} bearbeiten" data-uedit="${u.id}">${icon("pencil")}</button>
+        ${u.me ? "" : `<button class="ib" type="button" title="Neues Passwort setzen" aria-label="Passwort von ${esc(u.username)} setzen" data-upw="${u.id}">${icon("key")}</button>
+        ${u.totp ? `<button class="ib" type="button" title="Zwei-Faktor zurücksetzen (Telefon verloren)" aria-label="Zwei-Faktor von ${esc(u.username)} zurücksetzen" data-utotp="${u.id}">${icon("shield")}</button>` : ""}
+        <button class="ib red" type="button" title="Konto löschen" aria-label="${esc(u.username)} löschen" data-udel="${u.id}">${icon("trash")}</button>`}</div></td></tr>`).join("")}
+    </tbody></table></div></div>
+    <div class="panel"><div class="panel-head"><div class="panel-title">Was die Rollen dürfen</div></div>
+      <table class="kv">${Object.keys(ROLE_HELP).map((k) => `<tr><td>${esc(ROLE_NAMES[k])}</td><td>${esc(ROLE_HELP[k])}</td></tr>`).join("")}</table></div></div>`;
+  const byId = (id) => r.users.find((u) => String(u.id) === String(id));
+  qs("[data-uadd]", box).onclick = () => formDialog({
+    title: "Konto anlegen", ic: "user", button: "Anlegen", grid: "cols-2",
+    fields: [{ name: "username", label: "Benutzername", autocomplete: "off" }, { name: "password", label: "Erstes Passwort", type: "password", autocomplete: "new-password", hint: "Mindestens 10 Zeichen; der Benutzer ändert es unter „Mein Konto“." },
+      { name: "role", label: "Rolle", type: "radio", value: "operator", options: roleOptions() },
+      { name: "totp_required", label: "Zwei-Faktor-Anmeldung vorschreiben", type: "checkbox", value: true, wide: true, hint: "Bei der ersten Anmeldung richtet der Benutzer sie ein, vorher kommt er an nichts heran." }],
+    submit: async (v) => { await POST("/api/users", v); toast(`Konto ${v.username} angelegt.`); reload(); },
+  });
+  qsa("[data-uedit]", box).forEach((b) => b.onclick = () => {
+    const u = byId(b.dataset.uedit);
+    formDialog({ title: `${u.username} bearbeiten`, ic: "user",
+      fields: [{ name: "role", label: "Rolle", type: "radio", value: u.role, options: roleOptions() },
+        { name: "totp_required", label: "Zwei-Faktor-Anmeldung vorschreiben", type: "checkbox", value: u.totp_required, wide: true }],
+      submit: async (v) => { await PUT(`/api/users/${u.id}`, v); toast("Gespeichert."); reload(); } });
+  });
+  qsa("[data-upw]", box).forEach((b) => b.onclick = () => {
+    const u = byId(b.dataset.upw);
+    formDialog({ title: `Neues Passwort für ${u.username}`, ic: "key", cls: "", button: "Setzen", text: "Alle Sitzungen des Kontos werden beendet.",
+      fields: [{ name: "password", label: "Neues Passwort", type: "password", autocomplete: "new-password", wide: true, hint: "Mindestens 10 Zeichen." }],
+      submit: async (v) => { await POST(`/api/users/${u.id}/password`, v); toast("Passwort gesetzt."); reload(); } });
+  });
+  qsa("[data-utotp]", box).forEach((b) => b.onclick = async () => {
+    const u = byId(b.dataset.utotp);
+    if (await confirmDialog({ title: `Zwei-Faktor von ${u.username} zurücksetzen?`, tone: "red", ic: "shield", button: "Zurücksetzen",
+      text: u.totp_required ? "Bei der nächsten Anmeldung richtet der Benutzer sie neu ein." : "Danach reicht für dieses Konto wieder das Passwort." }))
+      run(b, async () => { await POST(`/api/users/${u.id}/totp-reset`); reload(); }, "Zurückgesetzt.");
+  });
+  qsa("[data-udel]", box).forEach((b) => b.onclick = async () => {
+    const u = byId(b.dataset.udel);
+    if (await confirmDialog({ title: `Konto ${u.username} löschen?`, text: "Der Benutzer wird sofort abgemeldet. Das Protokoll behält seine Einträge.", button: "Löschen" }))
+      run(b, async () => { await DEL(`/api/users/${u.id}`); reload(); }, "Gelöscht.");
+  });
+};
+
+SET_PAGES.protokoll = async (box) => {
+  const users = (await GET("/api/users")).users;
+  const draw = async (user) => {
+    const r = await GET("/api/audit" + (user ? "?user=" + enc(user) : ""));
+    box.innerHTML = `<div class="panel flush"><div class="panel-head"><div class="panel-title">Protokoll</div>
+      <select data-auser aria-label="Konto" style="width:auto;min-width:180px"><option value="">Alle Konten</option>${users.map((u) => `<option ${u.username === user ? "selected" : ""}>${esc(u.username)}</option>`).join("")}</select></div>
+      <p class="panel-intro" style="padding:0 16px">Wer wann was geändert hat – dazu An- und Abmeldungen, abgelehnte Versuche und jeder Zugriff auf Schlüssel und Dateien aus Sicherungen. Die letzten 500 Einträge, aufbewahrt 400 Tage.</p>
+      ${r.entries.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Zeit</th><th>Konto</th><th>Was</th><th>Ergebnis</th><th>Von</th></tr></thead><tbody>
+      ${r.entries.map((e) => `<tr><td data-l="Zeit" class="nowrap small">${esc(fmtTime(e.ts, true))}</td><td data-l="Konto">${esc(e.user)}</td>
+        <td data-l="Was"><div>${esc(e.action)}</div>${e.target ? `<div class="t-sub mono">${esc(e.target)}</div>` : ""}</td>
+        <td data-l="Ergebnis">${e.status < 300 ? pill("ok", "green") : e.status === 403 ? pill("keine Rechte", "amber") : e.status === 401 ? pill("abgelehnt", "rose") : pill("Fehler " + e.status, "rose")}</td>
+        <td data-l="Von" class="mono small">${esc(e.ip)}</td></tr>`).join("")}</tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch keine Einträge")}</div>`}</div>`;
+    qs("[data-auser]", box).onchange = (ev) => draw(ev.target.value);
+  };
+  await draw("");
+};
 
 // totpPanel shows the state of the two-factor sign-in and its actions.
 function totpPanel(el, tf, reload) {

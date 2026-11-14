@@ -251,6 +251,14 @@ unveränderlich (`chattr +i`), damit PBS bei fehlender Freigabe nicht ins System
   dann die Rollen `DatastoreBackup` und `DatastoreReader` statt `DatastorePowerUser`. Aufbewahrung gehört dann in den
   Datastore (Prune-Job des Backup-Servers); eine eigene Aufbewahrung im Sicherungsjob von Proxmox VE schlägt fehl –
   die Seite zeigt solche Jobs an. Feste Datastores werden alle zehn Minuten auf verschwundene Sicherungen geprüft.
+- **Konten und Rollen** (Einstellungen → Konten): *Administrator* darf alles; *Bediener* erledigt den Alltag (jetzt
+  sichern, wiederherstellen, Restore-Tests und Kopien starten, USB-Platten ein- und aushängen, prüfen, freigeben), aber
+  keine Einstellungen; *Nur lesen* sieht alles, ändert nichts und liest weder Dateien aus Sicherungen noch Schlüssel.
+  Je Konto lässt sich die Zwei-Faktor-Anmeldung vorschreiben – bis sie eingerichtet ist, sieht das Konto nur „Mein
+  Konto“. Das letzte Administrator-Konto lässt sich weder löschen noch herabstufen. Bestehende Konten sind nach dem
+  Update Administratoren.
+- **Protokoll** (Einstellungen → Protokoll): jede Änderung, An- und Abmeldungen, abgelehnte Versuche und jeder Zugriff
+  auf Schlüssel und Dateien aus Sicherungen, mit Konto, Uhrzeit und Adresse; 400 Tage aufbewahrt.
 - PBS und PVE werden über den **SHA-256-Fingerabdruck** ihres Zertifikats gepinnt; ändert er sich, bricht die Verbindung ab.
 - API-Tokens und Passwörter liegen in der SQLite-Datenbank unter `/var/lib/pk95proxbackup` (nur root).
 - Port 443 nicht ins Internet freigeben; von außen per VPN.

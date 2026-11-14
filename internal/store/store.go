@@ -56,6 +56,20 @@ CREATE INDEX events_ts ON events (ts);
 `,
 	// 2: structured details of events (JSON: guests, facts, log excerpt).
 	`ALTER TABLE events ADD COLUMN details TEXT NOT NULL DEFAULT '';`,
+	// 3: roles (existing accounts stay admins), two-factor duty, audit log.
+	`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin';
+ALTER TABLE users ADD COLUMN totp_required INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN last_login INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE audit (
+	id     INTEGER PRIMARY KEY AUTOINCREMENT,
+	ts     INTEGER NOT NULL,
+	user   TEXT    NOT NULL,
+	ip     TEXT    NOT NULL,
+	action TEXT    NOT NULL,
+	target TEXT    NOT NULL DEFAULT '',
+	status INTEGER NOT NULL
+);
+CREATE INDEX audit_ts ON audit (ts);`,
 }
 
 // ErrNotFound is returned when an object does not exist.
@@ -197,9 +211,26 @@ func List[T any](s *Store, kind string) ([]T, error) {
 
 // User is an account of the web UI.
 type User struct {
-	ID       int64
-	Username string
-	Hash     string
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	Hash         string `json:"-"`
+	Role         string `json:"role"` // admin, operator, viewer
+	TOTPRequired bool   `json:"totp_required"`
+	LastLogin    int64  `json:"last_login"`
+	Created      int64  `json:"created"`
+}
+
+const userCols = "id, username, password_hash, role, totp_required, last_login, created_at"
+
+func scanUser(row interface{ Scan(...any) error }) (User, error) {
+	var u User
+	var req int
+	err := row.Scan(&u.ID, &u.Username, &u.Hash, &u.Role, &req, &u.LastLogin, &u.Created)
+	u.TOTPRequired = req != 0
+	if errors.Is(err, sql.ErrNoRows) {
+		return u, ErrNotFound
+	}
+	return u, err
 }
 
 // UserCount returns the number of accounts.
@@ -209,33 +240,130 @@ func (s *Store) UserCount() (int, error) {
 	return n, err
 }
 
-// CreateUser adds an account.
+// CreateUser adds an administrator (the first account).
 func (s *Store) CreateUser(username, hash string) (int64, error) {
-	res, err := s.db.Exec("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)", username, hash, time.Now().Unix())
+	return s.CreateUserRole(username, hash, "admin", false)
+}
+
+// CreateUserRole adds an account with a role.
+func (s *Store) CreateUserRole(username, hash, role string, totpRequired bool) (int64, error) {
+	res, err := s.db.Exec("INSERT INTO users (username, password_hash, role, totp_required, created_at) VALUES (?, ?, ?, ?, ?)",
+		username, hash, role, boolInt(totpRequired), time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // UserByName finds an account by name.
 func (s *Store) UserByName(username string) (User, error) {
-	var u User
-	err := s.db.QueryRow("SELECT id, username, password_hash FROM users WHERE username = ?", username).Scan(&u.ID, &u.Username, &u.Hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return u, ErrNotFound
-	}
-	return u, err
+	return scanUser(s.db.QueryRow("SELECT "+userCols+" FROM users WHERE username = ?", username))
 }
 
 // UserByID finds an account by id.
 func (s *Store) UserByID(id int64) (User, error) {
-	var u User
-	err := s.db.QueryRow("SELECT id, username, password_hash FROM users WHERE id = ?", id).Scan(&u.ID, &u.Username, &u.Hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return u, ErrNotFound
+	return scanUser(s.db.QueryRow("SELECT "+userCols+" FROM users WHERE id = ?", id))
+}
+
+// Users lists all accounts.
+func (s *Store) Users() ([]User, error) {
+	rows, err := s.db.Query("SELECT " + userCols + " FROM users ORDER BY username COLLATE NOCASE")
+	if err != nil {
+		return nil, err
 	}
-	return u, err
+	defer rows.Close()
+	out := []User{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// SetUserRole changes role and two-factor duty of an account.
+func (s *Store) SetUserRole(id int64, role string, totpRequired bool) error {
+	_, err := s.db.Exec("UPDATE users SET role = ?, totp_required = ? WHERE id = ?", role, boolInt(totpRequired), id)
+	return err
+}
+
+// DeleteUser removes an account (its sessions go with it).
+func (s *Store) DeleteUser(id int64) error {
+	if _, err := s.db.Exec("DELETE FROM sessions WHERE user_id = ?", id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec("DELETE FROM users WHERE id = ?", id)
+	return err
+}
+
+// NoteLogin records the time of a sign-in.
+func (s *Store) NoteLogin(id int64) error {
+	_, err := s.db.Exec("UPDATE users SET last_login = ? WHERE id = ?", time.Now().Unix(), id)
+	return err
+}
+
+// EndSessions ends all sessions of a user.
+func (s *Store) EndSessions(userID int64) error {
+	_, err := s.db.Exec("DELETE FROM sessions WHERE user_id = ?", userID)
+	return err
+}
+
+// ---- audit log ----
+
+// AuditEntry is one action somebody took in the web UI.
+type AuditEntry struct {
+	TS     int64  `json:"ts"`
+	User   string `json:"user"`
+	IP     string `json:"ip"`
+	Action string `json:"action"`
+	Target string `json:"target"`
+	Status int    `json:"status"`
+}
+
+// AddAudit records an action.
+func (s *Store) AddAudit(e AuditEntry) error {
+	_, err := s.db.Exec("INSERT INTO audit (ts, user, ip, action, target, status) VALUES (?, ?, ?, ?, ?, ?)", e.TS, e.User, e.IP, e.Action, e.Target, e.Status)
+	return err
+}
+
+// Audit returns the newest entries, optionally of one user.
+func (s *Store) Audit(user string, limit int) ([]AuditEntry, error) {
+	q, args := "SELECT ts, user, ip, action, target, status FROM audit", []any{}
+	if user != "" {
+		q += " WHERE user = ?"
+		args = append(args, user)
+	}
+	q += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AuditEntry{}
+	for rows.Next() {
+		var e AuditEntry
+		if err := rows.Scan(&e.TS, &e.User, &e.IP, &e.Action, &e.Target, &e.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// PruneAudit removes entries older than d.
+func (s *Store) PruneAudit(d time.Duration) error {
+	_, err := s.db.Exec("DELETE FROM audit WHERE ts < ?", time.Now().Add(-d).Unix())
+	return err
 }
 
 // SetPassword replaces the password hash and ends all other sessions of the user.
