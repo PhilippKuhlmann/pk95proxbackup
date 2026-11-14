@@ -1359,11 +1359,11 @@ function s3Wizard(srv, s3, stores, done) {
   const cancel = async () => { if (ep) { try { await DEL(`/api/pbs/${srv.id}/s3/${enc(ep.id)}`); } catch (e) { /* stays listed */ } } d.close(); };
 
   const step1 = () => {
-    box.innerHTML = `<form novalidate data-f1><div class="form-error" hidden></div>
+    box.innerHTML = `<form novalidate class="wiz-form" data-f1><div class="form-error" hidden></div>
       ${field({ name: "provider", type: "radio", label: "Anbieter", value: prov.id, options: P.map((p) => [p.id, p.name, ""]) })}
-      <div class="callout" style="margin:0 0 12px" data-help></div>
-      <div class="form-grid" data-pf></div>
-      <div class="dlg-foot" style="padding:16px 0 0"><span class="spacer"></span><button class="btn gray" type="button" data-x>Abbrechen</button><button class="btn" type="submit">Weiter</button></div></form>`;
+      <div class="callout wiz-help" data-help></div>
+      <div class="form-grid cols-2" data-pf></div>
+      <div class="wiz-actions"><button class="btn gray" type="button" data-x>Abbrechen</button><button class="btn" type="submit">Weiter</button></div></form>`;
     const f = qs("[data-f1]", box);
     const fields = () => {
       qs("[data-help]", box).innerHTML = `<div class="ct"><div class="cb">${esc(prov.help)}</div></div>`;
@@ -1400,24 +1400,29 @@ function s3Wizard(srv, s3, stores, done) {
     const fixed = stores.filter((x) => !x.removable && !s3Of(x));
     const free = s3.root_free;
     const freeHint = free >= 0 ? ` Auf der Systemplatte des Backup-Servers sind ${fmtBytes(free)} frei${free < 64 * 2 ** 30 ? " – das ist knapp; besser ein Verzeichnis auf einer eigenen Platte nehmen" : ""}.` : "";
-    box.innerHTML = `<form novalidate data-f2><div class="form-error" hidden></div>
-      <div class="callout green" style="margin:0 0 12px"><div class="ct"><div class="ch">Zugang ${esc(ep.id)} funktioniert</div><div class="cb">${ep.buckets.length ? `${ep.buckets.length} ${ep.buckets.length === 1 ? "Bucket" : "Buckets"} gefunden.` : esc(ep.list_error || "Keine Buckets gefunden – den Namen eintippen oder zuerst beim Anbieter einen anlegen.")}</div></div></div>
-      <div class="form-grid">
+    box.innerHTML = `<form novalidate class="wiz-form" data-f2><div class="form-error" hidden></div>
+      <div class="callout green wiz-help"><div class="ct"><div class="ch">Zugang ${esc(ep.id)} funktioniert</div><div class="cb">${ep.buckets.length ? `${ep.buckets.length} ${ep.buckets.length === 1 ? "Bucket" : "Buckets"} gefunden.` : esc(ep.list_error || "Keine Buckets gefunden – den Namen eintippen oder zuerst beim Anbieter einen anlegen.")}</div></div></div>
+      <div class="form-grid cols-2">
         ${ep.buckets.length ? field({ name: "bucket", label: "Bucket", type: "select", options: ep.buckets.map((b) => [b, b]) }) : field({ name: "bucket", label: "Bucket", mono: true, placeholder: "pbs-backup" })}
         ${field({ name: "name", label: "Name des Datastores", value: "cloud", mono: true, hint: "Steht im Bucket als Ordner – ein Bucket kann mehrere Datastores tragen." })}
         ${field({ name: "path", label: "Lokaler Cache", value: "/mnt/datastore/cloud-cache", mono: true, wide: true, hint: "Verzeichnis auf dem Backup-Server; empfohlen sind 64–128 GiB." + freeHint })}
         ${field({ name: "reuse", type: "checkbox", label: "Vorhandenen Cloud-Datastore übernehmen", wide: true, hint: "Nach einer Neuinstallation: gleicher Bucket und gleicher Name wie vorher, die Sicherungen darin bleiben." })}
-        ${field({ type: "html", wide: true, html: `<div class="section-title">Aufbewahrung in der Cloud</div>` })}
+      </div>
+      <div class="section-title">Aufbewahrung in der Cloud</div>
+      <div class="form-grid cols-3">
         ${field({ name: "keep_daily", label: "Täglich", type: "number", min: 0, value: 7 })}
         ${field({ name: "keep_weekly", label: "Wöchentlich", type: "number", min: 0, value: 4 })}
         ${field({ name: "keep_monthly", label: "Monatlich", type: "number", min: 0, value: 6 })}
-        ${fixed.length ? field({ type: "html", wide: true, html: `<div class="section-title">Jede Nacht hineinkopieren</div>` }) +
-          field({ name: "copy", type: "checkbox", label: "Kopierjob anlegen", value: true, wide: true }) +
-          field({ name: "source", label: "Aus Datastore", type: "select", options: fixed.map((x) => [x.name, x.name]) }) +
-          field({ name: "time", label: "Uhrzeit", value: "03:30", mono: true }) +
-          field({ name: "transfer_last", label: "Nur die neuesten (je Server)", type: "number", min: 0, value: 3, hint: "Beim ersten Lauf nicht die ganze Geschichte hochladen; danach kommt jede neue Sicherung dazu. 0 = alle." }) : ""}
       </div>
-      <div class="dlg-foot" style="padding:16px 0 0"><button class="btn gray" type="button" data-back>${icon("back")} Zurück</button><span class="spacer"></span><button class="btn gray" type="button" data-x>Abbrechen</button><button class="btn" type="submit">Anlegen</button></div></form>`;
+      ${fixed.length ? `<div class="section-title">Jede Nacht hineinkopieren</div>
+      ${field({ name: "copy", type: "checkbox", label: "Kopierjob anlegen", value: true })}
+      <div class="form-grid cols-3">
+        ${field({ name: "source", label: "Aus Datastore", type: "select", options: fixed.map((x) => [x.name, x.name]) })}
+        ${field({ name: "time", label: "Uhrzeit", value: "03:30", mono: true })}
+        ${field({ name: "transfer_last", label: "Nur die neuesten (je Server)", type: "number", min: 0, value: 3 })}
+      </div>
+      <p class="hint" style="margin:0">„Nur die neuesten“: beim ersten Lauf nicht die ganze Geschichte hochladen; danach kommt jede neue Sicherung dazu. 0 = alle.</p>` : ""}
+      <div class="wiz-actions"><button class="btn gray" type="button" data-back>${icon("back")} Zurück</button><span class="spacer"></span><button class="btn gray" type="button" data-x>Abbrechen</button><button class="btn" type="submit">Anlegen</button></div></form>`;
     const f = qs("[data-f2]", box);
     const nm = qs('[name="name"]', f), pa = qs('[name="path"]', f);
     let pathEdited = false;

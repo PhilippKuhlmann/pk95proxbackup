@@ -757,3 +757,13 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .chain-dot.green { background: #16a34a; } .chain-dot.amber { background: #d97706; } .chain-dot.rose { background: #e11d48; }
 .chain-cell { display: flex; align-items: center; font-size: 14px; white-space: nowrap; }
 .chain-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 0 0 12px; padding: 0 4px; font-size: 14px; }
+
+/* Assistants in dialogs: one rhythm of 16 px, two or three columns */
+.wiz-form { display: grid; gap: 16px; }
+.wiz-form .section-title { margin: 8px 0 -4px; }
+.wiz-help { margin: 0; }
+.form-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.form-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.wiz-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.wiz-actions .spacer { flex: 1; }
+@media (max-width: 560px) { .form-grid.cols-2, .form-grid.cols-3 { grid-template-columns: minmax(0, 1fr); } }
