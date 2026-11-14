@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -69,5 +70,40 @@ func TestChainAge(t *testing.T) {
 	}
 	if worse("ok", "none") != "ok" || worse("warn", "bad") != "bad" || worse("bad", "ok") != "bad" {
 		t.Fatal("worse")
+	}
+}
+
+func TestRotationStaleness(t *testing.T) {
+	loc := time.FixedZone("CET", 3600)
+	now := time.Date(2026, 11, 14, 15, 0, 0, 0, loc) // a Saturday
+	at := func(m time.Month, d int) int64 { return time.Date(2026, m, d, 22, 30, 0, 0, loc).Unix() }
+
+	// daily, two disks, no plan: forgotten after 4 days
+	daily := Rotation{Rhythm: "daily", Disks: []RotDisk{{Key: "a"}, {Key: "b"}}}
+	if st, _ := daily.staleness(daily.Disks[0], at(11, 12), now); st {
+		t.Error("2 days: not stale")
+	}
+	if st, hint := daily.staleness(daily.Disks[0], at(11, 9), now); !st || !strings.Contains(hint, "alle 2 Tage") {
+		t.Errorf("5 days: %v %q", st, hint)
+	}
+
+	// Mo–Do disks and one Friday disk: the Friday disk after two missed Fridays
+	plan := Rotation{Rhythm: "daily", Disks: []RotDisk{{Key: "mo", Days: []int{1}}, {Key: "fr", Days: []int{5}}}}
+	fr := plan.Disks[1]
+	if st, _ := plan.staleness(fr, at(11, 6), now); st {
+		t.Error("Friday disk used last Friday but one: not stale yet (one missed turn)")
+	}
+	if st, hint := plan.staleness(fr, at(10, 30), now); !st || !strings.Contains(hint, "Fr 13.11.") || !strings.Contains(hint, "Fr 06.11.") {
+		t.Errorf("two missed Fridays: %v %q", st, hint)
+	}
+
+	// five Friday disks, one per Friday of the month: the 1st-Friday disk after two months
+	first := RotDisk{Key: "f1", Days: []int{5}, Week: "1"}
+	fives := Rotation{Rhythm: "daily", Disks: []RotDisk{first, {Key: "f2", Days: []int{5}, Week: "2"}}}
+	if st, _ := fives.staleness(first, at(10, 2), now); st {
+		t.Error("1st-Friday disk used on 2 Oct: fine")
+	}
+	if st, hint := fives.staleness(first, at(9, 5), now); !st || !strings.Contains(hint, "1. Freitag im Monat") {
+		t.Errorf("1st-Friday disk last used 5 Sep: %v %q", st, hint)
 	}
 }

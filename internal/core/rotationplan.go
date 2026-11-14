@@ -290,3 +290,43 @@ func (c *Core) SetPlan(id string, check bool, plan map[string]RotDisk) (Rotation
 	c.RequestRefresh()
 	return r, "", nil
 }
+
+var weekdayShort = []string{"", "Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"}
+
+// staleness tells whether a disk has not been used for too long (ref: its last good copy).
+// With a swap plan, a disk counts as long unused once it missed two of its own turns – a
+// Friday disk after two Fridays, a disk for the 1st Friday of the month after two months.
+// Without a plan, the disks of a set take turns: one missed round plus a day.
+func (r Rotation) staleness(d RotDisk, ref int64, now time.Time) (bool, string) {
+	if len(r.Disks) < 2 && len(d.Days) == 0 {
+		return false, ""
+	}
+	last := time.Unix(ref, 0)
+	if len(d.Days) > 0 {
+		var turns []time.Time
+		day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		for i := 1; i <= 400 && len(turns) < 2; i++ {
+			t := day.AddDate(0, 0, -i)
+			if d.PlannedOn(t) {
+				turns = append(turns, t)
+			}
+		}
+		if len(turns) == 2 {
+			if last.Before(turns[1]) {
+				return true, fmt.Sprintf("laut Wechselplan (%s) zuletzt am %s %s und am %s %s dran", d.PlanText(),
+					weekdayShort[isoWeekday(turns[0])], turns[0].Format("02.01."), weekdayShort[isoWeekday(turns[1])], turns[1].Format("02.01."))
+			}
+			return false, ""
+		}
+	}
+	days := len(r.Disks)*r.RhythmDays() + r.RhythmDays() + 1
+	if now.Sub(last) > time.Duration(days)*24*time.Hour {
+		every := "täglich"
+		if r.Rhythm == "weekly" {
+			every = "wöchentlich"
+		}
+		return true, fmt.Sprintf("bei %s wechselnden %d Platten ist jede spätestens alle %d Tage dran – ohne Wechselplan gilt sie nach %d Tagen als vergessen",
+			every, len(r.Disks), len(r.Disks)*r.RhythmDays(), days)
+	}
+	return false, ""
+}

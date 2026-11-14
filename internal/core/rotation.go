@@ -282,6 +282,7 @@ type DiskState struct {
 	Total     int64        `json:"total"`
 	Used      int64        `json:"used"`
 	Stale     bool         `json:"stale"`
+	StaleHint string       `json:"stale_hint,omitempty"` // why it counts as long unused
 	Error     string       `json:"error,omitempty"`
 	Health    *HealthBrief `json:"health,omitempty"`
 	Plan      string       `json:"plan,omitempty"` // "Montag", "1. Freitag im Monat"
@@ -432,12 +433,11 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 			if ds.LastOK > st.LastCopy {
 				st.LastCopy = ds.LastOK
 			}
-			limit := time.Duration(len(r.Disks)*r.RhythmDays()+r.RhythmDays()+1) * 24 * time.Hour
 			ref := ds.LastOK
 			if ref == 0 {
 				ref = d.Added
 			}
-			ds.Stale = len(r.Disks) > 1 && now.Sub(time.Unix(ref, 0)) > limit
+			ds.Stale, ds.StaleHint = r.staleness(d, ref, now)
 			ds.Health = hidx.rotation[r.ID+"/"+d.Key]
 			st.Disks = append(st.Disks, ds)
 		}
