@@ -165,7 +165,11 @@ func (p *PBS) SetMounted(name string, m bool) { p.stores[name].mounted = m }
 
 // AddDisk adds a disk with one partition (uuid) when used.
 func (p *PBS) AddDisk(name, vendor, model, typ string, size int64, used, uuid string) {
-	d := prox.Disk{Name: name, DevPath: "/dev/" + name, Size: size, Vendor: vendor, Model: model, DiskType: typ, Used: used, GPT: used != "unused", Serial: strings.ToUpper(name) + "-0001"}
+	serial := strings.ToUpper(name) + "-0001"
+	if vendor == "QEMU" { // Proxmox VE names virtual disks after their drive: drive-scsi1
+		serial = "drive-scsi" + strconv.Itoa(int(name[len(name)-1]-'a'))
+	}
+	d := prox.Disk{Name: name, DevPath: "/dev/" + name, Size: size, Vendor: vendor, Model: model, DiskType: typ, Used: used, GPT: used != "unused", Serial: serial}
 	if used != "unused" {
 		d.Partitions = []prox.Partition{{Name: name + "1", DevPath: "/dev/" + name + "1", Size: size, Filesystem: "ext4", UUID: uuid, Used: "filesystem"}}
 		d.Used = "partitions"

@@ -72,14 +72,21 @@ func TestDiskHealth(t *testing.T) {
 	}
 	// Which disks matter for the backup: the appliance runs as VM 120 on pve1 with its system on
 	// local-lvm (NVMe) and its datastore disk on the ZFS pool tank (WD Red). pve2 holds nothing of it.
-	if !nvme.Relevant || !strings.Contains(nvme.Use, "scsi0") {
+	if !nvme.Relevant || !strings.Contains(nvme.Use, "Appliance-VM: scsi0 auf local-lvm") {
 		t.Fatalf("nvme under the appliance: %+v", nvme)
 	}
-	if wd := findHealth(t, c, "WD-WCC7K1234567"); !wd.Relevant || !strings.Contains(wd.Use, "scsi1") || !strings.Contains(wd.Use, "tank") {
+	if wd := findHealth(t, c, "WD-WCC7K1234567"); !wd.Relevant || !strings.Contains(wd.Use, "Appliance-VM: scsi1 auf tank") {
 		t.Fatalf("WD Red under the datastore disk: relevant %v, use %q", wd.Relevant, wd.Use)
 	}
-	if ssd.Relevant || findHealth(t, c, "ZGY8ABCD").Relevant {
-		t.Fatal("disks of pve2 have nothing to do with the backup")
+	// The office PBS runs as VM 130 on pve2: its datastore lies on the ZFS pool there (sdb).
+	if st := findHealth(t, c, "ZGY8ABCD"); !st.Relevant || !strings.Contains(st.Use, "PBS Büro (extern): scsi0, scsi1 auf tank") {
+		t.Fatalf("disk under the office PBS: relevant %v, use %q", st.Relevant, st.Use)
+	}
+	if ssd.Relevant {
+		t.Fatal("the system SSD of pve2 has nothing to do with the backup")
+	}
+	if m := c.DiskMapInfo(); !m.Found || !strings.Contains(strings.Join(m.Lines, "\n"), "PBS Büro (extern) läuft als VM 130") {
+		t.Fatalf("disk map: %+v", m)
 	}
 	if findHealth(t, c, "sdb").Relevant || !a.Relevant || !spare.Relevant {
 		t.Fatal("relevance on the backup server")

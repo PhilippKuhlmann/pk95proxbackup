@@ -17,14 +17,14 @@ import (
 // ---- disk health ----
 
 func (s *Server) listHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"disks": s.C.DiskHealths()})
+	writeJSON(w, http.StatusOK, map[string]any{"disks": s.C.DiskHealths(), "map": s.C.DiskMapInfo()})
 }
 
 func (s *Server) checkHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 	s.C.CheckDisksNow(ctx)
-	writeJSON(w, http.StatusOK, map[string]any{"disks": s.C.DiskHealths()})
+	writeJSON(w, http.StatusOK, map[string]any{"disks": s.C.DiskHealths(), "map": s.C.DiskMapInfo()})
 }
 
 func (s *Server) forgetHealth(w http.ResponseWriter, r *http.Request) {

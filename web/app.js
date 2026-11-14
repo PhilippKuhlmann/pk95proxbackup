@@ -2933,10 +2933,11 @@ function healthCell(h) {
 PAGES["/festplatten"] = async (el, token) => {
   let showAll = false;
   try { showAll = localStorage.getItem("pk95pb-disks-all") === "1"; } catch (e) { /* ignore */ }
-  let last = [];
-  const draw = (all) => {
+  let last = [], lastMap = null;
+  const draw = (all, map) => {
     if (token !== pageToken) return;
     last = all;
+    if (map) lastMap = map;
     // Only what matters for the backup: real disks of the backup servers, USB disks and the
     // disks of a Proxmox VE node under this appliance. Virtual disks have no values of their own.
     const hidden = all.filter((d) => !d.relevant).length;
@@ -2977,15 +2978,20 @@ PAGES["/festplatten"] = async (el, token) => {
       (disks.length ? order.map((host) => [host, groups.get(host)]).map(([host, list]) => `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(host)}</div><span class="muted small">${list.length} ${list.length === 1 ? "Platte" : "Platten"}</span></div>
         <div class="table-wrap"><table class="resp health-table"><thead><tr><th>Zustand</th><th>Platte</th><th>Verwendung</th><th>Befund</th><th>In Betrieb</th><th>Temp.</th><th>Geprüft</th><th></th></tr></thead><tbody>${list.map(row).join("")}</tbody></table></div></div>`).join("") :
         `<div class="panel">${empty("Noch keine Platte geprüft", "Die erste Prüfung läuft wenige Minuten nach dem Start. Mit „Jetzt prüfen“ geht es sofort.", "", "heart")}</div>`) +
-      `<p class="muted small">Die virtuellen Platten der Appliance haben keine SMART-Werte – die echten Platten darunter findet und prüft sie über Proxmox VE (Recht Sys.Audit). Andere Platten der Knoten erscheinen nur unter „Alle Platten“ und lösen keine Meldung aus. Manche USB-Gehäuse geben keine Werte weiter.</p>`;
+      `<p class="muted small">Virtuelle Platten haben keine SMART-Werte – die echten Platten darunter findet und prüft die Appliance über Proxmox VE (Recht Sys.Audit): bei ihrer eigenen VM und bei Backup-Servern, die als VM laufen. Andere Platten der Knoten erscheinen nur unter „Alle Platten“ und lösen keine Meldung aus. Manche USB-Gehäuse geben keine Werte weiter.</p>` +
+      (lastMap && lastMap.lines.length ? `<details class="panel diskmap"><summary>So wurden die Platten unter den Sicherungen gefunden${lastMap.at ? ` <span class="muted small">(${esc(fmtAgo(lastMap.at))})</span>` : ""}</summary>
+        <ul>${lastMap.lines.map((l) => `<li class="${/keine|nicht|unbekannt/.test(l) ? "warnc" : ""}">${esc(l)}</li>`).join("")}</ul>${lastMap.found ? "" : `<p class="small">Ohne gefundene VM zählen alle Platten der Knoten.</p>`}</details>` : "");
     const cb = qs("[data-all]", el);
     if (cb) cb.onchange = () => { showAll = cb.checked; try { localStorage.setItem("pk95pb-disks-all", showAll ? "1" : "0"); } catch (e) { /* ignore */ } draw(last); };
-    qs("[data-check]", el).onclick = (e) => run(e.currentTarget, async () => { const r = await POST("/api/health/check"); draw(r.disks); }, "Alle Platten geprüft.");
-    qsa("[data-forget]", el).forEach((b) => b.onclick = () => run(b, async () => { await DEL("/api/health?id=" + enc(b.dataset.forget)); draw((await GET("/api/health")).disks); }));
+    const det = qs(".diskmap", el);
+    if (det) { det.open = !!draw.mapOpen; det.ontoggle = () => { draw.mapOpen = det.open; }; }
+    qs("[data-check]", el).onclick = (e) => run(e.currentTarget, async () => { const r = await POST("/api/health/check"); draw(r.disks, r.map); }, "Alle Platten geprüft.");
+    qsa("[data-forget]", el).forEach((b) => b.onclick = () => run(b, async () => { await DEL("/api/health?id=" + enc(b.dataset.forget)); const r = await GET("/api/health"); draw(r.disks, r.map); }));
   };
   el.innerHTML = pageHead("Festplatten", "Lade …");
-  draw((await GET("/api/health")).disks);
-  every(60000, token, async () => draw((await GET("/api/health")).disks));
+  const load = async () => { const r = await GET("/api/health"); draw(r.disks, r.map); };
+  await load();
+  every(60000, token, load);
 };
 
 // ---------- Einstellungen ----------

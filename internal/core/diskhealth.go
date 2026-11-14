@@ -60,6 +60,23 @@ type DiskHealth struct {
 	Note      string           `json:"note"`
 }
 
+// DiskMap says how the disks of the Proxmox VE nodes under the backups were found.
+type DiskMap struct {
+	At    int64    `json:"at"`
+	Found bool     `json:"found"` // false: no VM with backups found, all node disks count
+	Lines []string `json:"lines"`
+}
+
+// DiskMapInfo returns the result of the last search.
+func (c *Core) DiskMapInfo() DiskMap {
+	var m DiskMap
+	_ = c.St.GetSetting("diskmap", &m)
+	if m.Lines == nil {
+		m.Lines = []string{}
+	}
+	return m
+}
+
 // DiskHealthState adds whether the disk is plugged in now.
 type DiskHealthState struct {
 	DiskHealth
@@ -204,8 +221,10 @@ func (c *Core) scanDiskHealth(ctx context.Context, now time.Time, force bool) {
 			uses = c.diskUses(ctx)
 		}
 		if !nodeUsesRead {
-			nodeUses, nodeUsesKnown = c.backupDiskUses(ctx)
+			var trace []string
+			nodeUses, nodeUsesKnown, trace = c.backupDiskUses(ctx)
 			nodeUsesRead = true
+			_ = c.St.SetSetting("diskmap", DiskMap{At: now.Unix(), Found: nodeUsesKnown, Lines: trace})
 		}
 		pve := c.PVEClient(cl)
 		nodes, err := pve.Nodes(ctx)
