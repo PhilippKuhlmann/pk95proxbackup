@@ -253,7 +253,9 @@ unveränderlich (`chattr +i`), damit PBS bei fehlender Freigabe nicht ins System
   die Seite zeigt solche Jobs an. Feste Datastores werden alle zehn Minuten auf verschwundene Sicherungen geprüft.
 - **Konten und Rollen** (Einstellungen → Konten): *Administrator* darf alles; *Bediener* erledigt den Alltag (jetzt
   sichern, wiederherstellen, Restore-Tests und Kopien starten, USB-Platten ein- und aushängen, prüfen, freigeben), aber
-  keine Einstellungen; *Nur lesen* sieht alles, ändert nichts und liest weder Dateien aus Sicherungen noch Schlüssel.
+  keine Einstellungen; *Dateien wiederherstellen* (für Kunden) sieht nur Übersicht und Wiederherstellen und darf
+  einzelne Dateien und Ordner aus Sicherungen herunterladen, aber keine ganzen VMs zurückspielen und nichts starten
+  oder ändern; *Nur lesen* sieht alles, ändert nichts und liest weder Dateien aus Sicherungen noch Schlüssel.
   Je Konto lässt sich die Zwei-Faktor-Anmeldung vorschreiben – bis sie eingerichtet ist, sieht das Konto nur „Mein
   Konto“. Das letzte Administrator-Konto lässt sich weder löschen noch herabstufen. Bestehende Konten sind nach dem
   Update Administratoren.

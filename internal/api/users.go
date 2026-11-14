@@ -15,15 +15,17 @@ import (
 
 // Accounts with roles:
 //   - viewer (Nur lesen): sees everything, changes nothing, cannot read backup contents or keys
+//   - files (Dateien wiederherstellen): like viewer, plus fetching single files out of backups –
+//     for customers who get a deleted file back themselves
 //   - operator (Bediener): day-to-day work – back up now, restore, run restore tests and
 //     copies, plug USB disks in and out, check and free space
 //   - admin: everything, including settings, connections, keys and accounts
 // Every change and every access to sensitive data goes to the audit log.
 
-var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3}
+var roleRank = map[string]int{"viewer": 1, "files": 2, "operator": 3, "admin": 4}
 
 // roleNames are the German names of the roles.
-var roleNames = map[string]string{"viewer": "Nur lesen", "operator": "Bediener", "admin": "Administrator"}
+var roleNames = map[string]string{"viewer": "Nur lesen", "files": "Dateien wiederherstellen", "operator": "Bediener", "admin": "Administrator"}
 
 // routeRole overrides the default (GET: viewer, everything else: admin).
 var routeRole = map[string]string{
@@ -50,8 +52,8 @@ var routeRole = map[string]string{
 	"POST /api/pbs/{id}/datastores/{store}/{action}": "operator",
 	"POST /api/rotations/{id}/disks/{key}/{action}":  "operator",
 	// reading backup contents and secrets
-	"GET /api/restore/files":       "operator",
-	"GET /api/restore/download":    "operator",
+	"GET /api/restore/files":       "files",
+	"GET /api/restore/download":    "files",
 	"GET /api/enckeys/{key}":       "admin",
 	"GET /api/enckeys/{key}/paper": "admin",
 	"GET /api/selfbackup/download": "admin",

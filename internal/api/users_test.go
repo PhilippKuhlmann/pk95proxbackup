@@ -71,6 +71,27 @@ func TestRoles(t *testing.T) {
 	if code, _ := operator.do("DELETE", "/api/pbs/local/datastores/backup", nil, true); code != 403 {
 		t.Fatal("operator removed a datastore")
 	}
+	// files: fetch single files, nothing else
+	if code, out := admin.do("POST", "/api/users", map[string]any{"username": "kunde", "password": "kunde-kunde-1", "role": "files"}, true); code != 200 {
+		t.Fatalf("create files account: %d %v", code, out)
+	}
+	cust := second(t, admin, "kunde", "kunde-kunde-1")
+	if code, out := cust.do("GET", "/api/restore/files?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1", nil, false); code == 403 {
+		t.Fatalf("files account may browse backups: %d %v", code, out)
+	}
+	if code, _ := viewer.do("GET", "/api/restore/files?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1", nil, false); code != 403 {
+		t.Fatal("viewer browsed backup contents")
+	}
+	whole := map[string]any{"cluster": "cluster", "node": "pve1", "pbs": "local", "store": "backup", "type": "vm", "bid": "100", "time": 1, "vmid": 960, "storage": "local-lvm"}
+	for _, x := range []struct {
+		p    string
+		body any
+	}{{"/api/restore", whole}, {"/api/guests/backup", backup}, {"/api/pbs/local/datastores/backup/verify", nil}} {
+		if code, out := cust.do("POST", x.p, x.body, true); code != 403 || !strings.Contains(fmt.Sprint(out["error"]), "Dateien wiederherstellen") {
+			t.Errorf("files account POST %s: %d %v", x.p, code, out)
+		}
+	}
+
 	// own password: every role
 	if code, out := viewer.do("POST", "/api/account/password", map[string]string{"current": "lesen-lesen-1", "new": "lesen-lesen-2"}, true); code != 200 {
 		t.Fatalf("own password: %d %v", code, out)

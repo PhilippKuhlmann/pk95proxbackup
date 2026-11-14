@@ -414,7 +414,11 @@ async function run(btn, fn, okText) {
 
 // ---------- state, router ----------
 const state = { user: null, role: "admin", totpRequired: false, setup: false, version: "", ov: null, servers: [], clusters: [] };
-const ROLE_NAMES = { admin: "Administrator", operator: "Bediener", viewer: "Nur lesen" };
+const ROLE_NAMES = { admin: "Administrator", operator: "Bediener", files: "Dateien wiederherstellen", viewer: "Nur lesen" };
+const ROLE_RANK = { viewer: 1, files: 2, operator: 3, admin: 4 };
+const can = (role) => (ROLE_RANK[state.role] || 1) >= ROLE_RANK[role];
+// The role for customers sees only what it needs.
+const FILES_NAV = ["/", "/wiederherstellen", "/einstellungen"];
 let pageTimer = null;
 let pageToken = 0;
 
@@ -489,7 +493,7 @@ function shell() {
     <div class="scrim" data-scrim></div>
     <aside class="sidebar" aria-label="Seitenleiste">
       <ul class="nav-list">
-        ${NAV.filter((n) => !n.admin || state.role === "admin").map((n) => n.head ? `<li class="nav-head">${esc(n.head)}</li>` :
+        ${NAV.filter((n) => state.role === "files" ? (n.path && FILES_NAV.includes(n.path)) : !n.admin || state.role === "admin").map((n) => n.head ? `<li class="nav-head">${esc(n.head)}</li>` :
           `<li><a class="nav-link" href="${n.path}" data-go ${cur === n.path || (n.path !== "/" && cur.startsWith(n.path)) ? 'aria-current="page"' : ""}>${icon(n.icon)}<span>${esc(n.label)}</span></a></li>`).join("")}
       </ul>
       <a href="/einstellungen" data-go class="side-foot" style="text-decoration:none">PK95 ProxBackup v${esc(state.version)}</a>
@@ -2575,7 +2579,7 @@ async function mountSource(btn, x, done) {
 // Step 1: where from? All backups, or one datastore / NAS share / USB disk.
 function restoreStart(el, data, guests, srcs) {
   const sources = srcs.sources || [];
-  el.innerHTML = pageHead("Wiederherstellen", "Einzelne Dateien und Ordner aus einer Sicherung holen oder eine ganze VM bzw. einen Container zurückspielen.") +
+  el.innerHTML = pageHead("Wiederherstellen", can("operator") ? "Einzelne Dateien und Ordner aus einer Sicherung holen oder eine ganze VM bzw. einen Container zurückspielen." : "Einzelne Dateien und Ordner aus einer Sicherung herunterladen: Quelle, Server und Stand wählen, dann die Dateien.") +
     (data.errors || []).concat(srcs.errors || []).map((e) => callout("red", "Nicht alles erreichbar", esc(e))).join("") +
     `<div class="panel"><div class="panel-head"><div class="panel-title">1. Quelle wählen</div></div>
       <div class="src-cards">
@@ -2655,12 +2659,13 @@ async function restoreGuest(el, token, g, source) {
     const right = qs("[data-right]", el);
     if (!sel) { right.innerHTML = `<div class="panel">${empty("Links einen Stand wählen", "", "", "calendar")}</div>`; return; }
     right.innerHTML = `<div class="panel"><div class="panel-head"><div><div class="panel-title">2. Was wiederherstellen?</div><div class="muted small">Stand vom ${fmtTime(sel, true)}</div></div></div>
-        <div class="radio-cards">
+        ${can("files") ? `<div class="radio-cards">
           <button type="button" class="radio-card" data-files style="text-align:left;font:inherit;color:inherit">${icon("folder")}<span><b>Dateien und Ordner</b><small>Einzelne Dateien aus der Sicherung herunterladen. Der ${kind} läuft dabei normal weiter.</small></span></button>
-          <button type="button" class="radio-card" data-whole style="text-align:left;font:inherit;color:inherit">${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>
-        </div></div><div data-browser></div>`;
-    qs("[data-files]", right).onclick = () => fileBrowser(qs("[data-browser]", right), query(), g, typ);
-    qs("[data-whole]", right).onclick = () => restoreWhole(g, typ, g.backups[src], sel);
+          ${can("operator") ? `<button type="button" class="radio-card" data-whole style="text-align:left;font:inherit;color:inherit">${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>` : ""}
+        </div>` : `<p class="muted small" style="margin:0">Mit der Rolle „${esc(ROLE_NAMES[state.role] || "")}“ lassen sich Sicherungen nur ansehen.</p>`}</div><div data-browser></div>`;
+    const fb = qs("[data-files]", right), wb = qs("[data-whole]", right);
+    if (fb) fb.onclick = () => fileBrowser(qs("[data-browser]", right), query(), g, typ);
+    if (wb) wb.onclick = () => restoreWhole(g, typ, g.backups[src], sel);
   };
 
   const loadSnaps = async () => {
@@ -3633,6 +3638,7 @@ async function keyDialog(id, reload, fresh) {
 const ROLE_HELP = {
   admin: "Alles, auch Einstellungen, Verbindungen, Schlüssel und Konten.",
   operator: "Alltag: jetzt sichern, wiederherstellen, Restore-Tests und Kopien starten, USB-Platten ein- und aushängen, prüfen und freigeben. Keine Einstellungen.",
+  files: "Für Kunden: einzelne Dateien und Ordner aus Sicherungen herunterladen. Sonst nur ansehen – keine ganzen VMs zurückspielen, nichts starten oder ändern.",
   viewer: "Sieht alles, ändert nichts. Keine Dateien aus Sicherungen, keine Schlüssel.",
 };
 const roleOptions = () => Object.keys(ROLE_HELP).map((k) => [k, ROLE_NAMES[k], ROLE_HELP[k]]);
