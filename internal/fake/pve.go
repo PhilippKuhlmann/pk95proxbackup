@@ -39,6 +39,37 @@ type PVE struct {
 	// NoPrivs simulates a token without rights (privilege separation, no ACL).
 	NoPrivs bool
 	disks   map[string][]NodeDisk
+	layout  map[string]NodeLayout
+}
+
+// NodeLayout is what lies on the disks of a node: LVM volume groups and ZFS pools with their
+// devices, directory storages with their device.
+type NodeLayout struct {
+	LVM  map[string][]string
+	ZFS  map[string][]string
+	Dirs []prox.NodeDirectory
+}
+
+// SetNodeLayout sets the storage layout of a node.
+func (p *PVE) SetNodeLayout(node string, l NodeLayout) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.layout == nil {
+		p.layout = map[string]NodeLayout{}
+	}
+	p.layout[node] = l
+}
+
+// SetVMDisks sets the drive entries (scsi0 …) of a VM's configuration.
+func (p *PVE) SetVMDisks(id int, drives map[string]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.usbCfg[id] == nil {
+		p.usbCfg[id] = map[string]string{}
+	}
+	for k, v := range drives {
+		p.usbCfg[id][k] = v
+	}
 }
 
 // NewPVE creates a cluster with the given nodes.
@@ -380,6 +411,31 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data(w, p.usb[seg[1]])
 	case len(seg) == 4 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "list":
 		p.serveDisks(w, seg[1])
+	case len(seg) == 4 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "lvm":
+		vgs := []map[string]any{}
+		for vg, pvs := range p.layout[seg[1]].LVM {
+			kids := []map[string]any{}
+			for _, pv := range pvs {
+				kids = append(kids, map[string]any{"name": pv, "leaf": 1})
+			}
+			vgs = append(vgs, map[string]any{"name": vg, "leaf": 0, "children": kids})
+		}
+		data(w, map[string]any{"leaf": 0, "children": vgs})
+	case len(seg) == 5 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "zfs":
+		devs, ok := p.layout[seg[1]].ZFS[seg[4]]
+		if !ok {
+			apiErr(w, 500, "zpool '"+seg[4]+"' not found")
+			return
+		}
+		kids := []map[string]any{}
+		for _, d := range devs {
+			kids = append(kids, map[string]any{"name": d, "leaf": 1})
+		}
+		data(w, map[string]any{"name": seg[4], "state": "ONLINE", "children": []map[string]any{{"name": seg[4], "children": kids}}})
+	case len(seg) == 4 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "directory":
+		out := []prox.NodeDirectory{}
+		out = append(out, p.layout[seg[1]].Dirs...)
+		data(w, out)
 	case len(seg) == 4 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "smart":
 		p.serveSmart(w, seg[1], f.Get("disk"))
 	case len(seg) == 3 && seg[0] == "nodes" && seg[2] == "network":

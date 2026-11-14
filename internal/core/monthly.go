@@ -257,7 +257,7 @@ func (c *Core) BuildMonthlyReport(ctx context.Context, month string) (MonthlyRep
 	sort.Slice(rep.RestoreTests, func(i, j int) bool { return rep.RestoreTests[i].Start < rep.RestoreTests[j].Start })
 
 	for _, h := range c.DiskHealths() {
-		if !h.Virtual {
+		if !h.Virtual && h.Relevant {
 			rep.Disks = append(rep.Disks, h)
 		}
 	}

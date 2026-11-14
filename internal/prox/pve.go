@@ -90,6 +90,9 @@ type Storage struct {
 	// without fingerprint, empty: not encrypted).
 	EncryptionKey string `json:"encryption-key,omitempty"`
 	PruneBackups  string `json:"prune-backups,omitempty"` // retention Proxmox VE applies after each backup
+	VGName        string `json:"vgname,omitempty"`        // lvm, lvmthin
+	Pool          string `json:"pool,omitempty"`          // zfspool (pool or pool/dataset)
+	Path          string `json:"path,omitempty"`          // dir
 	Disable       int    `json:"disable,omitempty"`
 	Nodes         string `json:"nodes,omitempty"`
 	Shared        int    `json:"shared,omitempty"`

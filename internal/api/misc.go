@@ -70,6 +70,9 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	disks := []diskIssue{}
 	counts := map[string]int{}
 	for _, h := range s.C.DiskHealths() {
+		if !h.Relevant {
+			continue
+		}
 		counts[h.Status]++
 		if h.Status == "error" || h.Status == "warning" {
 			p := ""
@@ -818,8 +821,6 @@ func (s *Server) rotationDiskAction(w http.ResponseWriter, r *http.Request) {
 
 // ---- USB passthrough to this VM ----
 
-var smbiosUUIDRe = regexp.MustCompile(`uuid=([0-9a-fA-F-]{36})`)
-
 type selfVM struct {
 	Cluster     string   `json:"cluster"`
 	ClusterName string   `json:"cluster_name"`
@@ -831,47 +832,18 @@ type selfVM struct {
 
 // findSelf looks for the VM whose SMBIOS UUID matches this machine.
 func (s *Server) findSelf(ctx context.Context) (*selfVM, error) {
-	uuid := ""
-	if s.C.SelfUUID != nil {
-		uuid = s.C.SelfUUID()
+	vm, err := s.C.FindSelfVM(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if uuid == "" {
-		return nil, fmt.Errorf("die SMBIOS-UUID dieser Maschine ist nicht lesbar – läuft die Appliance in einer Proxmox-VM?")
-	}
-	clusters, _ := s.C.Clusters()
-	if len(clusters) == 0 {
-		return nil, fmt.Errorf("zuerst unter Verbindungen den Proxmox VE eintragen, auf dem diese VM läuft")
-	}
-	for _, cl := range clusters {
-		pve := s.C.PVEClient(cl)
-		guests, err := pve.Guests(ctx)
-		if err != nil {
-			continue
-		}
-		for _, g := range guests {
-			if g.Type != "qemu" {
-				continue
-			}
-			cfg, err := pve.VMConfig(ctx, g.Node, g.VMID)
-			if err != nil {
-				continue
-			}
-			sm, _ := cfg["smbios1"].(string)
-			m := smbiosUUIDRe.FindStringSubmatch(sm)
-			if m == nil || !strings.EqualFold(m[1], uuid) {
-				continue
-			}
-			v := &selfVM{Cluster: cl.ID, ClusterName: cl.Name, Node: g.Node, VMID: g.VMID, Name: g.Name, USB: []string{}}
-			for k, val := range cfg {
-				if strings.HasPrefix(k, "usb") {
-					v.USB = append(v.USB, k+"="+fmt.Sprint(val))
-				}
-			}
-			sort.Strings(v.USB)
-			return v, nil
+	v := &selfVM{Cluster: vm.Cluster, ClusterName: vm.ClusterName, Node: vm.Node, VMID: vm.VMID, Name: vm.Name, USB: []string{}}
+	for k, val := range vm.Config {
+		if strings.HasPrefix(k, "usb") {
+			v.USB = append(v.USB, k+"="+fmt.Sprint(val))
 		}
 	}
-	return nil, fmt.Errorf("diese VM wurde in keinem eingetragenen Proxmox VE gefunden")
+	sort.Strings(v.USB)
+	return v, nil
 }
 
 func (s *Server) passthroughInfo(w http.ResponseWriter, r *http.Request) {

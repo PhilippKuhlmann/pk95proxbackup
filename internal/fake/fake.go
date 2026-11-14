@@ -352,7 +352,12 @@ func Setup(c *core.Core) (func(), error) {
 	aclMu.Unlock()
 	pve.AddStorage(prox.Storage{Storage: "pbs-appliance", Type: "pbs", Content: "backup", Server: "192.168.10.20", Datastore: "backup", Username: "pk95-pve@pbs!pve-cluster", Fingerprint: lfp})
 	pve.AddStorage(prox.Storage{Storage: "local", Type: "dir", Content: "iso,vztmpl,backup"})
-	pve.AddStorage(prox.Storage{Storage: "local-lvm", Type: "lvmthin", Content: "images,rootdir"})
+	pve.AddStorage(prox.Storage{Storage: "local-lvm", Type: "lvmthin", Content: "images,rootdir", VGName: "pve"})
+	pve.AddStorage(prox.Storage{Storage: "tank", Type: "zfspool", Content: "images,rootdir", Pool: "tank/vmdata"})
+	// The appliance (VM 120 on pve1): system on local-lvm (NVMe), datastore disk on the ZFS pool (WD Red).
+	pve.SetVMDisks(120, map[string]string{"scsi0": "local-lvm:vm-120-disk-0,size=32G", "scsi1": "tank:vm-120-disk-1,size=2T", "ide2": "none,media=cdrom"})
+	pve.SetNodeLayout("pve1", NodeLayout{LVM: map[string][]string{"pve": {"/dev/nvme0n1p3"}}, ZFS: map[string][]string{"tank": {"ata-WDC_WD40EFRX-68N32N0_WD-WCC7K1234567-part1"}}})
+	pve.SetNodeLayout("pve2", NodeLayout{LVM: map[string][]string{"pve": {"/dev/sda3"}}, ZFS: map[string][]string{"tank": {"sdb"}}})
 	pve.AddJob(prox.BackupJob{ID: "backup-nightly", Schedule: "21:00", Storage: "pbs-appliance", Mode: "snapshot", All: 1, Exclude: "112,120", Comment: "Jede Nacht alles", NotesTemplate: "{{guestname}}", NotificationMode: "notification-system"})
 
 	var x struct{}

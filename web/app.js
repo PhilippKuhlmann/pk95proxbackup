@@ -2931,9 +2931,17 @@ function healthCell(h) {
 }
 
 PAGES["/festplatten"] = async (el, token) => {
-  const draw = (disks) => {
+  let showAll = false;
+  try { showAll = localStorage.getItem("pk95pb-disks-all") === "1"; } catch (e) { /* ignore */ }
+  let last = [];
+  const draw = (all) => {
     if (token !== pageToken) return;
-    const n = (st) => disks.filter((d) => d.status === st).length;
+    last = all;
+    // Only what matters for the backup: real disks of the backup servers, USB disks and the
+    // disks of a Proxmox VE node under this appliance. Virtual disks have no values of their own.
+    const hidden = all.filter((d) => !d.relevant).length;
+    const disks = showAll ? all : all.filter((d) => d.relevant);
+    const n = (st) => disks.filter((d) => d.status === st && d.relevant).length;
     const groups = new Map();
     for (const d of disks) {
       const k = d.host + (d.source.startsWith("pve:") ? " (Proxmox VE)" : "");
@@ -2951,7 +2959,7 @@ PAGES["/festplatten"] = async (el, token) => {
       const [l, t] = HEALTH[d.status] || HEALTH.unknown;
       const s = d.smart || {};
       return `<tr class="${d.present ? "" : "dim"}">
-        <td data-l="Zustand">${pill(l, t, true)}${d.present ? "" : `<div class="t-sub">nicht angeschlossen</div>`}</td>
+        <td data-l="Zustand">${pill(l, t, true)}${d.present ? "" : `<div class="t-sub">nicht angeschlossen</div>`}${d.relevant ? "" : `<div class="t-sub">ohne Bezug zur Sicherung, keine Meldungen</div>`}</td>
         <td data-l="Platte"><div class="t-main">${esc(d.label)}</div><div class="t-sub mono">${esc(d.disk.replace("/dev/", ""))} · ${esc(fmtBytes(d.size))}${d.serial ? " · " + esc(d.serial) : ""}</div></td>
         <td data-l="Verwendung"><span class="small">${esc(d.use || (d.virtual ? "Virtuelle Platte" : DISK_KIND[d.type] || d.type || "—"))}</span></td>
         <td data-l="Befund">${state1(d)}</td>
@@ -2962,13 +2970,16 @@ PAGES["/festplatten"] = async (el, token) => {
     };
     const bad = n("error"), warn = n("warning");
     const order = [...groups.keys()].sort((a, b) => (a.includes("(Proxmox VE)") - b.includes("(Proxmox VE)")) || a.localeCompare(b, "de"));
-    el.innerHTML = pageHead("Festplatten", "SMART-Werte aller Platten der Backup-Server und Proxmox-VE-Knoten. Geprüft wird täglich und gleich nach dem Einstecken.", `<button class="btn gray" type="button" data-check>${icon("refresh")} Jetzt prüfen</button>`) +
+    el.innerHTML = pageHead("Festplatten", "SMART-Werte der Platten, auf denen die Sicherungen liegen: Backup-Server, Wechsel- und Archiv-Platten und die Platten der Proxmox-VE-Knoten unter dieser Appliance. Geprüft wird täglich und gleich nach dem Einstecken.",
+      `${hidden ? `<label class="check"><input type="checkbox" data-all ${showAll ? "checked" : ""}><span>Alle Platten (${hidden} weitere)</span></label>` : ""}<button class="btn gray" type="button" data-check>${icon("refresh")} Jetzt prüfen</button>`) +
       (bad ? callout("red", `${bad} ${bad === 1 ? "Platte sollte" : "Platten sollten"} bald ersetzt werden`, "Unlesbare oder schwebende Sektoren bzw. ein nicht bestandener Selbsttest: Die Platte kann jederzeit ausfallen. Liegt eine Wechselplatte darauf, aus dem Satz nehmen und eine neue hinzufügen.") : "") +
       (!bad && warn ? callout("yellow", `${warn} ${warn === 1 ? "Platte zeigt" : "Platten zeigen"} erste Verschleißspuren`, "Noch kein Grund zur Sorge, aber im Blick behalten. Wächst die Zahl der ersetzten Sektoren, kommt eine neue Meldung.") : "") +
       (disks.length ? order.map((host) => [host, groups.get(host)]).map(([host, list]) => `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(host)}</div><span class="muted small">${list.length} ${list.length === 1 ? "Platte" : "Platten"}</span></div>
         <div class="table-wrap"><table class="resp health-table"><thead><tr><th>Zustand</th><th>Platte</th><th>Verwendung</th><th>Befund</th><th>In Betrieb</th><th>Temp.</th><th>Geprüft</th><th></th></tr></thead><tbody>${list.map(row).join("")}</tbody></table></div></div>`).join("") :
         `<div class="panel">${empty("Noch keine Platte geprüft", "Die erste Prüfung läuft wenige Minuten nach dem Start. Mit „Jetzt prüfen“ geht es sofort.", "", "heart")}</div>`) +
-      `<p class="muted small">Virtuelle Platten der Appliance haben keine SMART-Werte – die echten Platten darunter prüft sie über Proxmox VE (Recht Sys.Audit). Manche USB-Gehäuse geben keine Werte weiter.</p>`;
+      `<p class="muted small">Die virtuellen Platten der Appliance haben keine SMART-Werte – die echten Platten darunter findet und prüft sie über Proxmox VE (Recht Sys.Audit). Andere Platten der Knoten erscheinen nur unter „Alle Platten“ und lösen keine Meldung aus. Manche USB-Gehäuse geben keine Werte weiter.</p>`;
+    const cb = qs("[data-all]", el);
+    if (cb) cb.onchange = () => { showAll = cb.checked; try { localStorage.setItem("pk95pb-disks-all", showAll ? "1" : "0"); } catch (e) { /* ignore */ } draw(last); };
     qs("[data-check]", el).onclick = (e) => run(e.currentTarget, async () => { const r = await POST("/api/health/check"); draw(r.disks); }, "Alle Platten geprüft.");
     qsa("[data-forget]", el).forEach((b) => b.onclick = () => run(b, async () => { await DEL("/api/health?id=" + enc(b.dataset.forget)); draw((await GET("/api/health")).disks); }));
   };

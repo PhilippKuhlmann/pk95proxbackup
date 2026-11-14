@@ -153,6 +153,75 @@ func (p *PVE) NodeDisks(ctx context.Context, node string) ([]NodeDisk, error) {
 	return out, err
 }
 
+// VolumeGroup is an LVM volume group of a node with its physical volumes (/dev/sdb3 …).
+type VolumeGroup struct {
+	Name string
+	PVs  []string
+}
+
+// NodeLVM lists the LVM volume groups of a node (GET /nodes/{node}/disks/lvm).
+func (p *PVE) NodeLVM(ctx context.Context, node string) ([]VolumeGroup, error) {
+	var tree struct {
+		Children []struct {
+			Name     string `json:"name"`
+			Children []struct {
+				Name string `json:"name"`
+			} `json:"children"`
+		} `json:"children"`
+	}
+	if err := p.Do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/disks/lvm", nil, &tree); err != nil {
+		return nil, err
+	}
+	out := []VolumeGroup{}
+	for _, vg := range tree.Children {
+		g := VolumeGroup{Name: vg.Name}
+		for _, pv := range vg.Children {
+			g.PVs = append(g.PVs, pv.Name)
+		}
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+type zfsNode struct {
+	Name     string    `json:"name"`
+	Children []zfsNode `json:"children"`
+}
+
+// NodeZFSDevices returns the devices of a ZFS pool (the leaves of its vdev tree, e.g. "sdb",
+// "nvme-Samsung_SSD_…-part3").
+func (p *PVE) NodeZFSDevices(ctx context.Context, node, pool string) ([]string, error) {
+	var tree zfsNode
+	if err := p.Do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/disks/zfs/"+url.PathEscape(pool), nil, &tree); err != nil {
+		return nil, err
+	}
+	var out []string
+	var walk func(n zfsNode, top bool)
+	walk = func(n zfsNode, top bool) {
+		if len(n.Children) == 0 && !top {
+			out = append(out, n.Name)
+		}
+		for _, c := range n.Children {
+			walk(c, false)
+		}
+	}
+	walk(tree, true)
+	return out, nil
+}
+
+// NodeDirectory is a mounted directory storage of a node (GET /nodes/{node}/disks/directory).
+type NodeDirectory struct {
+	Path   string `json:"path"`
+	Device string `json:"device"`
+}
+
+// NodeDirectories lists the directory storages of a node with their device.
+func (p *PVE) NodeDirectories(ctx context.Context, node string) ([]NodeDirectory, error) {
+	var out []NodeDirectory
+	err := p.Do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/disks/directory", nil, &out)
+	return out, err
+}
+
 var nvmeLine = regexp.MustCompile(`^([A-Za-z][A-Za-z /-]+?):\s+(.+)$`)
 
 // NodeSmart reads the SMART values of a disk of a Proxmox VE node.

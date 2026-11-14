@@ -32,21 +32,25 @@ const (
 
 // DiskHealth is the last known health of a disk.
 type DiskHealth struct {
-	ID        string           `json:"id"`     // source + "/" + node + "/" + serial (or device)
-	Source    string           `json:"source"` // pbs:<id> / pve:<id>
-	Host      string           `json:"host"`   // name of the server or node
-	Node      string           `json:"node,omitempty"`
-	Disk      string           `json:"disk"` // sdc, /dev/nvme0n1
-	Serial    string           `json:"serial"`
-	Vendor    string           `json:"vendor"`
-	Model     string           `json:"model"`
-	Type      string           `json:"type"` // hdd, ssd, nvme, usb
-	Size      int64            `json:"size"`
-	UUIDs     []string         `json:"uuids"`
-	Use       string           `json:"use"`                // what the disk holds (datastore, rotation disk, archive)
-	Archive   string           `json:"archive,omitempty"`  // archive id
-	Rotation  string           `json:"rotation,omitempty"` // rotation id/disk key
-	Virtual   bool             `json:"virtual"`
+	ID       string   `json:"id"`     // source + "/" + node + "/" + serial (or device)
+	Source   string   `json:"source"` // pbs:<id> / pve:<id>
+	Host     string   `json:"host"`   // name of the server or node
+	Node     string   `json:"node,omitempty"`
+	Disk     string   `json:"disk"` // sdc, /dev/nvme0n1
+	Serial   string   `json:"serial"`
+	Vendor   string   `json:"vendor"`
+	Model    string   `json:"model"`
+	Type     string   `json:"type"` // hdd, ssd, nvme, usb
+	Size     int64    `json:"size"`
+	UUIDs    []string `json:"uuids"`
+	Use      string   `json:"use"`                // what the disk holds (datastore, rotation disk, archive)
+	Archive  string   `json:"archive,omitempty"`  // archive id
+	Rotation string   `json:"rotation,omitempty"` // rotation id/disk key
+	Virtual  bool     `json:"virtual"`
+	// Relevant: the disk matters for the backup (backup server, USB disk, or a disk of a Proxmox VE
+	// node under this appliance). Only relevant disks raise messages.
+	Relevant  bool             `json:"relevant"`
+	NodeUse   string           `json:"-"` // set while scanning: what this node disk holds for the appliance
 	FirstSeen int64            `json:"first_seen"`
 	LastSeen  int64            `json:"last_seen"`
 	LastCheck int64            `json:"last_check"`
@@ -182,12 +186,15 @@ func (c *Core) scanDiskHealth(ctx context.Context, now time.Time, force bool) {
 			}
 			h.ID = diskHealthID(src, "", h.Serial, d.Name)
 			h.Virtual = isVirtualDisk(h.Vendor, h.Model)
+			h.Relevant = !h.Virtual
 			name := d.Name
 			c.updateHealth(known, h, uses, now, prevList, force, func() (prox.SmartReport, error) { return pbs.Smart(ctx, name) })
 		}
 		c.setListed(src, now.Unix())
 	}
 	clusters, _ := c.Clusters()
+	var nodeUses map[string]string
+	nodeUsesKnown, nodeUsesRead := false, false
 	for _, cl := range clusters {
 		src := "pve:" + cl.ID
 		if !force && now.Unix()-c.listedAt(src) < int64(healthListEvery.Seconds()) {
@@ -195,6 +202,10 @@ func (c *Core) scanDiskHealth(ctx context.Context, now time.Time, force bool) {
 		}
 		if uses == nil {
 			uses = c.diskUses(ctx)
+		}
+		if !nodeUsesRead {
+			nodeUses, nodeUsesKnown = c.backupDiskUses(ctx)
+			nodeUsesRead = true
 		}
 		pve := c.PVEClient(cl)
 		nodes, err := pve.Nodes(ctx)
@@ -218,6 +229,10 @@ func (c *Core) scanDiskHealth(ctx context.Context, now time.Time, force bool) {
 					Model: strings.TrimSpace(d.Model), Type: d.Type, Size: d.Size, UUIDs: []string{}}
 				h.ID = diskHealthID(src, n.Node, h.Serial, d.DevPath)
 				h.Virtual = isVirtualDisk(h.Vendor, h.Model)
+				// Without the VM of the appliance nobody can tell: then every disk counts.
+				use, under := nodeUses[src+"|"+n.Node+"|"+d.DevPath]
+				h.Relevant = !nodeUsesKnown || under
+				h.NodeUse = use
 				node, disk := n.Node, d
 				c.updateHealth(known, h, uses, now, prevList, force, func() (prox.SmartReport, error) { return pve.NodeSmart(ctx, node, disk) })
 			}
@@ -322,6 +337,9 @@ func (c *Core) updateHealth(known map[string]DiskHealth, h DiskHealth, uses map[
 			h.Use, h.Archive, h.Rotation = x.use, x.archive, x.rotation
 		}
 	}
+	if h.Use == "" && h.NodeUse != "" {
+		h.Use = h.NodeUse
+	}
 	// Plugged in again (it was not there at the previous listing): check right away.
 	replugged := had && prevList > 0 && old.LastSeen < prevList
 	due := force || !had || old.LastCheck == 0 || replugged || now.Unix()-old.LastCheck >= int64(healthCheckEvery.Seconds())
@@ -360,7 +378,9 @@ func (c *Core) updateHealth(known map[string]DiskHealth, h DiskHealth, uses map[
 		log.Printf("diskhealth: %v", err)
 		return
 	}
-	c.healthEvent(old, had, h)
+	if h.Relevant {
+		c.healthEvent(old, had, h)
+	}
 }
 
 // EvaluateSmart rates a SMART report: error (replace the disk), warning (watch it) or ok.

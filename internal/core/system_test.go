@@ -70,9 +70,26 @@ func TestDiskHealth(t *testing.T) {
 	if nvme.Status != "ok" || nvme.Smart.Wearout != 97 || nvme.Smart.PowerOnHours != 9120 || nvme.Smart.MediaErrors != 0 {
 		t.Fatalf("nvme: %+v", nvme)
 	}
+	// Which disks matter for the backup: the appliance runs as VM 120 on pve1 with its system on
+	// local-lvm (NVMe) and its datastore disk on the ZFS pool tank (WD Red). pve2 holds nothing of it.
+	if !nvme.Relevant || !strings.Contains(nvme.Use, "scsi0") {
+		t.Fatalf("nvme under the appliance: %+v", nvme)
+	}
+	if wd := findHealth(t, c, "WD-WCC7K1234567"); !wd.Relevant || !strings.Contains(wd.Use, "scsi1") || !strings.Contains(wd.Use, "tank") {
+		t.Fatalf("WD Red under the datastore disk: relevant %v, use %q", wd.Relevant, wd.Use)
+	}
+	if ssd.Relevant || findHealth(t, c, "ZGY8ABCD").Relevant {
+		t.Fatal("disks of pve2 have nothing to do with the backup")
+	}
+	if findHealth(t, c, "sdb").Relevant || !a.Relevant || !spare.Relevant {
+		t.Fatal("relevance on the backup server")
+	}
 	titles := eventTitles(t, c)
-	if !strings.Contains(titles, "Festplatte zeigt erste Fehler: Seagate Expansion HDD") || !strings.Contains(titles, "CT500MX500SSD1") {
+	if !strings.Contains(titles, "Festplatte zeigt erste Fehler: Seagate Expansion HDD") {
 		t.Fatalf("warnings must be reported:\n%s", titles)
+	}
+	if strings.Contains(titles, "CT500MX500SSD1") {
+		t.Fatalf("a disk without relation to the backup must stay quiet:\n%s", titles)
 	}
 
 	// The rotation page shows the health of disk A.
