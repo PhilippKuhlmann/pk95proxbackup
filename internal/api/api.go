@@ -38,12 +38,13 @@ type Server struct {
 
 	limMu   sync.Mutex
 	fails   map[string][]time.Time
-	granted map[string]bool // read access given to PVE storages (see readAccess)
+	granted map[string]bool         // read access given to PVE storages (see readAccess)
+	tickets map[string]*loginTicket // password checked, TOTP code still missing
 }
 
 // New builds the handler.
 func New(c *core.Core, web fs.FS, secure bool) *Server {
-	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}}
+	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}, tickets: map[string]*loginTicket{}}
 	s.routes()
 	c.EnsureStorage = s.ensurePVEStorage
 	c.MonthlyHTML = func(rep core.MonthlyReport) []byte { return s.renderMonthly(rep, false) }
@@ -79,6 +80,7 @@ func (s *Server) routes() {
 	// public
 	m.HandleFunc("GET /api/session", s.getSession)
 	m.HandleFunc("POST /api/login", s.login)
+	m.HandleFunc("POST /api/login/totp", s.loginTOTP)
 	m.HandleFunc("POST /api/logout", s.logout)
 	m.HandleFunc("POST /api/setup", s.setup)
 	m.HandleFunc("POST /api/setup/restore", s.setupRestore)
@@ -96,6 +98,11 @@ func (s *Server) routes() {
 	a("GET /api/settings/preview", s.previewMail)
 	a("PUT /api/settings/access", s.putAccess)
 	a("POST /api/account/password", s.changePassword)
+	a("GET /api/account/totp", s.getTOTP)
+	a("POST /api/account/totp/setup", s.setupTOTP)
+	a("POST /api/account/totp/enable", s.enableTOTP)
+	a("POST /api/account/totp/disable", s.disableTOTP)
+	a("POST /api/account/totp/recovery", s.newRecoveryCodes)
 	a("GET /api/health", s.listHealth)
 	a("POST /api/health/check", s.checkHealth)
 	a("DELETE /api/health", s.forgetHealth)
@@ -378,6 +385,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.failed(ip)
 		time.Sleep(400 * time.Millisecond)
 		writeErr(w, http.StatusUnauthorized, "Benutzername oder Passwort falsch.")
+		return
+	}
+	if loadTOTP(s.C.St, u.ID).Enabled {
+		writeJSON(w, http.StatusOK, map[string]any{"totp": true, "ticket": s.newTicket(u.ID)})
 		return
 	}
 	if err := s.startSession(w, u.ID); err != nil {

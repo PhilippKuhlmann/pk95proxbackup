@@ -8,10 +8,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
+	"pk95proxbackup/internal/api"
 	"pk95proxbackup/internal/app"
 	"pk95proxbackup/internal/core"
+	"pk95proxbackup/internal/store"
 )
 
 // version is set by the release build (-ldflags "-X main.version=…").
@@ -20,6 +23,10 @@ var version = "1.0.0"
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version") {
 		fmt.Println(version)
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "-totp-off" {
+		totpOff(os.Args[2:])
 		return
 	}
 	if r := os.Getenv("PK95PB_REPO"); r != "" {
@@ -58,4 +65,25 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// totpOff switches two-factor sign-in off for an account (console rescue when the phone and the
+// recovery codes are lost): pk95proxbackup -totp-off <user>.
+func totpOff(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "Aufruf: pk95proxbackup -totp-off <benutzername>")
+		os.Exit(2)
+	}
+	st, err := store.Open(filepath.Join(env("PK95PB_DATA_DIR", "/var/lib/pk95proxbackup"), "pk95proxbackup.db"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer st.Close()
+	if err := api.DisableTOTP(st, args[0]); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			log.Fatalf("Konto „%s“ gibt es nicht.", args[0])
+		}
+		log.Fatal(err)
+	}
+	fmt.Printf("Zwei-Faktor-Anmeldung für „%s“ ist aus. Anmeldung jetzt nur mit dem Passwort.\n", args[0])
 }

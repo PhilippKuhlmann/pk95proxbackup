@@ -208,6 +208,11 @@ unveränderlich (`chattr +i`), damit PBS bei fehlender Freigabe nicht ins System
 - HTTPS mit selbst erzeugtem Zertifikat (`/var/lib/pk95proxbackup/cert.pem`, `key.pem` – durch eigene ersetzbar).
 - Anmeldung mit bcrypt, Sitzungscookie `HttpOnly`/`Secure`/`SameSite=Strict`, Sperre nach 10 Fehlversuchen,
   ändernde Anfragen brauchen einen eigenen Header (CSRF-Schutz).
+- **Zwei-Faktor-Anmeldung (TOTP):** unter Einstellungen → Konto einschalten, QR-Code mit einer Authenticator-App
+  scannen (Microsoft/Google Authenticator, Bitwarden, 1Password …), Code bestätigen. Danach fragt die Anmeldung nach
+  Passwort und 6-stelligem Code; jeder Code gilt nur einmal. Dazu gibt es zehn einmalige Wiederherstellungscodes für
+  den Fall, dass das Telefon fehlt. Sind Telefon und Codes weg, schaltet root auf der Konsole der VM sie ab:
+  `pk95proxbackup -totp-off admin`.
 - PBS und PVE werden über den **SHA-256-Fingerabdruck** ihres Zertifikats gepinnt; ändert er sich, bricht die Verbindung ab.
 - API-Tokens und Passwörter liegen in der SQLite-Datenbank unter `/var/lib/pk95proxbackup` (nur root).
 - Port 443 nicht ins Internet freigeben; von außen per VPN.

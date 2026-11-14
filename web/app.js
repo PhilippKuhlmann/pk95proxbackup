@@ -586,9 +586,43 @@ function loginPage() {
   qs("input", form).focus();
   form.onsubmit = async (e) => {
     e.preventDefault();
-    try { const r = await POST("/api/login", formValues(form)); state.user = r.user; app.innerHTML = ""; render(); }
-    catch (err) { showErrors(form, err); }
+    try {
+      const r = await POST("/api/login", formValues(form));
+      if (r.totp) return totpStep(r.ticket);
+      loggedIn(r);
+    } catch (err) { showErrors(form, err); }
   };
+}
+function loggedIn(r) {
+  state.user = r.user; app.innerHTML = ""; render();
+  if (r.recovery_left !== undefined) toast(`Mit Wiederherstellungscode angemeldet. Noch ${r.recovery_left} Codes übrig${r.recovery_left < 4 ? " – bitte unter Einstellungen → Konto neue erzeugen" : ""}.`);
+}
+// totpStep asks for the code of the authenticator app after the password was accepted.
+function totpStep(ticket) {
+  app.innerHTML = sheet("Anmeldung", `<form novalidate>
+      <p class="muted" style="font-size:14px">Bitte den <b>6-stelligen Code</b> aus deiner Authenticator-App eingeben.</p>
+      <div class="form-error" hidden></div>
+      <div class="field" data-field="code"><label class="fl" for="f-code">Code</label>
+        <input type="text" id="f-code" name="code" class="mono otp-input" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="20" placeholder="123456">
+        <span class="hint">Telefon verloren? Stattdessen einen Wiederherstellungscode eingeben (z.&nbsp;B. ABCD-EFGH-JKLM).</span><span class="err" hidden></span></div>
+      <button class="btn block" type="submit">Bestätigen</button>
+      <p class="small muted" style="margin-top:14px;text-align:center"><button class="link-btn" type="button" data-back>Zurück zur Anmeldung</button></p></form>`, "Zwei-Faktor-Anmeldung ist für dieses Konto eingeschaltet.");
+  qs("[data-theme-icon]").onclick = setTheme;
+  qs("[data-back]").onclick = loginPage;
+  const form = qs("form"), inp = qs("#f-code", form);
+  inp.focus();
+  let busy = false;
+  const send = async () => {
+    if (busy) return;
+    busy = true;
+    try { showErrors(form, null); loggedIn(await POST("/api/login/totp", { ticket, code: inp.value })); }
+    catch (err) {
+      if (err.status === 401 || err.status === 429) { loginPage(); showErrors(qs("form"), err); return; }
+      showErrors(form, err); inp.select();
+    } finally { busy = false; }
+  };
+  form.onsubmit = (e) => { e.preventDefault(); send(); };
+  inp.oninput = () => { if (/^\d{6}$/.test(inp.value.replace(/\s/g, ""))) send(); };
 }
 function setupPage() {
   app.innerHTML = sheet("Ersteinrichtung", `<form novalidate>
@@ -2906,15 +2940,81 @@ SET_PAGES.system = async (box) => {
 };
 
 SET_PAGES.konto = async (box) => {
-  const sys = await GET("/api/system");
-  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Passwort ändern</div><span class="muted small">Angemeldet als <b>${esc(sys.user)}</b></span></div>
+  const [sys, tf] = await Promise.all([GET("/api/system"), GET("/api/account/totp")]);
+  box.innerHTML = `<div class="settings-narrow"><div class="panel" data-totp></div><div class="panel"><div class="panel-head"><div class="panel-title">Passwort ändern</div><span class="muted small">Angemeldet als <b>${esc(sys.user)}</b></span></div>
     <form class="form" data-pw novalidate><div class="form-error" hidden></div><div class="form-grid">
       ${field({ name: "current", label: "Aktuelles Passwort", type: "password", autocomplete: "current-password", wide: true })}
       ${field({ name: "new", label: "Neues Passwort", type: "password", hint: "Mindestens 10 Zeichen. Andere Sitzungen werden danach abgemeldet.", autocomplete: "new-password", wide: true })}
     </div><div><button class="btn" type="submit">Passwort ändern</button></div></form></div></div>`;
   const pf = qs("[data-pw]", box);
   pf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(pf, null); await POST("/api/account/password", formValues(pf)); pf.reset(); toast("Passwort geändert. Andere Sitzungen wurden abgemeldet."); } catch (err) { showErrors(pf, err); } };
+  totpPanel(qs("[data-totp]", box), tf, () => SET_PAGES.konto(box));
 };
+
+// totpPanel shows the state of the two-factor sign-in and its actions.
+function totpPanel(el, tf, reload) {
+  const head = `<div class="panel-head"><div class="panel-title">Zwei-Faktor-Anmeldung</div>${tf.enabled ? pill("An", "green", true) : pill("Aus")}</div>`;
+  if (!tf.enabled) {
+    el.innerHTML = `${head}<p class="panel-intro">Schützt die Anmeldung zusätzlich mit einem 6-stelligen Code aus einer Authenticator-App (TOTP), z.&nbsp;B. Microsoft oder Google Authenticator, Bitwarden, 1Password. Wer nur das Passwort kennt, kommt dann nicht mehr hinein.</p>
+      <div><button class="btn" type="button" data-setup>${icon("shield")} Einrichten</button></div>`;
+    qs("[data-setup]", el).onclick = () => totpSetup(reload);
+    return;
+  }
+  const low = tf.recovery_left < 4;
+  el.innerHTML = `${head}<p class="panel-intro">Eingeschaltet seit ${esc(fmtTime(tf.since, true))}. Bei der Anmeldung fragt die Appliance nach dem Passwort und dem Code aus der Authenticator-App.</p>
+    <table class="kv"><tr><td>Wiederherstellungscodes</td><td>${tf.recovery_left} übrig ${low ? pill("Bald neue erzeugen", "amber") : ""}<div class="t-sub">Für die Anmeldung, wenn das Telefon fehlt. Jeder Code gilt einmal.</div></td></tr></table>
+    <div class="btn-row mt"><button class="btn gray" type="button" data-rec>${icon("key")} Neue Wiederherstellungscodes</button><button class="btn gray" type="button" data-off>Ausschalten</button></div>`;
+  qs("[data-rec]", el).onclick = () => formDialog({
+    title: "Neue Wiederherstellungscodes", ic: "key", button: "Erzeugen", cls: "",
+    text: "Die bisherigen Codes werden damit ungültig.",
+    fields: [{ name: "password", label: "Passwort", type: "password", autocomplete: "current-password", wide: true }],
+    submit: async (v) => { const r = await POST("/api/account/totp/recovery", v); setTimeout(() => recoveryDialog(r.recovery, reload), 0); },
+  });
+  qs("[data-off]", el).onclick = () => formDialog({
+    title: "Zwei-Faktor-Anmeldung ausschalten", ic: "warn", tone: "red", button: "Ausschalten", cls: "",
+    text: "Danach reicht wieder das Passwort für die Anmeldung. Der Eintrag in der Authenticator-App kann gelöscht werden.",
+    fields: [{ name: "password", label: "Passwort", type: "password", autocomplete: "current-password", wide: true }],
+    submit: async (v) => { await POST("/api/account/totp/disable", v); toast("Zwei-Faktor-Anmeldung ausgeschaltet."); reload(); },
+  });
+}
+
+async function totpSetup(reload) {
+  let r;
+  try { r = await POST("/api/account/totp/setup"); } catch (err) { return toastErr(err); }
+  const steps = `<div class="totp-setup">
+      <div class="qr-box" title="${esc(r.issuer)} – ${esc(r.account)}">${r.qr}</div>
+      <div class="totp-steps"><ol>
+        <li>In der Authenticator-App einen neuen Eintrag hinzufügen und den <b>QR-Code scannen</b>.</li>
+        <li>Kein Scanner zur Hand? Diesen Schlüssel von Hand eingeben (zeitbasiert, 6 Stellen):${codeBlock(r.secret)}</li>
+        <li>Den Code eingeben, den die App jetzt anzeigt.</li></ol></div></div>`;
+  formDialog({
+    title: "Zwei-Faktor-Anmeldung einrichten", ic: "shield", button: "Einschalten", cls: "",
+    fields: [{ type: "html", wide: true, html: steps },
+      { name: "code", label: "Code aus der App", mono: true, placeholder: "123456", autocomplete: "one-time-code", wide: true }],
+    onMount: (d) => { bindCopy(d); const c = qs("#f-code", d); c.setAttribute("inputmode", "numeric"); c.classList.add("otp-input"); c.focus(); },
+    submit: async (v) => { const res = await POST("/api/account/totp/enable", v); setTimeout(() => recoveryDialog(res.recovery, reload, true), 0); },
+  });
+}
+
+// recoveryDialog shows new recovery codes once; they cannot be shown again.
+function recoveryDialog(codes, reload, fresh) {
+  const text = codes.join("\n");
+  const d = openDialog(`
+    <div class="dlg-head"><span class="dlg-ic">${icon("key")}</span><div class="grow"><div class="dlg-title">${fresh ? "Eingeschaltet – Wiederherstellungscodes sichern" : "Neue Wiederherstellungscodes"}</div>
+      <p class="dlg-text">Mit diesen Codes kommst du hinein, wenn das Telefon verloren oder kaputt ist. Jeder Code gilt einmal. <b>Sie werden nur jetzt angezeigt</b> – bitte ausdrucken oder im Passwort-Manager ablegen.</p></div></div>
+    <div class="dlg-body"><div class="recovery-codes">${codes.map((c) => `<span>${esc(c)}</span>`).join("")}</div></div>
+    <div class="dlg-foot"><button class="btn gray" type="button" data-copy="${esc(text)}">${icon("copy")} Kopieren</button><button class="btn gray" type="button" data-file>${icon("download")} Als Datei laden</button><span class="spacer"></span><button class="btn" type="button" data-done>Codes sind gesichert</button></div>`);
+  d.dataset.busy = "1"; // no close by clicking beside it
+  bindCopy(d);
+  qs("[data-file]", d).onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([`PK95 ProxBackup – Wiederherstellungscodes (${state.user})\n\n${text}\n`], { type: "text/plain" }));
+    a.download = "pk95proxbackup-wiederherstellungscodes.txt";
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  qs("[data-done]", d).onclick = () => d.close();
+  d.addEventListener("close", reload);
+}
 
 // notesHTML renders release notes (Markdown headings and lists only).
 function notesHTML(md) {

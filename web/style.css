@@ -700,3 +700,20 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
   .log { scrollbar-color: #33507a transparent; }
   .tabbar { scrollbar-width: none; }
 }
+
+/* Two-factor sign-in (TOTP) */
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input.otp-input { font-size: 22px; letter-spacing: 0.3em; text-align: center; }
+input.otp-input::placeholder { letter-spacing: 0.3em; }
+.totp-setup { display: grid; grid-template-columns: 200px 1fr; gap: 20px; align-items: start; }
+.qr-box { width: 200px; border: 1px solid var(--line); border-radius: var(--r-lg); background: #fff; overflow: hidden; }
+.qr-box svg { display: block; width: 100%; height: auto; }
+.totp-steps ol { margin: 0; padding-left: 18px; display: grid; gap: 10px; font-size: 14px; color: var(--ink-2); }
+.totp-steps .code { margin-top: 6px; }
+.totp-steps .code pre { letter-spacing: 0.05em; }
+.recovery-codes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.recovery-codes span { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); font: 600 14px/1.4 var(--mono); text-align: center; letter-spacing: 0.04em; }
+@media (max-width: 560px) {
+  .totp-setup { grid-template-columns: 1fr; justify-items: center; }
+  .totp-steps { justify-self: stretch; }
+}

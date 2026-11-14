@@ -132,6 +132,12 @@ func (s *Store) SetSetting(key string, v any) error {
 	return err
 }
 
+// DeleteSetting removes key.
+func (s *Store) DeleteSetting(key string) error {
+	_, err := s.db.Exec("DELETE FROM settings WHERE key = ?", key)
+	return err
+}
+
 // ---- objects ----
 
 // Put inserts or replaces an object.
@@ -237,6 +243,11 @@ func (s *Store) SetPassword(userID int64, hash, keepToken string) error {
 	if _, err := s.db.Exec("UPDATE users SET password_hash = ? WHERE id = ?", hash, userID); err != nil {
 		return err
 	}
+	return s.EndOtherSessions(userID, keepToken)
+}
+
+// EndOtherSessions ends all sessions of the user except the one with keepToken.
+func (s *Store) EndOtherSessions(userID int64, keepToken string) error {
 	_, err := s.db.Exec("DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", userID, hashToken(keepToken))
 	return err
 }
