@@ -82,7 +82,7 @@ func (c *Core) SetPVEMail(ctx context.Context, clusterID string, on bool) (PVEMa
 	if on {
 		ns := c.NotifySettings()
 		if !ns.MailEnabled || ns.MailTo == "" {
-			return PVEMail{}, errors.New("Die Appliance verschickt noch keine Mails: zuerst unter Einstellungen → Benachrichtigungen E-Mail einrichten.")
+			return PVEMail{}, errors.New("Die Appliance verschickt noch keine Mails: zuerst unter Benachrichtigungen → Kanäle E-Mail einrichten.")
 		}
 	}
 	jobs, err := pve.BackupJobs(ctx)

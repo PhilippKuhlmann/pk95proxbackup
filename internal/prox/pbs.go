@@ -148,6 +148,36 @@ func (p *PBS) GC(ctx context.Context, store string) (string, error) {
 	return p.StartTask(ctx, "/admin/datastore/"+url.PathEscape(store)+"/gc", nil)
 }
 
+// RRDPoint is a sample of the usage history of a datastore (values are averages, nil = no data).
+type RRDPoint struct {
+	Time  int64    `json:"time"`
+	Total *float64 `json:"total"`
+	Used  *float64 `json:"used"`
+}
+
+// DatastoreRRD returns the usage history of a datastore (timeframe hour, day, week, month,
+// year, decade; the year has a value every six hours).
+func (p *PBS) DatastoreRRD(ctx context.Context, store, timeframe string) ([]RRDPoint, error) {
+	var out []RRDPoint
+	err := p.Do(ctx, http.MethodGet, "/admin/datastore/"+url.PathEscape(store)+"/rrd", Params{"timeframe": timeframe, "cf": "AVERAGE"}, &out)
+	return out, err
+}
+
+// GCStatus is the result of the last garbage collection of a datastore.
+type GCStatus struct {
+	IndexDataBytes int64 `json:"index-data-bytes"` // logical size of all backups
+	DiskBytes      int64 `json:"disk-bytes"`       // what the chunks take on disk
+	PendingBytes   int64 `json:"pending-bytes"`    // waiting to be removed (younger than a day)
+	RemovedBytes   int64 `json:"removed-bytes"`
+}
+
+// GCStatus returns the result of the last garbage collection.
+func (p *PBS) GCStatus(ctx context.Context, store string) (GCStatus, error) {
+	var out GCStatus
+	err := p.Do(ctx, http.MethodGet, "/admin/datastore/"+url.PathEscape(store)+"/gc", nil, &out)
+	return out, err
+}
+
 // Verify starts a verification of all snapshots.
 func (p *PBS) Verify(ctx context.Context, store string) (string, error) {
 	return p.StartTask(ctx, "/admin/datastore/"+url.PathEscape(store)+"/verify", nil)

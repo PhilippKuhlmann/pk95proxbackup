@@ -110,6 +110,7 @@ type Core struct {
 	selfBackup  selfBackupRuntime
 	plan        planRuntime
 	unplug      unplugRuntime
+	usageAt     map[string]time.Time // last usage value written per datastore
 }
 
 // New creates the core.

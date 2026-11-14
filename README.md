@@ -30,6 +30,11 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 - **Restore-Tests nach Zeitplan:** wöchentlich (auch alle 2–4 Wochen) oder monatlich – am ersten bis vierten oder
   letzten Wochentag bzw. an einem Datum (auch Monatsletzter), jeden Monat oder alle 2, 3, 4, 6 oder 12 Monate ab einem
   Startmonat. Der Dialog zeigt den Plan in Klartext und die nächsten Termine.
+- **Platzprognose:** Die Appliance merkt sich täglich die Belegung jedes Datastores (beim ersten Start ein Jahr
+  rückwirkend aus dem Verlauf des Backup-Servers, Wechselplatten an den Tagen, an denen sie stecken) und rechnet das
+  Wachstum der letzten Wochen weiter. Datastores zeigt „voll ca. …“, ein Klick öffnet Verlauf, Prognose und was hilft
+  (Speicherfreigabe, kürzere Aufbewahrung, nur die neuesten Stände auf die Platten, mehr Platz). 30 und 7 Tage vorher
+  kommt eine Meldung, die Übersicht zeigt es ebenfalls.
 - **Festplatten (SMART):** alle Platten der Backup-Server und der Proxmox-VE-Knoten werden täglich und gleich nach dem
   Einstecken geprüft – schwebende oder unlesbare Sektoren, ersetzte Sektoren, Selbsttest, SSD-Verschleiß, Temperatur.
   Wird eine Platte schlechter, kommt eine Meldung. Archiv-Platten, die über ein Jahr nicht angesteckt waren, erscheinen
@@ -40,7 +45,7 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   wegen neuem Kernel, verfügbare Updates – geprüft alle sechs Stunden, zu sehen unter Verbindungen.
 - **Monatsbericht:** am 1. jedes Monats per Mail, Telegram oder Push – Sicherungen je Server, USB-Kopien,
   Restore-Tests, Festplatten, Backup-Server, Archiv-Platten und alle Hinweise des Vormonats, vollständig als
-  HTML-Datei (druckbar als PDF); jederzeit unter Einstellungen → Benachrichtigungen ansehbar.
+  HTML-Datei (druckbar als PDF); jederzeit unter Benachrichtigungen → Monatsbericht ansehbar.
 - **Update per Klick:** die Appliance sieht zweimal täglich bei GitHub nach (übertragen wird nur die Versionsnummer),
   prüft die Prüfsumme, testet das neue Programm vor dem Einsetzen und kehrt von selbst zur alten Version zurück, wenn
   die neue dreimal nicht startet.

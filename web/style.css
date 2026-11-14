@@ -728,3 +728,23 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 :root[data-theme="dark"] .tip { background: #e5e7eb; color: #111827; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tip { background: #e5e7eb; color: #111827; } }
 @media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
+
+/* Platzprognose */
+.linkbtn { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.linkbtn:hover { color: var(--c600); text-decoration: underline; }
+.linkbtn:focus-visible { outline: 2px solid var(--c500); outline-offset: 2px; border-radius: var(--r); }
+.fc-chart { position: relative; }
+.fc-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.fc-grid { stroke: var(--line); stroke-width: 1; }
+.fc-ax { fill: var(--muted); font-size: 11px; font-family: inherit; }
+.fc-cap { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 3; }
+.fc-today { stroke: var(--line); stroke-width: 1; }
+.fc-used { fill: none; stroke: var(--c600); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.fc-proj { fill: none; stroke: var(--c600); stroke-width: 2; stroke-dasharray: 5 4; opacity: 0.8; }
+.fc-end { fill: var(--panel); stroke: var(--c600); stroke-width: 2; }
+.fc-cross { stroke: var(--muted); stroke-width: 1; }
+.fc-dot { fill: var(--c600); stroke: var(--panel); stroke-width: 2; }
+.fc-hover { position: absolute; top: 0; padding: 5px 9px; border-radius: var(--r); background: #111827; color: #f9fafb; font-size: 12px; line-height: 1.4; pointer-events: none; white-space: nowrap; box-shadow: var(--shadow-lg); }
+:root[data-theme="dark"] .fc-hover { background: #e5e7eb; color: #111827; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .fc-hover { background: #e5e7eb; color: #111827; } }
+.fc-advice { margin: 6px 0 0; padding-left: 20px; font-size: 14px; } .fc-advice li { margin: 4px 0; }

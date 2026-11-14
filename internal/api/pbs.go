@@ -207,12 +207,14 @@ func (s *Server) testSSH(w http.ResponseWriter, r *http.Request) {
 type datastoreView struct {
 	prox.DatastoreConfig
 	prox.DatastoreUsage
-	Removable  bool      `json:"removable"`
-	Share      string    `json:"share,omitempty"`
-	Prune      *prox.Job `json:"prune,omitempty"`
-	Verify     *prox.Job `json:"verify,omitempty"`
-	Rotation   string    `json:"rotation,omitempty"`
-	GCSchedule string    `json:"gc_schedule"`
+	Removable  bool           `json:"removable"`
+	Share      string         `json:"share,omitempty"`
+	Prune      *prox.Job      `json:"prune,omitempty"`
+	Verify     *prox.Job      `json:"verify,omitempty"`
+	Rotation   string         `json:"rotation,omitempty"`
+	GCSchedule string         `json:"gc_schedule"`
+	Forecast   *core.Forecast `json:"forecast,omitempty"`
+	Advice     []string       `json:"advice,omitempty"` // what helps when it runs full
 }
 
 func pruneJobID(store string) string  { return core.JobID("pk95-prune", store) }
@@ -257,11 +259,13 @@ func (s *Server) listDatastores(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rotBy := map[string]string{}
+	rotOf := map[string]*core.Rotation{}
 	if rots, err := s.C.Rotations(); err == nil {
-		for _, x := range rots {
+		for i, x := range rots {
 			if x.ServerID == srv.ID {
 				for _, d := range x.Disks {
 					rotBy[d.Store] = x.Name + " · " + d.Label
+					rotOf[d.Store] = &rots[i]
 				}
 			}
 		}
@@ -275,6 +279,11 @@ func (s *Server) listDatastores(w http.ResponseWriter, r *http.Request) {
 		}
 		if j, ok := verifies[verifyJobID(c.Name)]; ok {
 			v.Verify = &j
+		}
+		f := s.C.Forecast(srv.ID, c.Name, v.Removable)
+		v.Forecast = &f
+		if f.State == "soon" || f.State == "urgent" || f.State == "critical" || (f.Total > 0 && f.Used*100/f.Total >= 85) {
+			v.Advice = s.C.SpaceAdvice(ctx, srv, c.Name, f, c.GCSchedule, v.Prune, rotOf[c.Name])
 		}
 		out = append(out, v)
 	}

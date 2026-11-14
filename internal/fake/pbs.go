@@ -29,6 +29,8 @@ type store struct {
 	// badEnclosure: what is written only reads back wrong after mounting again.
 	badEnclosure bool
 	mountedOnce  bool
+	// growth is how many bytes a day the store grew over the last year (usage history).
+	growth int64
 }
 
 type job struct {
@@ -177,6 +179,13 @@ func (p *PBS) AddSnapshot(st, typ, id string, t, size int64) {
 	s.snaps = append(s.snaps, prox.Snapshot{Type: typ, ID: id, Time: t, Size: size, Owner: "pk95-pve@pbs!pve-cluster", Verification: &struct {
 		State string `json:"state"`
 	}{State: "ok"}})
+}
+
+// SetGrowth sets how fast a datastore grew over the last year (usage history, bytes a day).
+func (p *PBS) SetGrowth(st string, perDay int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stores[st].growth = perDay
 }
 
 // SetSnapshotKey marks the snapshots of a datastore as encrypted with the key fp (for tests).
@@ -438,9 +447,31 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			s.mounted = s.cfg.BackingDevice == ""
 			data(w, p.tasks.start(p.node, "unmount-device", seg[2], 2*time.Second, nil, nil))
+		case "rrd":
+			// a year of history, a value every six hours: grown by s.growth a day up to now
+			out := []map[string]any{}
+			if s.mounted && s.cfg.BackingDevice == "" {
+				used := p.used(s) + p.usedExtra[s.cfg.Name]
+				g := s.growth
+				if g == 0 {
+					g = s.total / 1500
+				}
+				now := time.Now().Unix() / 21600 * 21600
+				for i := 1439; i >= 0; i-- {
+					t := now - int64(i)*21600
+					u := used - g*int64(i)/4 - (int64(i)%28)*g/8 // grows, freed again each week by the GC
+					if i > 1200 {
+						out = append(out, map[string]any{"time": t})
+						continue
+					}
+					out = append(out, map[string]any{"time": t, "total": float64(s.total), "used": float64(max(u, s.total/20))})
+				}
+			}
+			data(w, out)
 		case "gc":
 			if m == "GET" {
-				data(w, map[string]any{})
+				used := p.used(s) + p.usedExtra[s.cfg.Name]
+				data(w, map[string]any{"index-data-bytes": used * 4, "disk-bytes": used, "pending-bytes": used / 40, "removed-bytes": used / 100})
 				return
 			}
 			data(w, p.tasks.start(p.node, "garbage_collection", seg[2], 12*time.Second, []string{"starting garbage collection on store " + seg[2], "Removed garbage: 1.2 GiB"}, nil))

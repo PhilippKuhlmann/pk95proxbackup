@@ -39,6 +39,7 @@ const ICONS = {
 "chevron-down": "M19.5 8.25l-7.5 7.5-7.5-7.5",
 "arrow-right": "M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3",
 "terminal": "M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z",
+"chart": "M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z",
 "database": "M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125",
 "archive": "M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z",
 "calendar": "M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5",
@@ -431,7 +432,8 @@ const NAV = [
   { path: "/kopierjobs", label: "Kopierjobs", icon: "sync" },
   { head: "Verwaltung" },
   { path: "/verbindungen", label: "Verbindungen", icon: "link" },
-  { path: "/ereignisse", label: "Ereignisse", icon: "bell" },
+  { path: "/benachrichtigungen", label: "Benachrichtigungen", icon: "bell" },
+  { path: "/ereignisse", label: "Ereignisse", icon: "clock" },
   { path: "/einstellungen", label: "Einstellungen", icon: "cog" },
 ];
 
@@ -806,6 +808,7 @@ PAGES["/"] = async (el, token) => {
       else issue("warning", `Festplatte ${d.label}: ${d.problem}`, "/festplatten");
     }
     for (const a of r.stale_archives || []) issue("warning", `Archiv-Platte „${a.name}“ zuletzt angesteckt ${fmtAgo(a.last_seen)} – einmal prüfen`, "/wechselplatten");
+    for (const x of r.space || []) issue(x.state === "critical" ? "error" : "warning", `Datastore ${x.store} auf ${x.server}: ${x.days_left <= 0 ? "voll" : `voraussichtlich in ${x.days_left} ${x.days_left === 1 ? "Tag" : "Tagen"} voll`}`, `/datastores?server=${x.server_id}`);
     for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
     const sb = r.selfbackup || {};
     if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen/sicherung");
@@ -1187,7 +1190,8 @@ PAGES["/datastores"] = async (el, token) => {
         return `<tr class="${mounted ? "" : "off"}">
         <td data-l="Datastore"><div class="t-main">${esc(d.name)} ${d.removable ? pill(mounted ? "USB eingehängt" : "USB ausgehängt", mounted ? "blue" : "") : ""} ${d.share ? pill("Freigabe", "blue") : ""} ${d["maintenance-mode"] ? pill("Wartung", "amber") : ""}</div>
           <div class="t-sub mono">${esc(d.path)}</div>${d.comment ? `<div class="t-sub">${esc(d.comment)}</div>` : ""}${d.rotation ? `<div class="t-sub">Wechselplatte: ${esc(d.rotation)}</div>` : ""}${d.share ? `<div class="t-sub">auf „${esc(d.share)}“</div>` : ""}</td>
-        <td data-l="Belegung">${d.total ? usageBar(d.used, d.total) + `<div class="t-sub">${fmtBytes(d.used)} von ${fmtBytes(d.total)}${d["estimated-full-date"] > 0 ? " · voll ca. " + fmtTime(d["estimated-full-date"], true).slice(0, 10) : ""}</div>` : `<span class="small muted">${esc(d.error || (mounted ? "—" : "Platte nicht eingehängt"))}</span>`}</td>
+        <td data-l="Belegung">${d.total ? usageBar(d.used, d.total) + `<div class="t-sub">${fmtBytes(d.used)} von ${fmtBytes(d.total)}</div>` : `<span class="small muted">${esc(d.error || (mounted ? "—" : "Platte nicht eingehängt"))}</span>`}
+          ${fcLine(d.forecast, d.name)}</td>
         <td data-l="Aufbewahrung" class="small">${d.prune ? esc(keepText(d.prune)) + `<div class="t-sub">${esc(d.prune.schedule)}${d.prune["last-run-state"] && d.prune["last-run-state"] !== "OK" ? ' · <span class="bad">' + esc(d.prune["last-run-state"]) + "</span>" : ""}</div>` : d.rotation ? '<span class="muted">über Wechselplatten-Satz</span>' : '<span class="muted">alles behalten</span>'}</td>
         <td data-l="Zeitpläne" class="small"><div>Freigeben: ${esc(d.gc_schedule || "—")}</div><div>Prüfen: ${esc(d.verify?.schedule || "—")}</div></td>
         <td class="act"><div class="row-actions">
@@ -1212,6 +1216,7 @@ PAGES["/datastores"] = async (el, token) => {
       setTimeout(draw, 2500);
     }));
     qsa("[data-snaps]", el).forEach((b) => b.onclick = () => snapshotsDialog(srv, b.dataset.snaps));
+    qsa("[data-fc]", el).forEach((b) => b.onclick = () => forecastDialog(srv, list.find((d) => d.name === b.dataset.fc)));
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => datastoreSettings(srv, list.find((d) => d.name === b.dataset.edit), draw));
     qsa("[data-del]", el).forEach((b) => b.onclick = () => datastoreDelete(srv, b.dataset.del, draw));
   };
@@ -1219,6 +1224,97 @@ PAGES["/datastores"] = async (el, token) => {
   await draw();
   every(30000, token, draw);
 };
+
+// ---------- Platzprognose ----------
+function fcWhen(f) {
+  if (!f.full_at) return "";
+  const days = f.days_left;
+  const ahead = days <= 0 ? "jetzt" : days < 60 ? `in ${days} ${days === 1 ? "Tag" : "Tagen"}` : `in ${Math.round(days / 30.4)} Monaten`;
+  return `voll ca. ${new Date(f.full_at * 1000).toLocaleDateString("de-DE", days < 60 ? { day: "2-digit", month: "2-digit", year: "numeric" } : { month: "long", year: "numeric" })} (${ahead})`;
+}
+function fcLine(f, store) {
+  if (!f || f.state === "unknown") return f && f.removable ? "" : `<div class="t-sub muted">Prognose ab zwei Wochen Verlauf</div>`;
+  const tone = { critical: "rose", urgent: "amber", soon: "amber" }[f.state];
+  const text = f.state === "stable" ? "wächst nicht" : fcWhen(f);
+  return `<div class="t-sub fc-line">${tone ? pill(f.state === "soon" ? "bald voll" : "wird voll", tone) + " " : ""}<button type="button" class="linkbtn" data-fc="${esc(store)}">${icon("chart", "sm")} ${esc(text)}</button></div>`;
+}
+function perMonth(bytes) { return (bytes >= 0 ? "+" : "−") + fmtBytes(Math.abs(bytes) * 30.4) + " pro Monat"; }
+
+// fcChart draws the usage history, the capacity and the projection until full (one series).
+function fcChart(f) {
+  const pts = f.points || [];
+  if (pts.length < 2) return `<div class="empty">${icon("chart")}<b>Noch zu wenig Verlauf</b><p>Die Appliance merkt sich die Belegung täglich${f.removable ? ", wenn die Platte angesteckt ist" : ""}.</p></div>`;
+  const W = 640, H = 220, L = 52, R = 12, T = 14, B = 26;
+  const now = Date.now() / 1000;
+  const t0 = pts[0][0];
+  let t1 = Math.max(now, pts[pts.length - 1][0]) + 14 * 86400;
+  if (f.full_at) t1 = Math.min(Math.max(t1, f.full_at + 7 * 86400), now + 400 * 86400);
+  const yMax = Math.max(f.total, ...pts.map((p) => p[1])) * 1.06;
+  const x = (t) => L + (t - t0) / (t1 - t0) * (W - L - R);
+  const y = (v) => T + (1 - v / yMax) * (H - T - B);
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)} ${y(p[1]).toFixed(1)}`).join("");
+  const last = pts[pts.length - 1];
+  let proj = "";
+  if (f.growth_day > 0 && f.state !== "stable") {
+    const tEnd = f.full_at ? Math.min(f.full_at, t1) : t1;
+    const vEnd = Math.min(f.total, last[1] + f.growth_day * (tEnd - last[0]) / 86400);
+    proj = `<path class="fc-proj" d="M${x(last[0]).toFixed(1)} ${y(last[1]).toFixed(1)}L${x(tEnd).toFixed(1)} ${y(vEnd).toFixed(1)}"/>` +
+      (f.full_at && f.full_at <= t1 ? `<circle class="fc-end" cx="${x(f.full_at).toFixed(1)}" cy="${y(f.total).toFixed(1)}" r="4"/>` : "");
+  }
+  const grid = [0, 0.5, 1].map((k) => { const v = f.total * k; return `<line class="fc-grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="fc-ax" x="${L - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${esc(fmtBytes(v))}</text>`; }).join("");
+  const fmtD = (t) => new Date(t * 1000).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
+  const xl = [[t0, "start"], [now, "middle"], [t1, "end"]].map(([t, a]) => `<text class="fc-ax" x="${x(t).toFixed(1)}" y="${H - 6}" text-anchor="${a}">${a === "middle" ? "heute" : fmtD(t)}</text>`).join("");
+  return `<div class="fc-chart" data-chart><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Belegung über die Zeit mit Prognose">
+    ${grid}<line class="fc-cap" x1="${L}" x2="${W - R}" y1="${y(f.total).toFixed(1)}" y2="${y(f.total).toFixed(1)}"/>
+    <text class="fc-ax" x="${L + 6}" y="${(y(f.total) - 5).toFixed(1)}">Kapazität ${esc(fmtBytes(f.total))}</text>
+    <line class="fc-today" x1="${x(now).toFixed(1)}" x2="${x(now).toFixed(1)}" y1="${T}" y2="${H - B}"/>
+    <path class="fc-used" d="${line}"/>${proj}${xl}
+    <line class="fc-cross" data-cross x1="0" x2="0" y1="${T}" y2="${H - B}" visibility="hidden"/><circle class="fc-dot" data-dot r="4" visibility="hidden"/>
+  </svg><div class="fc-hover" data-hover hidden></div></div>`;
+}
+function bindFcChart(box, f) {
+  const c = qs("[data-chart]", box);
+  if (!c) return;
+  const svg = qs("svg", c), cross = qs("[data-cross]", c), dot = qs("[data-dot]", c), hv = qs("[data-hover]", c);
+  const pts = f.points;
+  const W = 640, L = 52, R = 12;
+  const xs = [...qs(".fc-used", c).getAttribute("d").matchAll(/[ML]([\d.]+) ([\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  const hide = () => { cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); hv.hidden = true; };
+  svg.addEventListener("pointermove", (e) => {
+    const r = svg.getBoundingClientRect();
+    const vx = (e.clientX - r.left) / r.width * W;
+    if (vx < L || vx > W - R) return hide();
+    let i = 0;
+    for (let k = 1; k < xs.length; k++) if (Math.abs(xs[k][0] - vx) < Math.abs(xs[i][0] - vx)) i = k;
+    const [px, py] = xs[i];
+    cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("visibility", "visible");
+    hv.innerHTML = `<b>${new Date(pts[i][0] * 1000).toLocaleDateString("de-DE")}</b><br>${fmtBytes(pts[i][1])} von ${fmtBytes(pts[i][2])} (${pct(pts[i][1], pts[i][2])} %)`;
+    hv.hidden = false;
+    const left = px / W * r.width;
+    hv.style.left = `${Math.min(Math.max(left - hv.offsetWidth / 2, 0), r.width - hv.offsetWidth)}px`;
+  });
+  svg.addEventListener("pointerleave", hide);
+}
+
+function forecastDialog(srv, d) {
+  const f = d.forecast;
+  const state = { critical: ["Wird sehr bald voll", "rose"], urgent: ["Wird in wenigen Wochen voll", "amber"], soon: ["Wird in den nächsten Monaten voll", "amber"], ok: ["Reicht noch lange", "green"], stable: ["Wächst nicht", "green"], unknown: ["Noch keine Prognose", ""] }[f.state] || ["", ""];
+  const rows = [["Belegt", `${fmtBytes(f.used)} von ${fmtBytes(f.total)} (${pct(f.used, f.total)} %)`]];
+  if (f.basis_days) rows.push(["Wachstum", `${perMonth(f.growth_day)} <span class="muted small">(gemessen über ${f.basis_days} Tage)</span>`]);
+  if (f.pct90_at && f.pct90_at * 1000 > Date.now()) rows.push(["90 % erreicht", new Date(f.pct90_at * 1000).toLocaleDateString("de-DE")]);
+  if (f.full_at) rows.push(["Voll", esc(fcWhen(f).replace(/^voll ca\. /, "etwa "))]);
+  if (f.removable) rows.push(["Messwerte", "nur an Tagen, an denen die Platte angesteckt war"]);
+  const advice = d.advice || [];
+  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("chart")}</span><div class="grow"><div class="dlg-title">Platzprognose: ${esc(d.name)}</div><p class="dlg-text">${esc(srv.name)} · ${pill(state[0], state[1], true)}</p></div></div>
+    <div class="dlg-body">${fcChart(f)}
+      <table class="kv mt">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>
+      ${advice.length ? `<div class="section-title mt">Was hilft</div><ul class="fc-advice">${advice.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
+      <p class="hint mt">Die Prognose verlängert das Wachstum der letzten ${f.removable ? "sechs Monate" : "zwei Monate"} gerade weiter. Neue Server, eine geänderte Aufbewahrung oder eine Speicherfreigabe ändern sie; sie wird täglich neu berechnet.</p></div>
+    <div class="dlg-foot"><span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`, "wide");
+  qs("[data-close]", dlg).onclick = () => dlg.close();
+  bindFcChart(dlg, f);
+}
 
 const retentionFields = (v = {}) => [
   { type: "html", wide: true, html: `<div class="section-title">Aufbewahrung</div><div class="hint">Leer oder 0 = diese Regel nicht verwenden. Ganz leer = nichts wird automatisch gelöscht.</div>` },
@@ -2628,11 +2724,24 @@ function mailStrip(c, m) {
   const notes = [];
   if (m.appliance && m.pve_sends) notes.push(`${m.pve_sends} ${m.pve_sends === 1 ? "Job meldet" : "Jobs melden"} sich noch selbst und ${m.pve_sends === 1 ? "wird" : "werden"} in Kürze umgestellt.`);
   if (m.appliance && m.min_severity !== "info") notes.push(`Erfolgreiche Läufe werden nicht gemeldet („Melden ab“ steht auf ${m.min_severity === "critical" ? "Fehler" : "Warnungen"}).`);
-  if (!m.appliance && !m.appliance_mail) notes.push(`Damit die Appliance übernehmen kann, zuerst unter <a href="/einstellungen" data-go>Einstellungen</a> E-Mail einrichten.`);
+  if (!m.appliance && !m.appliance_mail) notes.push(`Damit die Appliance übernehmen kann, zuerst unter <a href="/benachrichtigungen" data-go>Benachrichtigungen</a> E-Mail einrichten.`);
   return `<div class="mail-strip"><span class="ms-ic">${icon("bell")}</span><div class="grow"><div>Mails zu diesen Sicherungsjobs ${who}.</div>${notes.map((n) => `<div class="t-sub">${n}</div>`).join("")}</div>
     <div class="flex"><a class="btn gray sm" href="/api/settings/preview?status=ok" target="_blank" rel="noopener">${icon("eye")} So sieht unsere Mail aus</a>
     ${m.appliance ? `<button class="btn gray sm" type="button" data-pvemail="${c.id}|0">Wieder Proxmox VE</button>`
       : `<button class="btn sm" type="button" data-pvemail="${c.id}|1" ${m.appliance_mail ? "" : "disabled"}>Appliance übernimmt</button>`}</div></div>`;
+}
+
+// bindPveMail wires the buttons of mailStrip (mails of the backup jobs from the appliance or PVE).
+function bindPveMail(root, redraw) {
+  qsa("[data-pvemail]", root).forEach((b) => b.onclick = async () => {
+    const [cid, on] = b.dataset.pvemail.split("|");
+    if (on === "1") {
+      const ok = await confirmDialog({ title: "Mails zu Sicherungsjobs von der Appliance?", tone: "", ic: "bell", button: "Umstellen",
+        text: "Die Sicherungsjobs in Proxmox VE schicken dann keine eigene Mail mehr; stattdessen meldet die Appliance jeden Lauf in ihrem Design – mit allen Servern, Ergebnis, Dauer und Datenmenge. Alle anderen Meldungen von Proxmox VE bleiben wie sie sind. Zurückstellen geht jederzeit." });
+      if (!ok) return;
+    }
+    run(b, async () => { await PUT(`/api/pve/${cid}/mail`, { appliance: on === "1" }); await redraw(); }, on === "1" ? "Umgestellt – die Mails kommen jetzt von der Appliance." : "Zurückgestellt auf Proxmox VE.");
+  });
 }
 
 PAGES["/jobs"] = async (el, token) => {
@@ -2663,15 +2772,7 @@ PAGES["/jobs"] = async (el, token) => {
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${c.id}|${esc(j.id)}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${c.id}|${esc(j.id)}">${icon("trash")}</button></div></td></tr>`; }).join("")}</tbody></table></div>` :
           `<div style="padding:0 16px 16px">${empty("Noch kein Sicherungsjob", "Zum Beispiel jede Nacht um 21:00 alle VMs auf den Backup-Server.", "", "calendar")}</div>`}</div>`).join("");
-    qsa("[data-pvemail]", el).forEach((b) => b.onclick = async () => {
-      const [cid, on] = b.dataset.pvemail.split("|");
-      if (on === "1") {
-        const ok = await confirmDialog({ title: "Mails zu Sicherungsjobs von der Appliance?", tone: "", ic: "bell", button: "Umstellen",
-          text: "Die Sicherungsjobs in Proxmox VE schicken dann keine eigene Mail mehr; stattdessen meldet die Appliance jeden Lauf in ihrem Design – mit allen Servern, Ergebnis, Dauer und Datenmenge. Alle anderen Meldungen von Proxmox VE bleiben wie sie sind. Zurückstellen geht jederzeit." });
-        if (!ok) return;
-      }
-      run(b, async () => { await PUT(`/api/pve/${cid}/mail`, { appliance: on === "1" }); await draw(); }, on === "1" ? "Umgestellt – die Mails kommen jetzt von der Appliance." : "Zurückgestellt auf Proxmox VE.");
-    });
+    bindPveMail(el, draw);
     bindCopy(el);
     const find = (v) => { const [cid, jid] = v.split("|"); const x = all.find((a) => a.c.id === cid); return { x, job: x.r?.jobs.find((j) => j.id === jid), jid }; };
     qsa("[data-add]", el).forEach((b) => b.onclick = () => jobForm(all.find((a) => a.c.id === b.dataset.add), null, draw));
@@ -2801,7 +2902,7 @@ PAGES["/ereignisse"] = async (el, token) => {
     const m = qs("[data-more]", el);
     if (m) m.onclick = () => run(m, () => load(true));
   };
-  el.innerHTML = pageHead("Ereignisse", "Was die Appliance beobachtet hat: fehlgeschlagene Aufgaben, Wechselplatten, Freigaben, volle Datastores. Benachrichtigungen dafür stellst du unter Einstellungen ein.",
+  el.innerHTML = pageHead("Ereignisse", 'Was die Appliance beobachtet hat: fehlgeschlagene Aufgaben, Wechselplatten, Freigaben, volle Datastores. Wie davon berichtet wird, stellst du unter <a href="/benachrichtigungen" data-go>Benachrichtigungen</a> ein.',
     `<select data-sev aria-label="Schweregrad" style="width:auto"><option value="">Alle Stufen</option><option value="warning">ab Warnung</option><option value="critical">nur Kritisch</option></select>`) + `<div data-list></div>`;
   qs("[data-sev]", el).onchange = (e) => { sev = e.target.value; load(false); };
   await load(false);
@@ -2878,7 +2979,7 @@ PAGES["/festplatten"] = async (el, token) => {
 
 // ---------- Einstellungen ----------
 const SET_TABS = [
-  ["", "Benachrichtigungen", "bell"], ["sicherung", "Sicherung der Appliance", "archive"], ["verschluesselung", "Verschlüsselung", "lock"], ["loeschschutz", "Löschschutz", "shield"], ["aktualisierung", "Aktualisierung", "download"],
+  ["sicherung", "Sicherung der Appliance", "archive"], ["verschluesselung", "Verschlüsselung", "lock"], ["loeschschutz", "Löschschutz", "shield"], ["aktualisierung", "Aktualisierung", "download"],
   ["zugriff", "Zugriff", "globe"], ["system", "System", "server"], ["konto", "Konto", "user"],
 ];
 
@@ -2896,8 +2997,9 @@ PAGES["/einstellungen"] = async (el) => {
 };
 
 const SET_PAGES = {};
+const NOTIFY_PAGES = {};
 
-SET_PAGES[""] = async (box) => {
+NOTIFY_PAGES[""] = async (box) => {
   const set = await GET("/api/settings");
   const n = set.notify;
   box.innerHTML = `<form class="settings-cols" data-notify novalidate>
@@ -2944,7 +3046,6 @@ SET_PAGES[""] = async (box) => {
           <a href="/api/settings/preview?status=error" target="_blank" rel="noopener"><span class="dot rose"></span> Fehler</a>
           <a href="/api/settings/preview?status=usb" target="_blank" rel="noopener"><span class="dot green"></span> USB fertig</a>
           <a href="/api/settings/preview?status=restoretest" target="_blank" rel="noopener"><span class="dot green"></span> Restore-Test</a></div></div>
-      <div class="panel" data-monthly></div>
     </div></form>`;
   const nf = qs("[data-notify]", box);
   const nv = () => { const v = formValues(nf); v.smtp_port = Number(v.smtp_port) || 587; return { notify: v }; };
@@ -2967,7 +3068,38 @@ SET_PAGES[""] = async (box) => {
     qsa('[name="tg_pick"]', tgBox).forEach((x) => x.onchange = () => set1(r.chats[+x.value]));
   });
   qs("[data-test]", box).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test?status=" + qs("[data-test-status]", box).value, nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
-  monthlyPanel(qs("[data-monthly]", box));
+};
+
+NOTIFY_PAGES.monatsbericht = async (box) => {
+  box.innerHTML = `<div class="settings-narrow"><div class="panel" data-monthly></div></div>`;
+  await monthlyPanel(qs("[data-monthly]", box));
+};
+
+NOTIFY_PAGES.sicherungsjobs = async (box) => {
+  await loadConn();
+  if (!state.clusters.length) {
+    box.innerHTML = `<div class="settings-narrow">${empty("Kein Proxmox VE verbunden", "Die Mails zu Sicherungsjobs kommen aus Proxmox VE. Zuerst unter Verbindungen eintragen.", `<a class="btn" href="/verbindungen" data-go>Verbindungen</a>`, "calendar")}</div>`;
+    return;
+  }
+  const draw = async () => {
+    const all = await Promise.all(state.clusters.map(async (c) => ({ c, mail: await GET(`/api/pve/${c.id}/mail`).catch((e) => ({ err: e.message })) })));
+    box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Mails zu Sicherungsjobs</div></div>
+      <p class="panel-intro">Proxmox VE schickt nach jedem Sicherungsjob eine eigene, schlichte Mail. Die Appliance kann das je Cluster übernehmen: ein Lauf, eine Mail im eigenen Design mit allen Servern, Ergebnis, Dauer und Datenmenge – über dieselben Wege wie ihre übrigen Meldungen.</p>
+      ${all.map(({ c, mail }) => `<div class="section-title mt">${esc(c.name)}</div>${mail.err ? callout("red", "Nicht erreichbar", esc(mail.err)) : mailStrip(c, mail)}`).join("")}</div></div>`;
+    bindPveMail(box, draw);
+  };
+  await draw();
+};
+
+const NOTIFY_TABS = [["", "Kanäle", "bell"], ["monatsbericht", "Monatsbericht", "calendar"], ["sicherungsjobs", "Mails zu Sicherungsjobs", "archive"]];
+
+PAGES["/benachrichtigungen"] = async (el) => {
+  const tab = location.pathname.replace(/^\/benachrichtigungen\/?/, "").split("/")[0];
+  const cur = NOTIFY_TABS.find((t) => t[0] === tab) || NOTIFY_TABS[0];
+  el.innerHTML = pageHead("Benachrichtigungen", "Wie die Appliance meldet, was passiert: per E-Mail, Telegram oder Push, der Monatsbericht für Kunden und die Mails zu den Sicherungsjobs von Proxmox VE.") +
+    `<nav class="tabbar" aria-label="Bereiche der Benachrichtigungen">${NOTIFY_TABS.map(([k, l, ic]) =>
+      `<a href="/benachrichtigungen${k ? "/" + k : ""}" data-go ${k === cur[0] ? 'aria-current="page"' : ""}>${icon(ic)}<span>${esc(l)}</span></a>`).join("")}</nav><div class="settings-body" data-tab></div>`;
+  await NOTIFY_PAGES[cur[0]](qs("[data-tab]", el));
 };
 
 // monthlyPanel: the monthly report for the customer (settings, preview, send now).

@@ -256,6 +256,10 @@ func Setup(c *core.Core) (func(), error) {
 		}
 	}
 	local.usedExtra["backup"] = 0
+	// usage history: the NAS fills up within weeks, the local store in months
+	local.stores["nas-backup"].growth = 25 * gib
+	local.usedExtra["nas-backup"] = 3300 * gib
+	local.stores["backup"].growth = 3 * gib
 	// Monthly backups kept by the retention: the last of each of the previous months.
 	for m := 1; m <= 5; m++ {
 		last := time.Date(now.Year(), now.Month()-time.Month(m)+1, 0, 21, 0, 0, 0, now.Location())

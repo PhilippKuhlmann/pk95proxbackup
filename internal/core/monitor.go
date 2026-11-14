@@ -262,6 +262,7 @@ func (c *Core) Run(ctx context.Context) {
 		}
 		ov := c.BuildOverview(ctx)
 		c.check(ctx, prev, &ov)
+		c.RecordUsage(&ov)
 		c.reportBackups(ctx, &ov)
 		c.scheduleRotations(ctx, ov.Rotations, time.Now())
 		c.checkArchivesUnplugged(ctx, time.Now())

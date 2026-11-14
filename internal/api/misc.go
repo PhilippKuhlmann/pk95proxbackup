@@ -48,6 +48,8 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		out["restore_test"] = map[string]any{"plan": run.PlanName, "status": run.Status, "end": run.End, "ok": okN, "total": len(run.Results)}
 		break
 	}
+	// Datastores that will be full within 30 days.
+	out["space"] = s.C.SpaceIssues(ov)
 	// Encryption keys without a copy outside the appliance.
 	unsaved := []string{}
 	for _, k := range s.C.EncKeys() {
