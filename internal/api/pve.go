@@ -121,25 +121,8 @@ type storageView struct {
 	KeyName   string `json:"key_name,omitempty"` // its name
 }
 
-// matchServer finds the Backup Server a PVE storage points to: by address first, then by
-// certificate fingerprint (servers may share one certificate, e.g. a wildcard certificate).
-func (s *Server) matchServer(st prox.Storage) (core.PBSServer, bool) {
-	servers, _ := s.C.Servers()
-	for _, srv := range servers {
-		if st.Server != "" && (st.Server == srv.Host || st.Server == srv.PublicHost) && !srv.Local {
-			return srv, true
-		}
-		if srv.Local && st.Server == srv.PublicHost && st.Server != "" {
-			return srv, true
-		}
-	}
-	for _, srv := range servers {
-		if prox.NormalizeFingerprint(st.Fingerprint) != "" && prox.NormalizeFingerprint(st.Fingerprint) == prox.NormalizeFingerprint(srv.Fingerprint) {
-			return srv, true
-		}
-	}
-	return core.PBSServer{}, false
-}
+// matchServer finds the Backup Server a PVE storage points to.
+func (s *Server) matchServer(st prox.Storage) (core.PBSServer, bool) { return s.C.MatchServer(st) }
 
 func (s *Server) pveStorages(w http.ResponseWriter, r *http.Request) {
 	pve, _, err := s.C.PVE(r.PathValue("id"))
@@ -262,8 +245,19 @@ func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.
 	// The user needs the rights as well: a token never has more than its user.
 	// PowerUser: back up and prune; Reader: also read backups written by others (sync
 	// jobs, USB copies) – without it restoring them fails with "backup owner check failed".
+	// With the delete protection for new storages, the token gets DatastoreBackup instead of
+	// PowerUser: back up and read, but not delete or prune (the user keeps PowerUser, so lifting
+	// the protection later only touches the token).
+	tokenRole := "DatastorePowerUser"
+	if s.C.ProtectSettings().NewStorages {
+		tokenRole = "DatastoreBackup"
+	}
 	for _, id := range []string{tokenID, user} {
-		for _, role := range []string{"DatastorePowerUser", "DatastoreReader"} {
+		role := "DatastorePowerUser"
+		if id == tokenID {
+			role = tokenRole
+		}
+		for _, role := range []string{role, "DatastoreReader"} {
 			if err := pbs.SetACL(ctx, "/datastore/"+store, role, id); err != nil {
 				return fmt.Errorf("Rechte setzen: %w", err)
 			}

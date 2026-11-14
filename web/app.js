@@ -194,6 +194,80 @@ function openDialog(html, cls = "") {
   return d;
 }
 
+// ---------- tooltips ----------
+// Own tooltips instead of the browser's title tooltips, which show only after about a second.
+// A title attribute becomes data-tip on first hover (and the accessible name, where there is
+// none). The tip lives in the top layer (popover), so it shows above open dialogs too.
+const tip = (() => {
+  const el = document.createElement("div");
+  el.className = "tip";
+  el.setAttribute("role", "tooltip");
+  const popover = typeof el.showPopover === "function";
+  if (popover) el.popover = "manual";
+  document.body.appendChild(el);
+  let target = null, timer = 0, watch = 0;
+  const take = (t) => {
+    const text = t.getAttribute("title");
+    t.removeAttribute("title");
+    if (!text) return;
+    t.dataset.tip = text;
+    if (!t.hasAttribute("aria-label") && !t.textContent.trim()) t.setAttribute("aria-label", text);
+  };
+  const hide = () => {
+    clearTimeout(timer); clearInterval(watch);
+    target = null;
+    if (!el.classList.contains("on")) return;
+    el.classList.remove("on");
+    if (popover) { try { el.hidePopover(); } catch (e) { /* closed already */ } }
+  };
+  const place = () => {
+    const r = target.getBoundingClientRect();
+    const w = el.offsetWidth, h = el.offsetHeight, gap = 6, pad = 8;
+    let top = r.top - h - gap;
+    if (top < pad) top = r.bottom + gap;
+    let left = r.left + r.width / 2 - w / 2;
+    left = Math.max(pad, Math.min(left, window.innerWidth - w - pad));
+    el.style.top = `${Math.round(top)}px`;
+    el.style.left = `${Math.round(left)}px`;
+  };
+  const show = (t) => {
+    if (!t.isConnected || !t.dataset.tip) return;
+    target = t;
+    el.textContent = t.dataset.tip;
+    if (popover) { try { el.showPopover(); } catch (e) { /* open already */ } }
+    el.classList.add("on");
+    place();
+    // the page re-renders while polling: drop a tip whose element is gone
+    clearInterval(watch);
+    watch = setInterval(() => { if (!target || !target.isConnected) hide(); }, 300);
+  };
+  const find = (n) => (n && n.closest ? n.closest("[title], [data-tip]") : null);
+  document.addEventListener("mouseover", (e) => {
+    const t = find(e.target);
+    if (t === target) return;
+    hide();
+    if (!t) return;
+    if (t.hasAttribute("title")) take(t);
+    timer = setTimeout(() => show(t), 80);
+  });
+  document.addEventListener("mouseout", (e) => {
+    if (target && !(e.relatedTarget && target.contains(e.relatedTarget))) hide();
+    else if (!target) clearTimeout(timer);
+  });
+  document.addEventListener("focusin", (e) => {
+    const t = find(e.target);
+    if (!t || !t.matches(":focus-visible")) return;
+    if (t.hasAttribute("title")) take(t);
+    hide(); show(t);
+  });
+  document.addEventListener("focusout", hide);
+  document.addEventListener("pointerdown", hide, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hide(); });
+  window.addEventListener("scroll", hide, true);
+  window.addEventListener("resize", hide);
+  return { hide };
+})();
+
 function confirmDialog({ title, text = "", button = "Löschen", tone = "red", ic }) {
   return new Promise((resolve) => {
     const d = openDialog(`
@@ -1247,8 +1321,19 @@ async function snapshotsDialog(srv, store) {
     body.innerHTML = list.length ? `<div class="table-wrap" style="max-height:60dvh;overflow:auto"><table class="resp"><thead><tr><th>Gast</th><th>Zeitpunkt</th><th class="num">Größe</th><th>Geprüft</th><th></th></tr></thead><tbody>
       ${list.slice(0, 500).map((s) => `<tr><td data-l="Gast"><span class="tag mono">${esc(s["backup-type"])}</span> <b>${esc(s["backup-id"])}</b>${s.comment ? `<div class="t-sub">${esc(s.comment)}</div>` : ""}</td>
         <td data-l="Zeitpunkt" class="nowrap">${fmtTime(s["backup-time"], true)}</td><td class="num" data-l="Größe">${fmtBytes(s.size)}</td>
-        <td data-l="Geprüft">${s.verification ? (s.verification.state === "ok" ? pill("OK", "green") : pill("Fehler", "rose")) : '<span class="muted small">nein</span>'} ${s.protected ? pill("geschützt", "blue") : ""} ${keyPill(s.fingerprint)}</td>
-        <td class="act"><button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${esc(s["backup-type"])}|${esc(s["backup-id"])}|${s["backup-time"]}" ${s.protected ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${icon("archive")}<b>Keine Sicherungen</b></div>`;
+        <td data-l="Geprüft">${s.verification ? (s.verification.state === "ok" ? pill("OK", "green") : pill("Fehler", "rose")) : '<span class="muted small">nein</span>'} ${s.protected ? `<span class="pill blue" title="${s.auto_protected ? "Von der Appliance geschützt (Monats- oder Jahresstand)" : "Geschützt: wird weder aufgeräumt noch gelöscht"}">${icon("shield")}${s.auto_protected ? "auto-geschützt" : "geschützt"}</span>` : ""} ${keyPill(s.fingerprint)}</td>
+        <td class="act"><button class="ib" type="button" title="${s.protected ? "Schutz aufheben" : "Schützen"}" aria-label="${s.protected ? "Schutz aufheben" : "Schützen"}" aria-pressed="${s.protected ? "true" : "false"}" data-prot="${esc(s["backup-type"])}|${esc(s["backup-id"])}|${s["backup-time"]}">${icon("shield")}</button><button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${esc(s["backup-type"])}|${esc(s["backup-id"])}|${s["backup-time"]}" ${s.protected ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${icon("archive")}<b>Keine Sicherungen</b></div>`;
+    qsa("[data-prot]", body).forEach((b) => b.onclick = async () => {
+      const [t, id, time] = b.dataset.prot.split("|");
+      const sn = snaps.find((s) => s["backup-type"] === t && s["backup-id"] === id && s["backup-time"] === +time);
+      const on = !sn.protected;
+      if (!on && !(await confirmDialog({ title: `Schutz von ${t}/${id} vom ${fmtTime(+time, true)} aufheben?`, tone: "", ic: "shield", button: "Aufheben",
+        text: (sn.auto_protected ? "Die Appliance hat diesen Stand als Monats- oder Jahresstand geschützt und schützt ihn danach nicht wieder. " : "") + "Ohne Schutz räumt die Aufbewahrung ihn irgendwann weg, und er lässt sich löschen." }))) return;
+      await run(b, async () => {
+        await PUT(`/api/pbs/${srv.id}/datastores/${enc(store)}/protected`, { type: t, bid: id, time: +time, protected: on });
+        sn.protected = on; sn.auto_protected = false; draw();
+      }, on ? "Geschützt." : "Schutz aufgehoben.");
+    });
     qsa("[data-del]", body).forEach((b) => b.onclick = async () => {
       const [t, id, time] = b.dataset.del.split("|");
       if (!(await confirmDialog({ title: `Sicherung ${t}/${id} vom ${fmtTime(+time, true)} löschen?`, text: "Der Platz wird beim nächsten „Speicher freigeben“ frei.", button: "Löschen" }))) return;
@@ -2793,7 +2878,7 @@ PAGES["/festplatten"] = async (el, token) => {
 
 // ---------- Einstellungen ----------
 const SET_TABS = [
-  ["", "Benachrichtigungen", "bell"], ["sicherung", "Sicherung der Appliance", "shield"], ["verschluesselung", "Verschlüsselung", "lock"], ["aktualisierung", "Aktualisierung", "download"],
+  ["", "Benachrichtigungen", "bell"], ["sicherung", "Sicherung der Appliance", "archive"], ["verschluesselung", "Verschlüsselung", "lock"], ["loeschschutz", "Löschschutz", "shield"], ["aktualisierung", "Aktualisierung", "download"],
   ["zugriff", "Zugriff", "globe"], ["system", "System", "server"], ["konto", "Konto", "user"],
 ];
 
@@ -3025,6 +3110,70 @@ SET_PAGES.verschluesselung = async (box) => {
       fields: [{ name: "password", label: "Passwort", type: "password", autocomplete: "current-password", wide: true }],
       submit: async (v) => { await POST(`/api/enckeys/${k.id}/delete`, v); toast("Schlüssel gelöscht."); reload(); },
     });
+  });
+};
+
+// ---------- Löschschutz ----------
+SET_PAGES.loeschschutz = async (box) => {
+  const r = await GET("/api/protect");
+  const reload = () => SET_PAGES.loeschschutz(box);
+  const set = r.settings;
+  const stateCell = (g) => g.state === "protected" ? pill("darf nicht löschen", "green", true)
+    : g.state === "open" ? pill("darf löschen", "amber", true) : pill("nicht änderbar");
+  const rows = r.storages.map((g, i) => `<tr><td data-l="Speicher"><div class="t-main">${esc(g.storage)}</div><div class="t-sub">${esc(g.cluster_name)}</div></td>
+      <td data-l="Ziel">${esc(g.server_name || "?")} / <b>${esc(g.datastore)}</b><div class="t-sub mono">${esc(g.auth_id)}</div></td>
+      <td data-l="Proxmox VE">${stateCell(g)}${g.problem ? `<div class="t-sub">${esc(g.problem)}</div>` : ""}
+        ${g.retention.length ? `<div class="t-sub" style="color:var(--amber-ink)">${icon("warn", "sm")} Räumt selbst auf: ${g.retention.map(esc).join("; ")}</div>` : ""}</td>
+      <td class="act">${g.state === "open" && !g.problem ? `<button class="btn sm" type="button" data-guard="${i}|1">${icon("shield")} Schützen</button>` : g.state === "protected" ? `<button class="btn gray sm" type="button" data-guard="${i}|0">Freigeben</button>` : ""}</td></tr>`).join("");
+  const open = r.storages.filter((g) => g.state === "open" && !g.problem).length;
+  const auto = r.auto || {};
+  box.innerHTML = `<div class="settings-narrow">
+    <div class="panel"><div class="panel-head"><div class="panel-title">Proxmox VE darf nicht löschen</div>${open > 1 ? `<button class="btn sm" type="button" data-all>${icon("shield")} Alle schützen</button>` : ""}</div>
+      <p class="panel-intro">Übernimmt jemand Proxmox VE – etwa Erpressersoftware mit Root-Zugang –, kann er über dessen Zugang zum Backup-Server auch die Sicherungen löschen. Mit Löschschutz darf Proxmox VE nur noch sichern und lesen (Rolle <code>DatastoreBackup</code> statt <code>DatastorePowerUser</code>). Wiederherstellen geht weiter; das Aufräumen alter Stände übernimmt der Backup-Server nach der Aufbewahrung des Datastores.</p>
+      ${(r.errors || []).map((e) => `<div class="callout red" style="margin:0 0 12px"><div class="ct"><div class="ch">Nicht erreichbar</div><div class="cb">${esc(e)}</div></div></div>`).join("")}
+      ${r.storages.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Speicher in Proxmox VE</th><th>Ziel und Zugang</th><th>Löschrecht</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="empty">${icon("database")}<b>Kein PBS-Speicher in Proxmox VE</b></div>`}
+      <form class="form mt" data-newst novalidate>${field({ name: "new_storages", type: "checkbox", value: set.new_storages, wide: true, label: "Neue Speicher gleich ohne Löschrecht eintragen", hint: "Gilt für Speicher, die die Appliance in Proxmox VE einträgt – auch die für Wiederherstellungen." })}</form>
+    </div>
+    <div class="panel"><div class="panel-head"><div class="panel-title">Monats- und Jahresstände schützen</div></div>
+      <p class="panel-intro">Die letzte Sicherung jedes Monats bzw. Jahres bekommt auf dem Backup-Server den Schutz-Vermerk: Weder die Aufbewahrung noch ein Löschbefehl entfernt sie. Fällt ein Stand aus dem Zeitraum, hebt die Appliance den Schutz wieder auf. Gilt für feste Datastores, nicht für Wechsel- und Archiv-Platten.</p>
+      <form class="form" data-auto novalidate><div class="form-error" hidden></div><div class="form-grid">
+        ${field({ name: "months", label: "Monatsstände (Anzahl Monate)", type: "number", min: 0, value: set.months, hint: "0 = aus. Zum Beispiel 12: ein Stand je Monat für ein Jahr." })}
+        ${field({ name: "years", label: "Jahresstände (Anzahl Jahre)", type: "number", min: 0, value: set.years, hint: "0 = aus. Zum Beispiel 3." })}
+      </div>
+      <div class="hint">${auto.last ? `${auto.protected} ${auto.protected === 1 ? "Sicherung" : "Sicherungen"} von der Appliance geschützt · zuletzt angewandt ${esc(fmtAgo(auto.last))}` : "Noch nicht angewandt."}${auto.error ? ` · <span style="color:var(--rose-ink)">${esc(auto.error)}</span>` : ""}</div>
+      <div class="btn-row"><button class="btn" type="submit">Speichern</button><button class="btn gray" type="button" data-run>Jetzt anwenden</button></div></form>
+    </div>
+    <div class="panel"><div class="panel-head"><div class="panel-title">Alarm bei auffälligem Löschen</div>${pill("immer an", "green", true)}</div>
+      <p class="panel-intro">Alle zehn Minuten vergleicht die Appliance die Sicherungen der festen Datastores mit dem letzten Stand. Verschwinden alle Sicherungen eines Servers oder mehr als ein Fünftel auf einmal, kommt eine kritische Meldung per Mail, Telegram oder Push. Was du in der Appliance selbst löschst, zählt nicht. Das normale Aufräumen nach der Aufbewahrung bleibt darunter.</p></div>
+  </div>`;
+  const nf = qs("[data-newst]", box);
+  qs('[name="new_storages"]', nf).onchange = (e) => run(null, async () => { await PUT("/api/protect", { ...set, new_storages: e.target.checked }); set.new_storages = e.target.checked; }, "Gespeichert.");
+  const af = qs("[data-auto]", box);
+  af.onsubmit = async (e) => {
+    e.preventDefault();
+    const v = formValues(af);
+    try { showErrors(af, null); await PUT("/api/protect", { ...set, months: v.months, years: v.years }); toast("Gespeichert – wird jetzt angewandt."); setTimeout(reload, 1500); }
+    catch (err) { showErrors(af, err); }
+  };
+  const rb = qs("[data-run]", box);
+  rb.onclick = () => run(rb, async () => { await POST("/api/protect/run"); reload(); }, "Angewandt.");
+  const guard = async (g, on) => {
+    if (on && g.retention.length && !(await confirmDialog({ title: `${g.storage}: Proxmox VE räumt selbst auf`, tone: "", ic: "warn", button: "Trotzdem schützen",
+      text: `Eingestellt ist: ${g.retention.map(esc).join("; ")}. Mit Löschschutz schlägt dieses Aufräumen fehl (die Sicherung selbst gelingt). Besser: die Aufbewahrung im Datastore einstellen und im Job auf „vom Speicher“ stellen.` }))) return false;
+    if (!on && !(await confirmDialog({ title: `Löschschutz für ${g.storage} aufheben?`, tone: "red", ic: "shield", button: "Freigeben",
+      text: "Proxmox VE darf danach wieder Sicherungen auf dem Backup-Server löschen – auch jemand, der Proxmox VE übernimmt." }))) return false;
+    await PUT(`/api/protect/storages/${enc(g.cluster)}/${enc(g.storage)}`, { protected: on });
+    return true;
+  };
+  qsa("[data-guard]", box).forEach((b) => b.onclick = async () => {
+    const [i, on] = b.dataset.guard.split("|");
+    await run(b, async () => { if (await guard(r.storages[+i], on === "1")) { toast(on === "1" ? "Löschschutz eingeschaltet." : "Löschschutz aufgehoben."); reload(); } });
+  });
+  const all = qs("[data-all]", box);
+  if (all) all.onclick = () => run(all, async () => {
+    for (const g of r.storages.filter((x) => x.state === "open" && !x.problem)) await guard(g, true);
+    toast("Löschschutz eingeschaltet."); reload();
   });
 };
 

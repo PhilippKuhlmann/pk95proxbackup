@@ -571,19 +571,31 @@ func (s *Server) datastoreAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"upid": upid})
 }
 
+type snapshotView struct {
+	prox.Snapshot
+	AutoProtected bool `json:"auto_protected,omitempty"` // protected by the appliance (monthly/yearly)
+}
+
 func (s *Server) snapshots(w http.ResponseWriter, r *http.Request) {
-	pbs, _, err := s.C.PBS(r.PathValue("id"))
+	pbs, srv, err := s.C.PBS(r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	snaps, err := pbs.Snapshots(r.Context(), r.PathValue("store"), r.URL.Query().Get("ns"))
+	store := r.PathValue("store")
+	snaps, err := pbs.Snapshots(r.Context(), store, r.URL.Query().Get("ns"))
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	sort.Slice(snaps, func(i, j int) bool { return snaps[i].Time > snaps[j].Time })
-	writeJSON(w, http.StatusOK, map[string]any{"snapshots": snaps})
+	auto := s.C.AutoProtected()
+	out := make([]snapshotView, 0, len(snaps))
+	for _, sn := range snaps {
+		_, mine := auto[core.SnapKey(srv.ID, store, sn)]
+		out = append(out, snapshotView{Snapshot: sn, AutoProtected: mine && sn.Protected})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": out})
 }
 
 func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -598,7 +610,37 @@ func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	s.C.Event("info", srv.Name, "Sicherung gelöscht", q.Get("type")+"/"+q.Get("bid")+" vom "+time.Unix(t, 0).Format("02.01.2006 15:04"))
+	s.C.ForgetSnapshot(srv.ID, r.PathValue("store"), q.Get("type"), q.Get("bid"))
+	s.C.Event("info", srv.Name, "Sicherung gelöscht", q.Get("type")+"/"+q.Get("bid")+" vom "+time.Unix(t, 0).Format("02.01.2006 15:04")+" (von "+currentUser(r).Username+")")
+	ok(w)
+}
+
+// protectSnapshot protects a snapshot from pruning and deletion, or lifts the protection.
+func (s *Server) protectSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Type      string `json:"type"`
+		ID        string `json:"bid"`
+		Time      int64  `json:"time"`
+		Protected bool   `json:"protected"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	_, srv, err := s.C.PBS(r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	store := r.PathValue("store")
+	if err := s.C.ProtectSnapshot(r.Context(), srv.ID, store, req.Type, req.ID, req.Time, req.Protected); err != nil {
+		fail(w, err)
+		return
+	}
+	what, sev := "geschützt", "info"
+	if !req.Protected {
+		what, sev = "nicht mehr geschützt", "warning"
+	}
+	s.C.Event(sev, srv.Name, "Sicherung "+what, req.Type+"/"+req.ID+" vom "+time.Unix(req.Time, 0).Format("02.01.2006 15:04")+" auf "+store+" (von "+currentUser(r).Username+")")
 	ok(w)
 }
 

@@ -403,6 +403,33 @@ func (p *PBS) SetACL(ctx context.Context, path, role, authID string) error {
 	return p.Do(ctx, http.MethodPut, "/access/acl", Params{"path": path, "role": role, "auth-id": authID, "propagate": true}, nil)
 }
 
+// RemoveACL takes a role on a path away from a user or token.
+func (p *PBS) RemoveACL(ctx context.Context, path, role, authID string) error {
+	return p.Do(ctx, http.MethodPut, "/access/acl", Params{"path": path, "role": role, "auth-id": authID, "delete": true}, nil)
+}
+
+// ACL is an entry of /access/acl.
+type ACL struct {
+	Path      string `json:"path"`
+	UGID      string `json:"ugid"`
+	UGIDType  string `json:"ugid_type"` // user, group
+	Role      string `json:"roleid"`
+	Propagate bool   `json:"propagate"`
+}
+
+// ACLs lists all access control entries.
+func (p *PBS) ACLs(ctx context.Context) ([]ACL, error) {
+	var out []ACL
+	err := p.Do(ctx, http.MethodGet, "/access/acl", nil, &out)
+	return out, err
+}
+
+// SetProtected protects a snapshot from pruning and deletion (or lifts the protection).
+func (p *PBS) SetProtected(ctx context.Context, store, ns, typ, id string, t int64, on bool) error {
+	return p.Do(ctx, http.MethodPut, "/admin/datastore/"+url.PathEscape(store)+"/protected",
+		Params{"ns": emptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t, "protected": on}, nil)
+}
+
 func emptyNil(s string) any {
 	if s == "" {
 		return nil

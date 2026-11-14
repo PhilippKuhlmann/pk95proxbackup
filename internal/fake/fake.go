@@ -256,6 +256,12 @@ func Setup(c *core.Core) (func(), error) {
 		}
 	}
 	local.usedExtra["backup"] = 0
+	// Monthly backups kept by the retention: the last of each of the previous months.
+	for m := 1; m <= 5; m++ {
+		last := time.Date(now.Year(), now.Month()-time.Month(m)+1, 0, 21, 0, 0, 0, now.Location())
+		local.AddSnapshot("backup", "vm", "100", last.Unix(), 60*gib)
+		local.AddSnapshot("backup", "ct", "110", last.Add(10*time.Minute).Unix(), 4*gib)
+	}
 	// Guests that no connected Proxmox VE knows any more (deleted or another cluster).
 	local.AddSnapshot("backup", "vm", "250", now.AddDate(0, 0, -40).Unix(), 120*gib)
 	local.AddSnapshot("backup", "ct", "251", now.AddDate(0, 0, -35).Unix(), 6*gib)
@@ -334,6 +340,12 @@ func Setup(c *core.Core) (func(), error) {
 		PublicHost: "10.20.0.5", AuthID: "root@pam!pk95", Secret: "demo", Fingerprint: ofp, SSHEnabled: false})
 	_ = c.St.Put(core.KindPVE, "cluster", core.PVECluster{ID: "cluster", Name: "Cluster Zuhause", Host: ph, Port: pp,
 		TokenID: "root@pam!pk95", Secret: "demo", Fingerprint: pfp})
+	aclMu.Lock()
+	acls = map[string][]string{
+		"/datastore/backup|pk95-pve@pbs!pve-cluster": {"DatastorePowerUser", "DatastoreReader"},
+		"/datastore/backup|pk95-pve@pbs":             {"DatastorePowerUser", "DatastoreReader"},
+	}
+	aclMu.Unlock()
 	pve.AddStorage(prox.Storage{Storage: "pbs-appliance", Type: "pbs", Content: "backup", Server: "192.168.10.20", Datastore: "backup", Username: "pk95-pve@pbs!pve-cluster", Fingerprint: lfp})
 	pve.AddStorage(prox.Storage{Storage: "local", Type: "dir", Content: "iso,vztmpl,backup"})
 	pve.AddStorage(prox.Storage{Storage: "local-lvm", Type: "lvmthin", Content: "images,rootdir"})

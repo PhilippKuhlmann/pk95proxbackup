@@ -89,6 +89,7 @@ type Storage struct {
 	// EncryptionKey is the fingerprint of the key backups are encrypted with ("1" for a key
 	// without fingerprint, empty: not encrypted).
 	EncryptionKey string `json:"encryption-key,omitempty"`
+	PruneBackups  string `json:"prune-backups,omitempty"` // retention Proxmox VE applies after each backup
 	Disable       int    `json:"disable,omitempty"`
 	Nodes         string `json:"nodes,omitempty"`
 	Shared        int    `json:"shared,omitempty"`

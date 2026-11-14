@@ -54,6 +54,10 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Cluster gelten. Die Appliance verwahrt die Schlüssel (auch in ihrer eigenen Sicherung), trägt sie für
   Wiederherstellungen und Restore-Tests selbst ein und erinnert, bis eine Kopie außer Haus liegt – als
   Papierschlüssel mit QR-Code oder als Datei. Beim Import prüft sie den Fingerabdruck und findet Tippfehler.
+- **Löschschutz:** Proxmox VE darf je Speicher nur noch sichern und lesen, aber nichts löschen – übernimmt
+  jemand Proxmox VE (Erpressersoftware), bleiben die Sicherungen auf dem Backup-Server. Die letzte Sicherung jedes
+  Monats und Jahres lässt sich automatisch schützen (wird weder aufgeräumt noch gelöscht), einzelne Stände per Klick.
+  Verschwinden alle Sicherungen eines Servers oder mehr als ein Fünftel eines Datastores auf einmal, kommt Alarm.
 - **Mails zu Sicherungsjobs im eigenen Design:** je Proxmox VE umschaltbar („Appliance übernimmt“ unter
   Sicherungsjobs). Die Jobs in Proxmox VE schicken dann keine eigene Mail mehr, die Appliance meldet jeden Lauf mit
   allen Servern, Ergebnis, Dauer und Datenmenge; andere Proxmox-Meldungen bleiben unverändert, zurückstellen geht jederzeit.
@@ -224,6 +228,10 @@ unveränderlich (`chattr +i`), damit PBS bei fehlender Freigabe nicht ins System
   (`/etc/pve/priv/storage/<speicher>.enc`). Ohne Schlüssel sind verschlüsselte Sicherungen verloren: den
   Papierschlüssel getrennt von den Platten aufbewahren. Löschen in der Appliance geht nur mit Passwort und nur,
   solange kein Speicher den Schlüssel verwendet.
+- **Löschschutz** (Einstellungen → Löschschutz): Der Token, mit dem Proxmox VE sich am Backup-Server anmeldet, hat
+  dann die Rollen `DatastoreBackup` und `DatastoreReader` statt `DatastorePowerUser`. Aufbewahrung gehört dann in den
+  Datastore (Prune-Job des Backup-Servers); eine eigene Aufbewahrung im Sicherungsjob von Proxmox VE schlägt fehl –
+  die Seite zeigt solche Jobs an. Feste Datastores werden alle zehn Minuten auf verschwundene Sicherungen geprüft.
 - PBS und PVE werden über den **SHA-256-Fingerabdruck** ihres Zertifikats gepinnt; ändert er sich, bricht die Verbindung ab.
 - API-Tokens und Passwörter liegen in der SQLite-Datenbank unter `/var/lib/pk95proxbackup` (nur root).
 - Port 443 nicht ins Internet freigeben; von außen per VPN.

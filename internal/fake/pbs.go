@@ -3,6 +3,7 @@ package fake
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -468,10 +469,26 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			data(w, p.tasks.start(p.node, "prune", seg[2], 2*time.Second, []string{"prune datastore " + seg[2]}, nil))
+		case "protected":
+			t, _ := strconv.ParseInt(f.Get("backup-time"), 10, 64)
+			for i := range s.snaps {
+				if sn := s.snaps[i]; sn.Type == f.Get("backup-type") && sn.ID == f.Get("backup-id") && sn.Time == t {
+					s.snaps[i].Protected = boolv(f.Get("protected"))
+					data(w, nil)
+					return
+				}
+			}
+			apiErr(w, 400, "backup snapshot does not exist")
 		case "snapshots":
 			if m == "DELETE" {
 				t, _ := strconv.ParseInt(f.Get("backup-time"), 10, 64)
 				keep := s.snaps[:0]
+				for _, sn := range s.snaps {
+					if sn.Type == f.Get("backup-type") && sn.ID == f.Get("backup-id") && sn.Time == t && sn.Protected {
+						apiErr(w, 400, "cannot remove protected snapshot")
+						return
+					}
+				}
 				for _, sn := range s.snaps {
 					if !(sn.Type == f.Get("backup-type") && sn.ID == f.Get("backup-id") && sn.Time == t) {
 						keep = append(keep, sn)
@@ -741,9 +758,31 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data(w, map[string]string{"tokenid": seg[2] + "!" + seg[4], "value": "00000000-demo-secret"})
+	case path == "/access/acl" && m == "GET":
+		aclMu.Lock()
+		out := []prox.ACL{}
+		for k, roles := range acls {
+			pth, id, _ := strings.Cut(k, "|")
+			for _, r := range roles {
+				out = append(out, prox.ACL{Path: pth, UGID: id, UGIDType: "user", Role: r, Propagate: true})
+			}
+		}
+		aclMu.Unlock()
+		data(w, out)
 	case path == "/access/acl":
 		aclMu.Lock()
-		acls[f.Get("path")+"|"+f.Get("auth-id")] = append(acls[f.Get("path")+"|"+f.Get("auth-id")], f.Get("role"))
+		k := f.Get("path") + "|" + f.Get("auth-id")
+		if boolv(f.Get("delete")) {
+			keep := []string{}
+			for _, r := range acls[k] {
+				if r != f.Get("role") {
+					keep = append(keep, r)
+				}
+			}
+			acls[k] = keep
+		} else if !slices.Contains(acls[k], f.Get("role")) {
+			acls[k] = append(acls[k], f.Get("role"))
+		}
 		aclMu.Unlock()
 		data(w, nil)
 	default:

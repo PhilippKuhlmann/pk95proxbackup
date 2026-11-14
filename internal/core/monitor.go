@@ -272,6 +272,8 @@ func (c *Core) Run(ctx context.Context) {
 		c.enforcePVEMail(time.Now())
 		c.scheduleUpdateCheck(time.Now())
 		c.scheduleSelfBackup(time.Now())
+		c.scheduleAutoProtect(time.Now())
+		c.scheduleDeletionWatch(time.Now())
 		prev = &ov
 		_ = c.St.PruneSessions()
 		_ = c.St.PruneEvents(180 * 24 * time.Hour)
