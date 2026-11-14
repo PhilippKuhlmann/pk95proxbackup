@@ -18,6 +18,10 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Cache-Verzeichnis (64–128 GiB empfohlen), Aufbewahrung und auf Wunsch den nächtlichen Kopierjob anlegen. Falsche
   Schlüssel fallen sofort auf; der Secret Key wird nur an den Backup-Server weitergegeben. Die Sicherungskette zählt
   die Cloud als Kopie außer Haus.
+- **Bandbreite und Zeitfenster:** je Backup-Server Grenzen für Empfangen und Senden – immer oder zu festen Zeiten
+  (z. B. Mo–Fr 7–19 Uhr), für alle oder bestimmte Adressen (Traffic Control von PBS). Je Kopierjob eine Obergrenze und
+  „spätestens fertig um“: Läuft die Kopie dann noch, hält die Appliance sie an, der nächste Lauf setzt fort. Für
+  Cloud-Ziele ein Upload-Limit.
 - **Vorhandener PBS:** weitere Backup-Server per API-Token einbinden; Kopierjobs zwischen den Servern (z. B. Außer-Haus-Kopie).
   Der Kopierjob-Dialog verbindet die beiden Server selbst: Er zeigt die Adresse, unter der das Ziel die Quelle erreicht
   (TCP 8007 vom Ziel zur Quelle), prüft die Verbindung vom Ziel aus und legt auf der Quelle einen eigenen Token an,

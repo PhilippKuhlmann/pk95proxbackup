@@ -60,6 +60,7 @@ type PBS struct {
 	node      string
 	root      int64
 	s3        map[string]fakeS3
+	traffic   map[string]prox.TrafficRule
 	stores    map[string]*store
 	disks     []prox.Disk
 	jobs      map[string]*job
@@ -184,6 +185,11 @@ func (p *PBS) AddSnapshot(st, typ, id string, t, size int64) {
 	s.snaps = append(s.snaps, prox.Snapshot{Type: typ, ID: id, Time: t, Size: size, Owner: "pk95-pve@pbs!pve-cluster", Verification: &struct {
 		State string `json:"state"`
 	}{State: "ok"}})
+}
+
+func trafficRule(f url.Values) prox.TrafficRule {
+	return prox.TrafficRule{Name: f.Get("name"), Network: f["network"], RateIn: prox.FlexString(f.Get("rate-in")), RateOut: prox.FlexString(f.Get("rate-out")),
+		Timeframe: f["timeframe"], Comment: f.Get("comment")}
 }
 
 type fakeS3 struct {
@@ -847,6 +853,69 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, o)
 		}
 		data(w, out)
+	case len(seg) == 4 && seg[2] == "tasks" && m == "DELETE":
+		upid, _ := url.PathUnescape(seg[3])
+		if !p.tasks.stop(upid) {
+			apiErr(w, 400, "task not running")
+			return
+		}
+		data(w, nil)
+	case path == "/config/traffic-control" && m == "GET":
+		out := []prox.TrafficRule{}
+		for _, r := range p.traffic {
+			out = append(out, r)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		data(w, out)
+	case path == "/config/traffic-control" && m == "POST":
+		if p.traffic == nil {
+			p.traffic = map[string]prox.TrafficRule{}
+		}
+		if _, ok := p.traffic[f.Get("name")]; ok {
+			apiErr(w, 400, "traffic control rule '"+f.Get("name")+"' already exists.")
+			return
+		}
+		p.traffic[f.Get("name")] = trafficRule(f)
+		data(w, nil)
+	case len(seg) == 3 && seg[0] == "config" && seg[1] == "traffic-control":
+		if _, ok := p.traffic[seg[2]]; !ok {
+			apiErr(w, 404, "no such traffic control rule")
+			return
+		}
+		if m == "DELETE" {
+			delete(p.traffic, seg[2])
+		} else {
+			r := trafficRule(f)
+			r.Name = seg[2]
+			for _, d := range f["delete"] {
+				switch d {
+				case "rate-in":
+					r.RateIn = ""
+				case "rate-out":
+					r.RateOut = ""
+				case "timeframe":
+					r.Timeframe = nil
+				}
+			}
+			p.traffic[seg[2]] = r
+		}
+		data(w, nil)
+	case len(seg) == 3 && seg[0] == "config" && seg[1] == "s3" && m == "PUT":
+		e, ok := p.s3[seg[2]]
+		if !ok {
+			apiErr(w, 404, "no such s3 endpoint")
+			return
+		}
+		if v := f.Get("rate-out"); v != "" {
+			e.RateOut = prox.FlexString(v)
+		}
+		for _, d := range f["delete"] {
+			if d == "rate-out" {
+				e.RateOut = ""
+			}
+		}
+		p.s3[seg[2]] = e
+		data(w, nil)
 	case len(seg) == 5 && seg[2] == "tasks" && seg[4] == "status":
 		upid, _ := url.PathUnescape(seg[3])
 		taskStatus(w, p.tasks.get(upid))

@@ -31,6 +31,9 @@ func NewSmartReport() SmartReport {
 // flexString accepts a JSON string or number.
 type flexString string
 
+// FlexString is a value Proxmox sends as number or as text (e.g. a rate "10 MiB" or 10485760).
+type FlexString = flexString
+
 func (f *flexString) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err == nil {

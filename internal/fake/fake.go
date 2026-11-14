@@ -55,6 +55,12 @@ func (t *tasks) start(node, typ, id string, dur time.Duration, lines []string, d
 	t.mu.Unlock()
 	go func() {
 		time.Sleep(dur)
+		t.mu.Lock()
+		aborted := tk.End != 0
+		t.mu.Unlock()
+		if aborted {
+			return
+		}
 		status, more := "OK", []string(nil)
 		if done != nil {
 			status, more = done()
@@ -67,6 +73,20 @@ func (t *tasks) start(node, typ, id string, dur time.Duration, lines []string, d
 		t.mu.Unlock()
 	}()
 	return upid
+}
+
+// stop aborts a running task like Proxmox does.
+func (t *tasks) stop(upid string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, x := range t.list {
+		if x.UPID == upid && x.End == 0 {
+			x.End, x.Status = time.Now().Unix(), "task aborted"
+			x.Log = append(x.Log, "received abort request ...", "TASK ERROR: task aborted")
+			return true
+		}
+	}
+	return false
 }
 
 func (t *tasks) get(upid string) *task {

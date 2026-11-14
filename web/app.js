@@ -347,11 +347,11 @@ function showErrors(root, err) {
 }
 
 // formDialog opens a dialog with fields; submit(values, dialog) may throw (field errors are shown).
-function formDialog({ title, text, ic = "pencil", tone = "", fields, submit, button = "Speichern", cls = "wide", extra = "", onMount, extraButtons = "" }) {
+function formDialog({ title, text, ic = "pencil", tone = "", fields, submit, button = "Speichern", cls = "wide", extra = "", onMount, extraButtons = "", grid = "" }) {
   const d = openDialog(`
     <form method="dialog" novalidate>
       <div class="dlg-head"><span class="dlg-ic ${tone}">${icon(ic)}</span><div class="grow"><div class="dlg-title">${esc(title)}</div>${text ? `<p class="dlg-text">${text}</p>` : ""}</div></div>
-      <div class="dlg-body"><div class="form-error" hidden></div><div class="form-grid">${fields.map(field).join("")}</div>${extra}</div>
+      <div class="dlg-body"><div class="form-error" hidden></div><div class="form-grid ${grid}">${fields.map(field).join("")}</div>${extra}</div>
       <div class="dlg-foot">${extraButtons}<span class="spacer"></span><button class="btn gray" type="button" data-cancel>Abbrechen</button><button class="btn ${tone === "red" ? "red" : ""}" type="submit">${esc(button)}</button></div>
     </form>`, cls);
   const form = qs("form", d);
@@ -1205,16 +1205,24 @@ PAGES["/datastores"] = async (el, token) => {
           <button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del="${esc(d.name)}">${icon("trash")}</button></div></td></tr>`; }).join("")}
       </tbody></table></div></div>` : empty("Noch kein Datastore", "Ein Datastore kann auf einer freien Platte der VM, auf einer NFS/SMB-Freigabe oder in einem Verzeichnis liegen. USB-Wechselplatten richtest du unter „Wechselplatten“ ein.", `<button class="btn" type="button" data-add2>${icon("plus")} Datastore anlegen</button>`, "database")) +
       (s3 && s3.endpoints.length ? `<div class="panel"><div class="panel-head"><div class="panel-title">Cloud-Ziele (S3)</div></div>
-        <div class="table-wrap"><table class="resp"><thead><tr><th>Ziel</th><th>Anbieter</th><th>Datastores</th><th></th></tr></thead><tbody>
+        <div class="table-wrap"><table class="resp"><thead><tr><th>Ziel</th><th>Anbieter</th><th>Datastores</th><th>Upload</th><th></th></tr></thead><tbody>
         ${s3.endpoints.map((e) => `<tr><td data-l="Ziel"><div class="t-main mono">${esc(e.id)}</div><div class="t-sub mono">${esc(e.endpoint)}${e.region ? " · " + esc(e.region) : ""}</div></td><td data-l="Anbieter">${esc(e.provider)}</td>
           <td data-l="Datastores">${e.stores.length ? e.stores.map(esc).join(", ") : '<span class="muted small">noch keiner</span>'}</td>
-          <td class="act"><button class="ib red" type="button" title="S3-Ziel austragen" aria-label="S3-Ziel ${esc(e.id)} austragen" data-s3del="${esc(e.id)}" ${e.stores.length ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div></div>` : "") +
+          <td data-l="Upload" class="small">${e["rate-out"] ? "höchstens " + esc(rateLabel(e["rate-out"])) : '<span class="muted">unbegrenzt</span>'}</td>
+          <td class="act"><button class="ib" type="button" title="Upload begrenzen" aria-label="Upload zu ${esc(e.id)} begrenzen" data-s3lim="${esc(e.id)}">${icon("signal")}</button><button class="ib red" type="button" title="S3-Ziel austragen" aria-label="S3-Ziel ${esc(e.id)} austragen" data-s3del="${esc(e.id)}" ${e.stores.length ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div></div>` : "") +
       `<div class="callout"><div class="ct"><div class="ch">So funktioniert das Aufräumen</div><div class="cb">„Aufbewahrung“ entfernt alte Sicherungen nach Regeln (z. B. 7 tägliche, 4 wöchentliche). Den Platz gibt erst „Speicher freigeben“ (Garbage Collection) frei – deshalb läuft beides nach Zeitplan. „Prüfen“ liest die Sicherungen und erkennt beschädigte Daten.</div></div></div>`;
     bindPicker(el);
     const add = () => datastoreCreate(srv, draw);
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = add);
     const s3b = qs("[data-s3]", el);
     if (s3b) s3b.onclick = () => s3Wizard(srv, s3, list, draw);
+    qsa("[data-s3lim]", el).forEach((b) => b.onclick = () => {
+      const e = s3.endpoints.find((x) => x.id === b.dataset.s3lim);
+      formDialog({ title: `Upload zu ${e.id} begrenzen`, ic: "signal", cls: "",
+        text: "Gilt für alles, was der Backup-Server in diesen Cloud-Speicher hochlädt – zu jeder Uhrzeit. Für die Uhrzeit: im Kopierjob „Spätestens fertig um“ setzen.",
+        fields: [{ name: "rate_out", label: "Höchstens (MB/s)", type: "number", min: 0, value: e["rate-out"] ? rateMB(e["rate-out"]) : "", placeholder: "unbegrenzt", wide: true, hint: "Leer oder 0 = unbegrenzt. 10 MB/s ≈ 80 Mbit/s." }],
+        submit: async (v) => { await PUT(`/api/pbs/${sid}/s3/${enc(e.id)}/limit`, { rate_out: Number(v.rate_out) || 0 }); toast("Gespeichert."); draw(); } });
+    });
     qsa("[data-s3del]", el).forEach((b) => b.onclick = async () => {
       if (await confirmDialog({ title: `S3-Ziel ${b.dataset.s3del} austragen?`, text: "Der Backup-Server vergisst Adresse und Schlüssel. Die Daten im Bucket bleiben unverändert.", button: "Austragen" }))
         run(b, async () => { await DEL(`/api/pbs/${sid}/s3/${enc(b.dataset.s3del)}`); await draw(); }, "Ausgetragen.");
@@ -1588,15 +1596,18 @@ PAGES["/kopierjobs"] = async (el, token) => {
         <td data-l="Job"><div class="t-main">${esc(j.comment || j.id)}</div><div class="t-sub mono">${esc(j.id)}</div>${rot ? pill("Wechselplatte", "blue") : ""}</td>
         <td data-l="Von">${j.remote ? `<span class="small">${esc(rem ? (rem.comment || "").replace("PK95 ProxBackup: ", "") || rem.host : j.remote)}</span> / ` : ""}<b>${esc(j["remote-store"])}</b></td>
         <td data-l="Nach"><b>${esc(j.store)}</b>${j["transfer-last"] ? `<div class="t-sub">${esc(transferText(j["transfer-last"]))}</div>` : ""}</td>
-        <td data-l="Zeitplan" class="small">${esc(j.schedule || (j["run-on-mount"] ? "beim Anstecken" : "von Hand"))}${j["next-run"] ? `<div class="t-sub">nächster: ${fmtTime(j["next-run"])}</div>` : ""}</td>
+        <td data-l="Zeitplan" class="small">${esc(j.schedule || (j["run-on-mount"] ? "beim Anstecken" : "von Hand"))}${j["next-run"] ? `<div class="t-sub">nächster: ${fmtTime(j["next-run"])}</div>` : ""}
+          ${(r.windows || {})[j.id] ? `<div class="t-sub">spätestens fertig um ${esc(r.windows[j.id])}</div>` : ""}${j["rate-in"] ? `<div class="t-sub">höchstens ${esc(rateLabel(j["rate-in"]))}</div>` : ""}</td>
         <td data-l="Letzter Lauf">${j["last-run-upid"] && !j["last-run-endtime"] ? pill("Läuft", "blue", true, true) : j["last-run-endtime"] ? `${taskPill({ endtime: 1, status: j["last-run-state"] })}<div class="t-sub">${fmtTime(j["last-run-endtime"])}</div>` : '<span class="muted small">nie</span>'}</td>
         <td class="act"><div class="row-actions">${j["last-run-upid"] ? `<button class="ib gray" type="button" title="Protokoll" aria-label="Protokoll" data-log="${esc(j["last-run-upid"])}">${icon("terminal")}</button>` : ""}
           <button class="ib" type="button" title="Jetzt ausführen" aria-label="Jetzt ausführen" data-run="${esc(j.id)}">${icon("play")}</button>
           ${rot ? "" : `<button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${esc(j.id)}">${icon("pencil")}</button><button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${esc(j.id)}">${icon("trash")}</button>`}</div></td></tr>`; }).join("")}
-      </tbody></table></div></div>` : empty("Noch kein Kopierjob", "Zum Beispiel: Diese Appliance holt jede Nacht eine Kopie vom PBS im Büro – oder umgekehrt.", `<button class="btn" type="button" data-add2>${icon("plus")} Kopierjob anlegen</button>`, "sync"));
+      </tbody></table></div></div>` : empty("Noch kein Kopierjob", "Zum Beispiel: Diese Appliance holt jede Nacht eine Kopie vom PBS im Büro – oder umgekehrt.", `<button class="btn" type="button" data-add2>${icon("plus")} Kopierjob anlegen</button>`, "sync")) +
+      `<div class="panel" data-traffic></div>`;
     bindPicker(el);
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => syncForm(srv, null, draw, remotes));
-    qsa("[data-edit]", el).forEach((b) => b.onclick = () => syncForm(srv, jobs.find((j) => j.id === b.dataset.edit), draw, remotes));
+    qsa("[data-edit]", el).forEach((b) => b.onclick = () => syncForm(srv, jobs.find((j) => j.id === b.dataset.edit), draw, remotes, r.windows || {}));
+    trafficPanel(qs("[data-traffic]", el), srv);
     qsa("[data-run]", el).forEach((b) => b.onclick = () => run(b, async () => { await POST(`/api/pbs/${sid}/sync/${enc(b.dataset.run)}/run`); setTimeout(draw, 1500); }, "Kopierjob gestartet."));
     qsa("[data-log]", el).forEach((b) => b.onclick = () => showTask("pbs:" + sid, b.dataset.log, "Kopierjob"));
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
@@ -1622,7 +1633,80 @@ function sourceAddress(s) {
   return s.port && s.port !== 8007 ? `${h}:${s.port}` : h;
 }
 
-function syncForm(srv, job, done, remotes = {}) {
+// ---------- Bandbreite ----------
+// rateMB reads a Proxmox byte size ("20MB", "10 MiB", 10485760) as MB.
+function rateMB(v) {
+  const m = /^\s*([\d.]+)\s*([KMGT]?)(i?)B?\s*$/i.exec(String(v));
+  if (!m) return "";
+  const pow = { "": 0, K: 1, M: 2, G: 3, T: 4 }[m[2].toUpperCase()];
+  const bytes = Number(m[1]) * (m[3] ? 1024 : 1000) ** pow;
+  return Math.round(bytes / 1e6 * 10) / 10;
+}
+const rateLabel = (v) => `${String(rateMB(v)).replace(".", ",")} MB/s`;
+const TC_DAYS = [["mon..fri", "Montag bis Freitag"], ["mon..sun", "Jeden Tag"], ["sat,sun", "Samstag und Sonntag"], ["always", "Immer"]];
+const DAY_NAMES = { "mon..fri": "Mo–Fr", "mon..sun": "täglich", "sat,sun": "Sa–So" };
+
+function tcWhen(r) {
+  const tf = (r.timeframe || [])[0];
+  if (!tf) return "immer";
+  const [days, span] = tf.split(" ");
+  return `${DAY_NAMES[days] || days} ${(span || "").replace("-", "–")} Uhr`;
+}
+
+async function trafficPanel(box, srv) {
+  if (!box) return;
+  let r;
+  try { r = await GET(`/api/pbs/${srv.id}/traffic`); } catch (e) { box.remove(); return; }
+  const all = (n) => (n || []).every((x) => x === "0.0.0.0/0" || x === "::/0");
+  box.innerHTML = `<div class="panel-head"><div class="panel-title">Bandbreite <span class="muted" style="font-weight:500">· ${esc(srv.name)}</span></div><button class="btn gray sm" type="button" data-tcadd>${icon("plus")} Begrenzen</button></div>
+    <p class="panel-intro">Damit tagsüber Leitung und Platten frei bleiben: Grenzen für alles, was dieser Backup-Server empfängt (Sicherungen von Proxmox VE, Kopien, die er holt) oder sendet (Kopien, die andere bei ihm abholen, Wiederherstellungen) – zu festen Zeiten oder immer, für alle oder bestimmte Adressen.</p>
+    ${r.rules.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Wann</th><th>Für</th><th>Empfangen</th><th>Senden</th><th></th></tr></thead><tbody>
+      ${r.rules.map((x) => `<tr><td data-l="Wann"><div class="t-main">${esc(tcWhen(x))}</div>${x.comment ? `<div class="t-sub">${esc(x.comment)}</div>` : ""}</td>
+        <td data-l="Für" class="small">${all(x.network) ? "alle Adressen" : `<span class="mono">${(x.network || []).map(esc).join(", ")}</span>`}</td>
+        <td data-l="Empfangen" class="small">${x["rate-in"] ? "höchstens " + esc(rateLabel(x["rate-in"])) : '<span class="muted">unbegrenzt</span>'}</td>
+        <td data-l="Senden" class="small">${x["rate-out"] ? "höchstens " + esc(rateLabel(x["rate-out"])) : '<span class="muted">unbegrenzt</span>'}</td>
+        <td class="act"><button class="ib" type="button" title="Bearbeiten" aria-label="Regel ${esc(x.name)} bearbeiten" data-tcedit="${esc(x.name)}">${icon("pencil")}</button><button class="ib red" type="button" title="Entfernen" aria-label="Regel ${esc(x.name)} entfernen" data-tcdel="${esc(x.name)}">${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div>`
+      : `<p class="muted small" style="margin:0">Keine Grenze – alles läuft so schnell wie möglich.</p>`}`;
+  const reload = () => trafficPanel(box, srv);
+  qs("[data-tcadd]", box).onclick = () => trafficForm(srv, null, reload);
+  qsa("[data-tcedit]", box).forEach((b) => b.onclick = () => trafficForm(srv, r.rules.find((x) => x.name === b.dataset.tcedit), reload));
+  qsa("[data-tcdel]", box).forEach((b) => b.onclick = async () => {
+    if (await confirmDialog({ title: "Grenze entfernen?", text: "Danach läuft dieser Verkehr wieder ohne Begrenzung.", button: "Entfernen" }))
+      run(b, async () => { await DEL(`/api/pbs/${srv.id}/traffic/${enc(b.dataset.tcdel)}`); reload(); }, "Entfernt.");
+  });
+}
+
+function trafficForm(srv, rule, done) {
+  const tf = (rule?.timeframe || [])[0] || "";
+  const [days, span] = tf ? tf.split(" ") : [rule ? "always" : "mon..fri", "07:00-19:00"];
+  const [from, to] = (span || "07:00-19:00").split("-");
+  const all = !rule || (rule.network || []).every((x) => x === "0.0.0.0/0" || x === "::/0");
+  formDialog({
+    title: rule ? "Bandbreite ändern" : "Bandbreite begrenzen", ic: "signal", grid: "cols-2",
+    text: `Gilt auf <b>${esc(srv.name)}</b>. 10 MB/s ≈ 80 Mbit/s – bei einem Anschluss mit 100 Mbit/s Upload lässt das tagsüber Platz für alles andere.`,
+    fields: [
+      { name: "days", label: "Wann", type: "select", value: TC_DAYS.some(([k]) => k === days) ? days : "mon..fri", options: TC_DAYS, wide: true },
+      { name: "from", label: "von", value: from || "07:00", mono: true },
+      { name: "to", label: "bis", value: to || "19:00", mono: true },
+      { name: "rate_in", label: "Empfangen höchstens (MB/s)", type: "number", min: 0, value: rule?.["rate-in"] ? rateMB(rule["rate-in"]) : "", placeholder: "unbegrenzt", hint: "Sicherungen von Proxmox VE, Kopien, die dieser Server holt." },
+      { name: "rate_out", label: "Senden höchstens (MB/s)", type: "number", min: 0, value: rule?.["rate-out"] ? rateMB(rule["rate-out"]) : "", placeholder: "unbegrenzt", hint: "Kopien, die andere hier abholen, Wiederherstellungen." },
+      { name: "networks", label: "Nur für diese Adressen (optional)", value: all ? "" : (rule.network || []).join(", "), mono: true, wide: true, placeholder: "leer = alle, z. B. 10.20.0.5 oder 192.168.10.0/24" },
+      { name: "comment", label: "Beschreibung", value: rule?.comment || "", wide: true, placeholder: "z. B. Tagsüber Leitung freihalten" },
+    ],
+    onMount: (d) => {
+      const sel = qs('[name="days"]', d);
+      const show = () => ["from", "to"].forEach((n) => { qs(`[data-field="${n}"]`, d).hidden = sel.value === "always"; });
+      sel.onchange = show; show();
+    },
+    submit: async (v) => {
+      const body = { ...v, rate_in: Number(v.rate_in) || 0, rate_out: Number(v.rate_out) || 0 };
+      if (rule) await PUT(`/api/pbs/${srv.id}/traffic/${enc(rule.name)}`, body); else await POST(`/api/pbs/${srv.id}/traffic`, body);
+      toast("Gespeichert."); done();
+    },
+  });
+}
+
+function syncForm(srv, job, done, remotes = {}, windows = {}) {
   const edit = !!job;
   let srcServer = srv.id;
   if (job?.remote) {
@@ -1649,7 +1733,11 @@ function syncForm(srv, job, done, remotes = {}) {
       { name: "store", label: "Ziel-Datastore", type: "select", options: [["", "Lade …"]] },
       { name: "schedule", label: "Zeitplan", value: job?.schedule ?? "daily", mono: true, hint: "z. B. daily, 03:00, mon..fri 23:00 – leer = nur von Hand" },
       { name: "transfer_last", label: "Was kopieren?", type: "select", value: job?.["transfer-last"] || 0, options: TRANSFER_OPTIONS, hint: "Pro VM bzw. Container." },
-      { name: "comment", label: "Beschreibung", value: job?.comment || "", wide: true },
+      { name: "window_end", label: "Spätestens fertig um", value: job ? windows[job.id] || "" : "", mono: true, placeholder: "06:30",
+        hint: "Läuft die Kopie dann noch, hält die Appliance sie an; der nächste Lauf setzt fort. Leer = ohne Grenze." },
+      { name: "rate_in", label: "Bandbreite höchstens (MB/s)", type: "number", min: 0, value: job?.["rate-in"] ? rateMB(job["rate-in"]) : "", placeholder: "unbegrenzt",
+        hint: "Schont die Leitung, z. B. 10 MB/s ≈ 80 Mbit/s." },
+      { name: "comment", label: "Beschreibung", value: job?.comment || "", placeholder: "z. B. Kopie ins Büro" },
       { name: "remove_vanished", label: "Am Ziel löschen, was an der Quelle gelöscht wurde", type: "checkbox", value: job?.["remove-vanished"], wide: true, hint: "Aus: Das Ziel behält auch ältere Sicherungen (eigene Aufbewahrung am Ziel einstellen)." },
     ],
     extraButtons: `<button class="btn gray" type="button" data-add-src>${icon("plus")} Backup-Server verbinden</button>`,
@@ -1691,6 +1779,7 @@ function syncForm(srv, job, done, remotes = {}) {
     },
     submit: async (v) => {
       v.transfer_last = Number(v.transfer_last);
+      v.rate_in = Number(v.rate_in) || 0;
       if (v.source_server === srv.id) v.source_host = "";
       if (edit) await PUT(`/api/pbs/${srv.id}/sync/${enc(job.id)}`, v); else await POST(`/api/pbs/${srv.id}/sync`, v);
       toast("Gespeichert."); done();

@@ -70,3 +70,70 @@ func TestS3Datastore(t *testing.T) {
 		t.Fatalf("delete: %d %v", code, out)
 	}
 }
+
+func TestBandwidth(t *testing.T) {
+	cl := login(t)
+	// Daytime limit for everything
+	code, out := cl.do("POST", "/api/pbs/local/traffic", map[string]any{"days": "mon..fri", "from": "07:00", "to": "19:00", "rate_in": 20, "rate_out": 10, "comment": "Tagsüber"}, true)
+	name, _ := out["name"].(string)
+	if code != 200 || name == "" {
+		t.Fatalf("create rule: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/pbs/local/traffic", nil, false)
+	r := out["rules"].([]any)[0].(map[string]any)
+	if r["rate-in"] != "20MB" || r["rate-out"] != "10MB" || r["timeframe"].([]any)[0] != "mon..fri 07:00-19:00" || len(r["network"].([]any)) != 2 {
+		t.Fatalf("rule: %v", r)
+	}
+	// only for the office, always, only sending
+	if code, out = cl.do("PUT", "/api/pbs/local/traffic/"+name, map[string]any{"days": "always", "networks": "10.20.0.5", "rate_out": 5}, true); code != 200 {
+		t.Fatalf("update: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/pbs/local/traffic", nil, false)
+	r = out["rules"].([]any)[0].(map[string]any)
+	if r["rate-in"] != nil || r["timeframe"] != nil || r["network"].([]any)[0] != "10.20.0.5/32" {
+		t.Fatalf("updated rule: %v", r)
+	}
+	for _, bad := range []map[string]any{{"days": "always"}, {"days": "mon..fri", "from": "7", "to": "19:00", "rate_in": 5}, {"days": "always", "networks": "büro", "rate_in": 5}} {
+		if code, _ := cl.do("POST", "/api/pbs/local/traffic", bad, true); code != 422 {
+			t.Errorf("accepted: %v", bad)
+		}
+	}
+	if code, _ = cl.do("DELETE", "/api/pbs/local/traffic/"+name, nil, true); code != 200 {
+		t.Fatalf("delete: %d", code)
+	}
+
+	// copy job with limit and window
+	code, out = cl.do("POST", "/api/pbs/local/sync", map[string]any{"store": "nas-backup", "source_server": "local", "source_store": "backup", "schedule": "22:00", "rate_in": 30, "window_end": "06:30"}, true)
+	if code != 200 {
+		t.Fatalf("copy job: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/pbs/local/sync", nil, false)
+	var job map[string]any
+	for _, j := range out["jobs"].([]any) {
+		if m := j.(map[string]any); m["schedule"] == "22:00" {
+			job = m
+		}
+	}
+	if job == nil || job["rate-in"] != "30MB" || out["windows"].(map[string]any)[job["id"].(string)] != "06:30" {
+		t.Fatalf("job %v, windows %v", job, out["windows"])
+	}
+	if code, out = cl.do("POST", "/api/pbs/local/sync", map[string]any{"store": "nas-backup", "source_server": "local", "source_store": "backup", "window_end": "6 Uhr"}, true); code != 422 {
+		t.Fatalf("bad window: %d %v", code, out)
+	}
+	if code, _ = cl.do("DELETE", "/api/pbs/local/sync/"+job["id"].(string), nil, true); code != 200 {
+		t.Fatal("delete job")
+	}
+	if _, out = cl.do("GET", "/api/pbs/local/sync", nil, false); len(out["windows"].(map[string]any)) != 0 {
+		t.Fatalf("window of a deleted job kept: %v", out["windows"])
+	}
+
+	// upload limit of a cloud target
+	cl.do("POST", "/api/pbs/local/s3", map[string]any{"provider": "wasabi", "region": "eu-central-1", "access_key": "AK", "secret_key": "s"}, true)
+	if code, out = cl.do("PUT", "/api/pbs/local/s3/wasabi-eu-central-1/limit", map[string]any{"rate_out": 8}, true); code != 200 {
+		t.Fatalf("s3 limit: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/pbs/local/s3", nil, false)
+	if ep := out["endpoints"].([]any)[0].(map[string]any); ep["rate-out"] != "8MB" {
+		t.Fatalf("s3 limit: %v", ep)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"pk95proxbackup/internal/core"
 	"pk95proxbackup/internal/fake"
@@ -157,5 +158,47 @@ func TestDeletionAlarm(t *testing.T) {
 	c.WatchDeletions(ctx)
 	if alarms(t, c) != 1 {
 		t.Fatal("alarm repeated")
+	}
+}
+
+// A copy still running at the end of its time window is stopped; one started after it is not.
+func TestCopyWindow(t *testing.T) {
+	c := newCore(t)
+	ctx := context.Background()
+	pbs, _, _ := c.PBS("local")
+	if err := pbs.CreateJob(ctx, "sync", prox.Params{"id": "pk95-sync-nacht", "store": "nas-backup", "remote-store": "backup", "comment": "Nachtkopie"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pbs.RunJob(ctx, "sync", "pk95-sync-nacht"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	end := now.Add(time.Hour).Format("15:04")
+	if err := c.SetCopyWindow("local", "pk95-sync-nacht", end); err != nil {
+		t.Fatal(err)
+	}
+	running := func() int {
+		ts, _ := pbs.RunningTasks(ctx)
+		n := 0
+		for _, x := range ts {
+			if x.Type == "syncjob" && strings.HasSuffix(x.WorkerID, ":pk95-sync-nacht") {
+				n++
+			}
+		}
+		return n
+	}
+	c.EnforceCopyWindows(ctx, now) // inside the window
+	if running() != 1 {
+		t.Fatal("copy stopped inside its window")
+	}
+	c.EnforceCopyWindows(ctx, now.Add(2*time.Hour)) // after the end
+	if running() != 0 {
+		t.Fatal("copy still running after the window")
+	}
+	if !strings.Contains(eventTitles(t, c), "Kopierjob „Nachtkopie“ um "+end+" angehalten") {
+		t.Fatalf("event: %s", eventTitles(t, c))
+	}
+	if c.SetCopyWindow("local", "x", "25:00") == nil {
+		t.Fatal("bad time accepted")
 	}
 }

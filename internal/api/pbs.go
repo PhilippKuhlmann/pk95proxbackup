@@ -22,6 +22,8 @@ var (
 	hostRe   = regexp.MustCompile(`^[A-Za-z0-9.\-:\[\]]+$`)
 	pathRe   = regexp.MustCompile(`^/[A-Za-z0-9._/\-]+$`)
 	schedRe  = regexp.MustCompile(`^[A-Za-z0-9 :*,./\-]*$`)
+	// windowEndRe is a time of day like 06:30.
+	windowEndRe = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 )
 
 func (s *Server) probe(w http.ResponseWriter, r *http.Request) {
@@ -731,7 +733,7 @@ func (s *Server) prepareDisk(w http.ResponseWriter, r *http.Request) {
 // ---- sync jobs ----
 
 func (s *Server) listSync(w http.ResponseWriter, r *http.Request) {
-	pbs, _, err := s.C.PBS(r.PathValue("id"))
+	pbs, srv, err := s.C.PBS(r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
 		return
@@ -742,7 +744,7 @@ func (s *Server) listSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	remotes, _ := pbs.Remotes(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs, "remotes": remotes})
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs, "remotes": remotes, "windows": s.C.CopyWindows(srv.ID)})
 }
 
 func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
@@ -755,6 +757,8 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 		TransferLast   int    `json:"transfer_last"`
 		Comment        string `json:"comment"`
 		SourceHost     string `json:"source_host"`
+		RateIn         int    `json:"rate_in"`    // MB/s, 0 = no limit
+		WindowEnd      string `json:"window_end"` // HH:MM: stop a copy still running then
 	}
 	if !decode(w, r, &req) {
 		return
@@ -780,6 +784,13 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 	if req.TransferLast < 0 || req.TransferLast > 1000 {
 		errs["transfer_last"] = "0 (alle) bis 1000."
 	}
+	if req.RateIn < 0 || req.RateIn > 100000 {
+		errs["rate_in"] = "0 (unbegrenzt) bis 100000 MB/s."
+	}
+	req.WindowEnd = strings.TrimSpace(req.WindowEnd)
+	if req.WindowEnd != "" && !windowEndRe.MatchString(req.WindowEnd) {
+		errs["window_end"] = "Uhrzeit wie 06:30, leer = ohne Grenze."
+	}
 	if fieldErrs(w, errs) {
 		return
 	}
@@ -800,12 +811,19 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 	if req.TransferLast > 0 {
 		p["transfer-last"] = req.TransferLast
 	}
+	if req.RateIn > 0 {
+		p["rate-in"] = strconv.Itoa(req.RateIn) + "MB"
+	}
 	job := r.PathValue("job")
 	if job == "" {
-		p["id"] = core.JobID("pk95-sync", core.NewID(3))
+		job = core.JobID("pk95-sync", core.NewID(3))
+		p["id"] = job
 		err = pbs.CreateJob(r.Context(), "sync", p)
 	} else {
 		var del []string
+		if req.RateIn == 0 {
+			del = append(del, "rate-in")
+		}
 		if remote == "" {
 			del = append(del, "remote")
 		}
@@ -829,11 +847,15 @@ func (s *Server) saveSync(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	if err := s.C.SetCopyWindow(srv.ID, job, req.WindowEnd); err != nil {
+		fail(w, err)
+		return
+	}
 	ok(w)
 }
 
 func (s *Server) deleteSync(w http.ResponseWriter, r *http.Request) {
-	pbs, _, err := s.C.PBS(r.PathValue("id"))
+	pbs, srv, err := s.C.PBS(r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
 		return
@@ -843,6 +865,10 @@ func (s *Server) deleteSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pbs.DeleteJob(r.Context(), "sync", r.PathValue("job")); err != nil {
+		fail(w, err)
+		return
+	}
+	if err := s.C.SetCopyWindow(srv.ID, r.PathValue("job"), ""); err != nil {
 		fail(w, err)
 		return
 	}

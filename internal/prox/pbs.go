@@ -232,29 +232,30 @@ func (p *PBS) Groups(ctx context.Context, store string) ([]Group, error) {
 
 // Job is a sync, prune or verify job with its run state (GET /admin/sync etc.).
 type Job struct {
-	ID             string `json:"id"`
-	Store          string `json:"store"`
-	NS             string `json:"ns,omitempty"`
-	Remote         string `json:"remote,omitempty"`
-	RemoteStore    string `json:"remote-store,omitempty"`
-	RemoteNS       string `json:"remote-ns,omitempty"`
-	Schedule       string `json:"schedule,omitempty"`
-	Comment        string `json:"comment,omitempty"`
-	RemoveVanished bool   `json:"remove-vanished,omitempty"`
-	RunOnMount     bool   `json:"run-on-mount,omitempty"`
-	UnmountOnDone  bool   `json:"unmount-on-done,omitempty"`
-	Direction      string `json:"sync-direction,omitempty"`
-	TransferLast   int    `json:"transfer-last,omitempty"`
-	Disable        bool   `json:"disable,omitempty"`
-	KeepLast       int    `json:"keep-last,omitempty"`
-	KeepDaily      int    `json:"keep-daily,omitempty"`
-	KeepWeekly     int    `json:"keep-weekly,omitempty"`
-	KeepMonthly    int    `json:"keep-monthly,omitempty"`
-	KeepYearly     int    `json:"keep-yearly,omitempty"`
-	LastRunState   string `json:"last-run-state,omitempty"`
-	LastRunUPID    string `json:"last-run-upid,omitempty"`
-	LastRunEnd     int64  `json:"last-run-endtime,omitempty"`
-	NextRun        int64  `json:"next-run,omitempty"`
+	ID             string     `json:"id"`
+	Store          string     `json:"store"`
+	NS             string     `json:"ns,omitempty"`
+	Remote         string     `json:"remote,omitempty"`
+	RemoteStore    string     `json:"remote-store,omitempty"`
+	RemoteNS       string     `json:"remote-ns,omitempty"`
+	Schedule       string     `json:"schedule,omitempty"`
+	Comment        string     `json:"comment,omitempty"`
+	RemoveVanished bool       `json:"remove-vanished,omitempty"`
+	RunOnMount     bool       `json:"run-on-mount,omitempty"`
+	UnmountOnDone  bool       `json:"unmount-on-done,omitempty"`
+	Direction      string     `json:"sync-direction,omitempty"`
+	TransferLast   int        `json:"transfer-last,omitempty"`
+	RateIn         flexString `json:"rate-in,omitempty"` // bandwidth limit of a sync job
+	Disable        bool       `json:"disable,omitempty"`
+	KeepLast       int        `json:"keep-last,omitempty"`
+	KeepDaily      int        `json:"keep-daily,omitempty"`
+	KeepWeekly     int        `json:"keep-weekly,omitempty"`
+	KeepMonthly    int        `json:"keep-monthly,omitempty"`
+	KeepYearly     int        `json:"keep-yearly,omitempty"`
+	LastRunState   string     `json:"last-run-state,omitempty"`
+	LastRunUPID    string     `json:"last-run-upid,omitempty"`
+	LastRunEnd     int64      `json:"last-run-endtime,omitempty"`
+	NextRun        int64      `json:"next-run,omitempty"`
 }
 
 // Jobs lists jobs of a kind ("sync", "prune", "verify") with their state.
@@ -383,6 +384,43 @@ type Task struct {
 	Status    string `json:"status"`
 }
 
+// StopTask aborts a running task.
+func (p *PBS) StopTask(ctx context.Context, upid string) error {
+	return p.Do(ctx, http.MethodDelete, "/nodes/localhost/tasks/"+url.PathEscape(upid), nil, nil)
+}
+
+// TrafficRule limits the bandwidth for clients from some networks, at some times (traffic control).
+type TrafficRule struct {
+	Name      string     `json:"name"`
+	Network   []string   `json:"network"`
+	RateIn    flexString `json:"rate-in,omitempty"`
+	RateOut   flexString `json:"rate-out,omitempty"`
+	Timeframe []string   `json:"timeframe,omitempty"`
+	Comment   string     `json:"comment,omitempty"`
+}
+
+// TrafficRules lists the traffic control rules.
+func (p *PBS) TrafficRules(ctx context.Context) ([]TrafficRule, error) {
+	var out []TrafficRule
+	err := p.Do(ctx, http.MethodGet, "/config/traffic-control", nil, &out)
+	return out, err
+}
+
+// CreateTrafficRule adds a rule (name, network, rate-in, rate-out, timeframe, comment).
+func (p *PBS) CreateTrafficRule(ctx context.Context, params Params) error {
+	return p.Do(ctx, http.MethodPost, "/config/traffic-control", params, nil)
+}
+
+// UpdateTrafficRule changes a rule.
+func (p *PBS) UpdateTrafficRule(ctx context.Context, name string, params Params) error {
+	return p.Do(ctx, http.MethodPut, "/config/traffic-control/"+url.PathEscape(name), params, nil)
+}
+
+// DeleteTrafficRule removes a rule.
+func (p *PBS) DeleteTrafficRule(ctx context.Context, name string) error {
+	return p.Do(ctx, http.MethodDelete, "/config/traffic-control/"+url.PathEscape(name), nil, nil)
+}
+
 // Tasks lists recent tasks.
 func (p *PBS) Tasks(ctx context.Context, limit int, errorsOnly bool) ([]Task, error) {
 	var out []Task
@@ -437,13 +475,20 @@ func (p *PBS) SetACL(ctx context.Context, path, role, authID string) error {
 
 // S3Endpoint is an S3 object store the server can put datastores into (/config/s3).
 type S3Endpoint struct {
-	ID          string `json:"id"`
-	Endpoint    string `json:"endpoint"`
-	Region      string `json:"region,omitempty"`
-	AccessKey   string `json:"access-key,omitempty"`
-	Port        int    `json:"port,omitempty"`
-	PathStyle   bool   `json:"path-style,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"`
+	ID          string     `json:"id"`
+	Endpoint    string     `json:"endpoint"`
+	Region      string     `json:"region,omitempty"`
+	AccessKey   string     `json:"access-key,omitempty"`
+	Port        int        `json:"port,omitempty"`
+	PathStyle   bool       `json:"path-style,omitempty"`
+	Fingerprint string     `json:"fingerprint,omitempty"`
+	RateIn      flexString `json:"rate-in,omitempty"`  // download limit
+	RateOut     flexString `json:"rate-out,omitempty"` // upload limit
+}
+
+// UpdateS3Endpoint changes options of an S3 endpoint (e.g. rate-out).
+func (p *PBS) UpdateS3Endpoint(ctx context.Context, id string, params Params) error {
+	return p.Do(ctx, http.MethodPut, "/config/s3/"+url.PathEscape(id), params, nil)
 }
 
 // S3Endpoints lists the S3 endpoints.
