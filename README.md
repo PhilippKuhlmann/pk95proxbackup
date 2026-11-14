@@ -48,6 +48,12 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   (`/etc/proxmox-backup`, Mount-Units) werden täglich mit einem Wiederherstellungs-Passwort verschlüsselt (AES-256-GCM,
   scrypt) als Gruppe `host/pk95proxbackup` in den Datastore geschrieben und wandern so auf die Wechselplatten. Eine
   neue Appliance lässt sich bei der Ersteinrichtung aus der Datei oder später aus einem Datastore wiederherstellen.
+- **Verschlüsselte Sicherungen:** Proxmox VE verschlüsselt jede Sicherung vor dem Versand (AES-256-GCM), auf dem
+  Backup-Server, den Wechsel- und Archiv-Platten liegen nur verschlüsselte Daten. Einschalten je Speicher unter
+  Einstellungen → Verschlüsselung oder beim Eintragen eines Datastores; ein Schlüssel kann für mehrere Speicher und
+  Cluster gelten. Die Appliance verwahrt die Schlüssel (auch in ihrer eigenen Sicherung), trägt sie für
+  Wiederherstellungen und Restore-Tests selbst ein und erinnert, bis eine Kopie außer Haus liegt – als
+  Papierschlüssel mit QR-Code oder als Datei. Beim Import prüft sie den Fingerabdruck und findet Tippfehler.
 - **Mails zu Sicherungsjobs im eigenen Design:** je Proxmox VE umschaltbar („Appliance übernimmt“ unter
   Sicherungsjobs). Die Jobs in Proxmox VE schicken dann keine eigene Mail mehr, die Appliance meldet jeden Lauf mit
   allen Servern, Ergebnis, Dauer und Datenmenge; andere Proxmox-Meldungen bleiben unverändert, zurückstellen geht jederzeit.
@@ -193,7 +199,8 @@ angegeben – bei Wechselplatten heißt er wie der Datastore auf dem alten Serve
 - **Wiederherstellen:** die Platte erscheint als Quelle „Archiv: <Name>“ (Dateien oder ganze VMs/CTs).
 - **Restore-Tests:** das Kalender-Symbol auf der Karte legt einen Plan für diesen Datastore an. Restore-Tests hängen
   USB-Datastores selbst ein und danach wieder aus.
-- Verschlüsselte Sicherungen brauchen zum Wiederherstellen den Schlüssel des alten Systems.
+- Verschlüsselte Sicherungen brauchen zum Wiederherstellen den Schlüssel des alten Systems: unter Einstellungen →
+  Verschlüsselung importieren (Datei, Papierschlüssel oder `/etc/pve/priv/storage/<speicher>.enc` des alten Clusters).
 
 ## NFS und SMB
 
@@ -213,6 +220,10 @@ unveränderlich (`chattr +i`), damit PBS bei fehlender Freigabe nicht ins System
   Passwort und 6-stelligem Code; jeder Code gilt nur einmal. Dazu gibt es zehn einmalige Wiederherstellungscodes für
   den Fall, dass das Telefon fehlt. Sind Telefon und Codes weg, schaltet root auf der Konsole der VM sie ab:
   `pk95proxbackup -totp-off admin`.
+- **Schlüssel der Sicherungen** liegen in der Datenbank der Appliance und in Proxmox VE
+  (`/etc/pve/priv/storage/<speicher>.enc`). Ohne Schlüssel sind verschlüsselte Sicherungen verloren: den
+  Papierschlüssel getrennt von den Platten aufbewahren. Löschen in der Appliance geht nur mit Passwort und nur,
+  solange kein Speicher den Schlüssel verwendet.
 - PBS und PVE werden über den **SHA-256-Fingerabdruck** ihres Zertifikats gepinnt; ändert er sich, bricht die Verbindung ab.
 - API-Tokens und Passwörter liegen in der SQLite-Datenbank unter `/var/lib/pk95proxbackup` (nur root).
 - Port 443 nicht ins Internet freigeben; von außen per VPN.

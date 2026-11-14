@@ -3,6 +3,7 @@ package core_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,12 @@ func TestRestoreTestRun(t *testing.T) {
 	fake.RestoreDuration = time.Second
 	t.Cleanup(func() { fake.RestoreDuration = 20 * time.Second })
 	c := newCore(t)
-	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store string) (string, error) {
+	// The backups are encrypted: the storage is asked for with their key, once per key.
+	const fp = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+	fake.Current.Local.SetSnapshotKey("backup", fp)
+	var keysAsked []string
+	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string) (string, error) {
+		keysAsked = append(keysAsked, keyFP)
 		return "pbs-appliance", nil
 	}
 	plan := core.RestoreTestPlan{ID: "p1", Name: "Wöchentlich", Cluster: "cluster", Node: "pve1", Storage: "local-lvm",
@@ -41,6 +47,9 @@ func TestRestoreTestRun(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	run := c.RestoreTestRuns()[0]
+	if len(keysAsked) != 1 || keysAsked[0] != fp {
+		t.Fatalf("storage asked for keys %v", keysAsked)
+	}
 	byID := map[string]core.RestoreTestResult{}
 	for _, r := range run.Results {
 		byID[r.VMID] = r
@@ -87,7 +96,7 @@ func TestRestoreTestSkipsWithoutSpace(t *testing.T) {
 	fake.RestoreDuration = time.Second
 	t.Cleanup(func() { fake.RestoreDuration = 20 * time.Second })
 	c := newCore(t)
-	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store string) (string, error) {
+	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string) (string, error) {
 		return "pbs-appliance", nil
 	}
 	// The target storage has 2 GiB free: VM 101 (64 GiB disk) must be skipped, not restored.
@@ -114,5 +123,37 @@ func TestRunCopyNeverNil(t *testing.T) {
 	b, _ := json.Marshal(core.CopyRunForTest(&core.RestoreTestRun{ID: "x"}))
 	if !strings.Contains(string(b), `"results":[]`) {
 		t.Fatalf("results must be a list: %s", b)
+	}
+}
+
+// Without a storage for the key of the backups, each result says so and nothing is restored.
+func TestRestoreTestMissingKey(t *testing.T) {
+	c := newCore(t)
+	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string) (string, error) {
+		return "", errors.New("Schlüssel fehlt")
+	}
+	plan := core.RestoreTestPlan{ID: "p2", Name: "Ohne Schlüssel", Cluster: "cluster", Node: "pve1", Storage: "local-lvm",
+		PBS: "local", Store: "backup", Select: "include", VMIDs: "100,110", BootWait: 6, Limit: 5, IDBase: 990000}
+	if err := c.St.Put(core.KindRTPlan, plan.ID, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.StartRestoreTest(plan.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for c.ActiveRestoreTest() != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("run did not finish")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	run := c.RestoreTestRuns()[0]
+	if run.Status != "error" || len(run.Results) != 2 {
+		t.Fatalf("run %s: %+v", run.Status, run.Results)
+	}
+	for _, r := range run.Results {
+		if r.Status != "error" || !strings.Contains(r.Info, "Datastore backup in Proxmox VE: Schlüssel fehlt") || r.TestID != 0 {
+			t.Fatalf("result: %+v", r)
+		}
 	}
 }

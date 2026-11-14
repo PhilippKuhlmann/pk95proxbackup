@@ -322,11 +322,6 @@ func (c *Core) runRestoreTest(ctx context.Context, plan RestoreTestPlan, run *Re
 		fail(errors.New("intern: keine Speicherzuordnung"))
 		return
 	}
-	storage, err := c.EnsureStorage(ctx, pve, cl, srv, plan.Store)
-	if err != nil {
-		fail(fmt.Errorf("Datastore %s in Proxmox VE: %w", plan.Store, err))
-		return
-	}
 	snaps, err := pbs.Snapshots(ctx, plan.Store, "")
 	if err != nil {
 		fail(fmt.Errorf("Sicherungen von %s: %w", plan.Store, err))
@@ -369,6 +364,7 @@ func (c *Core) runRestoreTest(ctx context.Context, plan RestoreTestPlan, run *Re
 	}
 	c.sweepRestoreTests(ctx, pve)
 	bridges, _ := pve.Bridges(ctx, plan.Node)
+	storages := map[string]storageResult{}
 	for i, s := range todo {
 		if ctx.Err() != nil {
 			c.rtUpdate(run, func() {
@@ -378,9 +374,33 @@ func (c *Core) runRestoreTest(ctx context.Context, plan RestoreTestPlan, run *Re
 			})
 			break
 		}
+		// Encrypted backups need a storage with their key; each key is looked up once.
+		storage, err := c.storageForKey(ctx, storages, pve, cl, srv, plan.Store, s.Fingerprint)
+		if err != nil {
+			c.rtUpdate(run, func() { run.Results[i].Status, run.Results[i].Info = "error", err.Error() })
+			continue
+		}
 		c.testOne(ctx, plan, pve, pbs, storage, bridges, s, run, i)
 	}
 	c.finishRun(plan, cl, run, ctx.Err() != nil)
+}
+
+type storageResult struct {
+	name string
+	err  error
+}
+
+// storageForKey returns the PVE storage for backups encrypted with keyFP, remembering the answer.
+func (c *Core) storageForKey(ctx context.Context, cache map[string]storageResult, pve *prox.PVE, cl PVECluster, srv PBSServer, store, keyFP string) (string, error) {
+	if r, ok := cache[keyFP]; ok {
+		return r.name, r.err
+	}
+	name, err := c.EnsureStorage(ctx, pve, cl, srv, store, keyFP)
+	if err != nil {
+		err = fmt.Errorf("Datastore %s in Proxmox VE: %w", store, err)
+	}
+	cache[keyFP] = storageResult{name, err}
+	return name, err
 }
 
 // testOne restores one backup under a free test ID, isolates and starts it, judges it and

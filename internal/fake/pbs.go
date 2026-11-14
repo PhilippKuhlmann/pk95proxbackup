@@ -178,6 +178,15 @@ func (p *PBS) AddSnapshot(st, typ, id string, t, size int64) {
 	}{State: "ok"}})
 }
 
+// SetSnapshotKey marks the snapshots of a datastore as encrypted with the key fp (for tests).
+func (p *PBS) SetSnapshotKey(st, fp string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.stores[st].snaps {
+		p.stores[st].snaps[i].Fingerprint = fp
+	}
+}
+
 func (p *PBS) snapshotsOf(st string) []prox.Snapshot {
 	return append([]prox.Snapshot(nil), p.stores[st].snaps...)
 }

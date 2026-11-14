@@ -86,9 +86,12 @@ type Storage struct {
 	Namespace   string `json:"namespace,omitempty"`
 	Username    string `json:"username,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
-	Disable     int    `json:"disable,omitempty"`
-	Nodes       string `json:"nodes,omitempty"`
-	Shared      int    `json:"shared,omitempty"`
+	// EncryptionKey is the fingerprint of the key backups are encrypted with ("1" for a key
+	// without fingerprint, empty: not encrypted).
+	EncryptionKey string `json:"encryption-key,omitempty"`
+	Disable       int    `json:"disable,omitempty"`
+	Nodes         string `json:"nodes,omitempty"`
+	Shared        int    `json:"shared,omitempty"`
 }
 
 // Storages lists the storage configuration.
@@ -117,16 +120,28 @@ func (p *PVE) NodeStorages(ctx context.Context, node, content string) ([]NodeSto
 	return out, err
 }
 
-// AddPBSStorage adds a PBS datastore as storage to the cluster.
-func (p *PVE) AddPBSStorage(ctx context.Context, name, server string, port int, datastore, username, password, fingerprint, namespace string) error {
+// AddPBSStorage adds a PBS datastore as storage to the cluster. encKey is the key file (JSON)
+// new backups are encrypted with, empty for none.
+func (p *PVE) AddPBSStorage(ctx context.Context, name, server string, port int, datastore, username, password, fingerprint, namespace, encKey string) error {
 	params := Params{
 		"storage": name, "type": "pbs", "server": server, "datastore": datastore, "username": username,
 		"password": password, "fingerprint": fingerprint, "content": "backup", "namespace": emptyNil(namespace),
+		"encryption-key": emptyNil(encKey),
 	}
 	if port != 0 && port != 8007 {
 		params["port"] = port
 	}
 	return p.Do(ctx, http.MethodPost, "/storage", params, nil)
+}
+
+// SetStorageKey sets the key file (JSON) a PBS storage encrypts new backups with; an empty key
+// switches encryption off. Proxmox VE keeps the key in /etc/pve/priv/storage/<name>.enc.
+func (p *PVE) SetStorageKey(ctx context.Context, name, encKey string) error {
+	params := Params{"encryption-key": encKey}
+	if encKey == "" {
+		params = Params{"delete": "encryption-key"}
+	}
+	return p.Do(ctx, http.MethodPut, "/storage/"+url.PathEscape(name), params, nil)
 }
 
 // DeleteStorage removes a storage definition (the data stays on the PBS).

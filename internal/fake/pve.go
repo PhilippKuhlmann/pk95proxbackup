@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"pk95proxbackup/internal/enckey"
 	"pk95proxbackup/internal/prox"
 )
 
@@ -56,6 +57,13 @@ func (p *PVE) SetSMBIOS(id int, uuid string) { p.smbios[id] = uuid }
 
 // AddStorage adds a storage definition.
 func (p *PVE) AddStorage(s prox.Storage) { p.storages = append(p.storages, s) }
+
+// StorageList returns the storage definitions (for tests).
+func (p *PVE) StorageList() []prox.Storage {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]prox.Storage(nil), p.storages...)
+}
 
 // AddJob adds a backup job.
 func (p *PVE) AddJob(j prox.BackupJob) { p.jobs = append(p.jobs, j) }
@@ -203,9 +211,37 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		port := atoi(f.Get("port"))
+		keyFP := ""
+		if k := f.Get("encryption-key"); k != "" {
+			_, fp, err := enckey.Parse(k)
+			if err != nil {
+				apiErr(w, 500, "create storage failed: Value does not seems like a valid, JSON formatted encryption key!")
+				return
+			}
+			keyFP = fp
+		}
 		p.storages = append(p.storages, prox.Storage{Storage: f.Get("storage"), Type: f.Get("type"), Content: f.Get("content"), Server: f.Get("server"), Port: port,
-			Datastore: f.Get("datastore"), Username: f.Get("username"), Fingerprint: f.Get("fingerprint"), Namespace: f.Get("namespace")})
+			Datastore: f.Get("datastore"), Username: f.Get("username"), Fingerprint: f.Get("fingerprint"), Namespace: f.Get("namespace"), EncryptionKey: keyFP})
 		data(w, nil)
+	case len(seg) == 2 && seg[0] == "storage" && m == "PUT":
+		for i := range p.storages {
+			if p.storages[i].Storage != seg[1] {
+				continue
+			}
+			if f.Get("delete") == "encryption-key" {
+				p.storages[i].EncryptionKey = ""
+			} else if k := f.Get("encryption-key"); k != "" {
+				_, fp, err := enckey.Parse(k)
+				if err != nil {
+					apiErr(w, 500, "update storage failed: Value does not seems like a valid, JSON formatted encryption key!")
+					return
+				}
+				p.storages[i].EncryptionKey = fp
+			}
+			data(w, nil)
+			return
+		}
+		apiErr(w, 500, "update storage failed: storage '"+seg[1]+"' does not exist")
 	case len(seg) == 2 && seg[0] == "storage" && m == "DELETE":
 		keep := p.storages[:0]
 		for _, s := range p.storages {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"pk95proxbackup/internal/core"
+	"pk95proxbackup/internal/enckey"
 	"pk95proxbackup/internal/prox"
 )
 
@@ -116,19 +117,24 @@ type storageView struct {
 	prox.Storage
 	PBSServer string `json:"pbs_server,omitempty"` // id of the matching Backup Server
 	PBSName   string `json:"pbs_name,omitempty"`
+	KeyID     string `json:"key_id,omitempty"`   // encryption key known to the appliance
+	KeyName   string `json:"key_name,omitempty"` // its name
 }
 
-// matchServer finds the Backup Server a PVE storage points to.
+// matchServer finds the Backup Server a PVE storage points to: by address first, then by
+// certificate fingerprint (servers may share one certificate, e.g. a wildcard certificate).
 func (s *Server) matchServer(st prox.Storage) (core.PBSServer, bool) {
 	servers, _ := s.C.Servers()
 	for _, srv := range servers {
-		if prox.NormalizeFingerprint(st.Fingerprint) != "" && prox.NormalizeFingerprint(st.Fingerprint) == prox.NormalizeFingerprint(srv.Fingerprint) {
-			return srv, true
-		}
 		if st.Server != "" && (st.Server == srv.Host || st.Server == srv.PublicHost) && !srv.Local {
 			return srv, true
 		}
 		if srv.Local && st.Server == srv.PublicHost && st.Server != "" {
+			return srv, true
+		}
+	}
+	for _, srv := range servers {
+		if prox.NormalizeFingerprint(st.Fingerprint) != "" && prox.NormalizeFingerprint(st.Fingerprint) == prox.NormalizeFingerprint(srv.Fingerprint) {
 			return srv, true
 		}
 	}
@@ -153,6 +159,9 @@ func (s *Server) pveStorages(w http.ResponseWriter, r *http.Request) {
 			if srv, ok := s.matchServer(st); ok {
 				v.PBSServer, v.PBSName = srv.ID, srv.Name
 			}
+			if k, ok := s.C.EncKey(st.EncryptionKey); ok && st.EncryptionKey != "" {
+				v.KeyID, v.KeyName = enckey.ID(k.Fingerprint), k.Name
+			}
 		}
 		out = append(out, v)
 	}
@@ -166,6 +175,7 @@ func (s *Server) addPVEStorage(w http.ResponseWriter, r *http.Request) {
 		Store     string `json:"store"`
 		Name      string `json:"name"`
 		Namespace string `json:"namespace"`
+		Key       string `json:"key"` // "": not encrypted, "new" or the ID of a stored key
 	}
 	if !decode(w, r, &req) {
 		return
@@ -189,16 +199,43 @@ func (s *Server) addPVEStorage(w http.ResponseWriter, r *http.Request) {
 	if err == nil && srv.Address() == "" {
 		errs["pbs"] = "Für diesen Server ist keine Adresse für Proxmox VE hinterlegt (Verbindungen → Server bearbeiten)."
 	}
+	var key core.EncKey
+	if req.Key != "" && req.Key != "new" {
+		k, found := s.C.EncKey(req.Key)
+		if !found {
+			errs["key"] = "Schlüssel nicht gefunden."
+		}
+		key = k
+	}
 	if fieldErrs(w, errs) {
 		return
 	}
-	if err := s.registerPBSStorage(r.Context(), pve, cl, pbs, srv, req.Store, req.Name, req.Namespace); err != nil {
+	created := false
+	if req.Key == "new" {
+		if key, _, err = s.C.AddEncKey(cl.Name+" / "+req.Name, ""); err != nil {
+			fail(w, err)
+			return
+		}
+		created = true
+	}
+	if err := s.registerPBSStorage(r.Context(), pve, cl, pbs, srv, req.Store, req.Name, req.Namespace, key.Key); err != nil {
+		if created {
+			_ = s.C.DeleteEncKey(key.Fingerprint)
+		}
 		fail(w, err)
 		return
 	}
-	s.C.Event("info", cl.Name, "Backup-Speicher "+req.Name+" eingetragen", srv.Name+" / "+req.Store)
+	body := srv.Name + " / " + req.Store
+	if key.Key != "" {
+		body += " – verschlüsselt mit „" + key.Name + "“ (" + enckey.Short(key.Fingerprint) + ")"
+	}
+	s.C.Event("info", cl.Name, "Backup-Speicher "+req.Name+" eingetragen", body)
 	s.C.RequestRefresh()
-	ok(w)
+	resp := map[string]any{"ok": true}
+	if created {
+		resp["new_key"] = enckey.ID(key.Fingerprint)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 var tokenNameRe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
@@ -206,7 +243,7 @@ var tokenNameRe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 // registerPBSStorage adds a datastore of a Backup Server as storage to a cluster. Each
 // cluster/datastore pair gets its own PBS token that may only use this datastore (one token
 // per pair: re-creating a shared one would break the storages that use its old secret).
-func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, pbs *prox.PBS, srv core.PBSServer, store, name, ns string) error {
+func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, pbs *prox.PBS, srv core.PBSServer, store, name, ns, encKey string) error {
 	if srv.Address() == "" {
 		return fmt.Errorf("für %s ist keine Adresse für Proxmox VE hinterlegt (Verbindungen → Server bearbeiten)", srv.Name)
 	}
@@ -236,24 +273,41 @@ func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.
 	if port == 0 {
 		port = 8007
 	}
-	if err := pve.AddPBSStorage(ctx, name, srv.Address(), port, store, tokenID, secret, srv.Fingerprint, ns); err != nil {
+	if err := pve.AddPBSStorage(ctx, name, srv.Address(), port, store, tokenID, secret, srv.Fingerprint, ns, encKey); err != nil {
 		return fmt.Errorf("Speicher in Proxmox VE eintragen: %w", err)
 	}
 	return nil
 }
 
 // ensurePVEStorage returns the storage of a cluster for a datastore and adds one when there
-// is none (for restoring from a USB disk or another Backup Server).
-func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store string) (string, error) {
-	st, err := s.pveStorageEntry(ctx, pve, srv, store)
+// is none (for restoring from a USB disk or another Backup Server). Backups encrypted with the
+// key keyFP need a storage with that key: if none has it, the appliance adds one with the key
+// from its own store (any storage reads unencrypted backups).
+func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string) (string, error) {
+	storages, err := pve.Storages(ctx)
 	if err != nil {
 		return "", err
 	}
-	if st.Storage != "" {
+	for _, st := range storages {
+		if st.Type != "pbs" || st.Datastore != store || (keyFP != "" && enckey.ID(st.EncryptionKey) != enckey.ID(keyFP)) {
+			continue
+		}
+		if m, ok := s.matchServer(st); !ok || m.ID != srv.ID {
+			continue
+		}
 		if err := s.readAccess(ctx, srv, store, st.Username); err != nil {
 			return "", err
 		}
 		return st.Storage, nil
+	}
+	var key core.EncKey
+	if keyFP != "" {
+		k, ok := s.C.EncKey(keyFP)
+		if !ok {
+			return "", missingKeyError{fmt.Sprintf("Die Sicherung ist verschlüsselt (Schlüssel %s). Diesen Schlüssel hat weder ein Speicher in „%s“ noch die Appliance – bitte unter Einstellungen → Verschlüsselung importieren.",
+				enckey.Short(keyFP), cl.Name)}
+		}
+		key = k
 	}
 	name := ""
 	pbs := s.C.PBSClient(srv)
@@ -267,16 +321,37 @@ func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PV
 	if len(base) > 36 {
 		base = base[:36]
 	}
+	if keyFP != "" {
+		base += "-" + enckey.ID(keyFP)[:8]
+	}
 	name = base
 	for i := 2; existing[name]; i++ {
 		name = fmt.Sprintf("%s-%d", base, i)
 	}
-	if err := s.registerPBSStorage(ctx, pve, cl, pbs, srv, store, name, ""); err != nil {
+	if err := s.registerPBSStorage(ctx, pve, cl, pbs, srv, store, name, "", key.Key); err != nil {
 		return "", err
 	}
-	s.C.Event("info", cl.Name, "Speicher "+name+" für die Wiederherstellung eingetragen",
-		"Damit Proxmox VE aus "+srv.Name+" / "+store+" wiederherstellen kann, ist der Datastore jetzt als Speicher „"+name+"“ eingetragen.")
+	body := "Damit Proxmox VE aus " + srv.Name + " / " + store + " wiederherstellen kann, ist der Datastore jetzt als Speicher „" + name + "“ eingetragen."
+	if keyFP != "" {
+		body += " Er hat den Schlüssel „" + key.Name + "“, mit dem diese Sicherungen verschlüsselt sind."
+	}
+	s.C.Event("info", cl.Name, "Speicher "+name+" für die Wiederherstellung eingetragen", body)
 	return name, nil
+}
+
+// snapshotKey returns the key fingerprint of an encrypted backup ("" when not encrypted or
+// unknown – then the restore runs as before and Proxmox VE reports a missing key itself).
+func (s *Server) snapshotKey(ctx context.Context, srv core.PBSServer, store, typ, id string, t int64) string {
+	snaps, err := s.C.PBSClient(srv).Snapshots(ctx, store, "")
+	if err != nil {
+		return ""
+	}
+	for _, sn := range snaps {
+		if sn.Type == typ && sn.ID == id && sn.Time == t {
+			return sn.Fingerprint
+		}
+	}
+	return ""
 }
 
 func (s *Server) deletePVEStorage(w http.ResponseWriter, r *http.Request) {
@@ -814,9 +889,9 @@ func (s *Server) resolveVolume(w http.ResponseWriter, r *http.Request) (*backupV
 		writeErr(w, http.StatusBadRequest, "Sicherung nicht angegeben.")
 		return nil, false
 	}
-	storage, err := s.ensurePVEStorage(r.Context(), pve, cl, srv, q.Get("store"))
+	storage, err := s.ensurePVEStorage(r.Context(), pve, cl, srv, q.Get("store"), s.snapshotKey(r.Context(), srv, q.Get("store"), typ, id, t))
 	if err != nil {
-		fail(w, fmt.Errorf("Der Datastore %s ist in „%s“ nicht als Speicher eingetragen, und das Eintragen hat nicht geklappt: %w", q.Get("store"), cl.Name, err))
+		fail(w, storageErr(err, q.Get("store"), cl.Name))
 		return nil, false
 	}
 	node := q.Get("node")
@@ -1003,9 +1078,9 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	pveStore, err := s.ensurePVEStorage(ctx, pve, cl, srv, req.Store)
+	pveStore, err := s.ensurePVEStorage(ctx, pve, cl, srv, req.Store, s.snapshotKey(ctx, srv, req.Store, req.Type, req.ID, req.Time))
 	if err != nil {
-		fail(w, fmt.Errorf("Der Datastore %s ist in „%s“ nicht als Speicher eingetragen, und das Eintragen hat nicht geklappt: %w", req.Store, cl.Name, err))
+		fail(w, storageErr(err, req.Store, cl.Name))
 		return
 	}
 	archive := fmt.Sprintf("%s:backup/%s/%s/%s", pveStore, req.Type, req.ID, time.Unix(req.Time, 0).UTC().Format("2006-01-02T15:04:05Z"))

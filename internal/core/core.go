@@ -79,8 +79,9 @@ type Core struct {
 	LocalRunner hostexec.Runner
 	// SelfUUID returns the SMBIOS UUID of this VM (for USB passthrough).
 	SelfUUID func() string
-	// EnsureStorage returns (and if needed adds) the PVE storage of a datastore (set by the API).
-	EnsureStorage func(ctx context.Context, pve *prox.PVE, cl PVECluster, srv PBSServer, store string) (string, error)
+	// EnsureStorage returns (and if needed adds) the PVE storage of a datastore that can read
+	// backups encrypted with the key keyFP (empty: not encrypted). Set by the API.
+	EnsureStorage func(ctx context.Context, pve *prox.PVE, cl PVECluster, srv PBSServer, store, keyFP string) (string, error)
 	// ReportHTML renders the restore test report; images returns the picture of a result
 	// as content type and data (set by the API).
 	ReportHTML func(run RestoreTestRun, images func(file string) (string, []byte)) []byte

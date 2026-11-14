@@ -732,6 +732,7 @@ PAGES["/"] = async (el, token) => {
       else issue("warning", `Festplatte ${d.label}: ${d.problem}`, "/festplatten");
     }
     for (const a of r.stale_archives || []) issue("warning", `Archiv-Platte „${a.name}“ zuletzt angesteckt ${fmtAgo(a.last_seen)} – einmal prüfen`, "/wechselplatten");
+    for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
     const sb = r.selfbackup || {};
     if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen/sicherung");
     else if (sb.enabled && sb.last_error) issue("warning", "Konfiguration der Appliance nicht gesichert: " + sb.last_error, "/einstellungen/sicherung");
@@ -1018,16 +1019,19 @@ async function pveStoragesDialog(cl) {
   qs("[data-close]", d).onclick = () => d.close();
   const body = qs("[data-body]", d);
   const draw = async () => {
-    const r = await GET(`/api/pve/${cl.id}/storages`);
+    const [r, kr] = await Promise.all([GET(`/api/pve/${cl.id}/storages`), GET("/api/enckeys?usage=0")]);
     const pbs = r.storages.filter((s) => s.type === "pbs");
-    body.innerHTML = `${pbs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Speicher</th><th>Ziel</th><th>Benutzer</th><th></th></tr></thead><tbody>
-      ${pbs.map((s) => `<tr><td data-l="Speicher"><div class="t-main">${esc(s.storage)} ${s.disable ? pill("aus") : ""}</div></td><td data-l="Ziel">${esc(s.pbs_name || s.server)} / <b>${esc(s.datastore)}</b>${s.namespace ? ` <span class="tag">ns ${esc(s.namespace)}</span>` : ""}</td><td data-l="Benutzer" class="mono small">${esc(s.username)}</td>
-        <td class="act"><button class="ib red" type="button" title="Austragen" aria-label="Austragen" data-del="${esc(s.storage)}">${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${icon("database")}<b>Noch kein PBS-Speicher</b><p>Unten einen Datastore eintragen.</p></div>`}
+    const keyOpts = [...kr.keys.map((k) => [k.id, `${k.name} (${k.short.slice(0, 11)})`]), ["new", "Neuer Schlüssel"], ["", "Nicht verschlüsseln"]];
+    body.innerHTML = `${pbs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Speicher</th><th>Ziel</th><th>Verschlüsselung</th><th>Benutzer</th><th></th></tr></thead><tbody>
+      ${pbs.map((s) => `<tr><td data-l="Speicher"><div class="t-main">${esc(s.storage)} ${s.disable ? pill("aus") : ""}</div></td><td data-l="Ziel">${esc(s.pbs_name || s.server)} / <b>${esc(s.datastore)}</b>${s.namespace ? ` <span class="tag">ns ${esc(s.namespace)}</span>` : ""}</td>
+        <td data-l="Verschlüsselung">${storageKeyCell(s["encryption-key"], s.key_name)}</td><td data-l="Benutzer" class="mono small">${esc(s.username)}</td>
+        <td class="act"><button class="ib" type="button" title="Verschlüsselung" aria-label="Verschlüsselung von ${esc(s.storage)}" data-key="${esc(s.storage)}">${icon("lock")}</button><button class="ib red" type="button" title="Austragen" aria-label="Austragen" data-del="${esc(s.storage)}">${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${icon("database")}<b>Noch kein PBS-Speicher</b><p>Unten einen Datastore eintragen.</p></div>`}
       <div class="section"><div class="section-title">Datastore eintragen</div><div class="form-error" hidden></div><form class="form-grid" novalidate data-add>
         ${field({ name: "pbs", label: "Backup-Server", type: "select", options: [["", "– wählen –"], ...state.servers.map((s) => [s.id, s.name])] })}
         ${field({ name: "store", label: "Datastore", type: "select", options: [["", "– zuerst Server wählen –"]] })}
         ${field({ name: "name", label: "Name in Proxmox VE", placeholder: "pbs-backup", mono: true })}
         ${field({ name: "namespace", label: "Namespace (optional)", placeholder: "leer = Wurzel", mono: true })}
+        ${field({ name: "key", label: "Verschlüsselung", type: "select", value: kr.keys[0]?.id || "new", options: keyOpts, hint: "Proxmox VE verschlüsselt die Sicherungen, bevor sie den Knoten verlassen. Die Appliance verwahrt den Schlüssel." })}
         <div class="field wide"><div><button class="btn" type="submit">${icon("plus")} Eintragen</button></div></div></form></div>`;
     const form = qs("[data-add]", body);
     const sel = qs('[name="pbs"]', form);
@@ -1046,9 +1050,17 @@ async function pveStoragesDialog(cl) {
     form.onsubmit = async (e) => {
       e.preventDefault();
       const btn = qs("button[type=submit]", form);
-      try { btn.disabled = true; showErrors(body, null); await POST(`/api/pve/${cl.id}/storages`, formValues(form)); toast("In Proxmox VE eingetragen."); await draw(); }
-      catch (err) { showErrors(body, err); } finally { btn.disabled = false; }
+      try {
+        btn.disabled = true; showErrors(body, null);
+        const res = await POST(`/api/pve/${cl.id}/storages`, formValues(form));
+        toast("In Proxmox VE eingetragen."); await draw();
+        if (res.new_key) keyDialog(res.new_key, draw, true);
+      } catch (err) { showErrors(body, err); } finally { btn.disabled = false; }
     };
+    qsa("[data-key]", body).forEach((b) => b.onclick = () => {
+      const st = pbs.find((x) => x.storage === b.dataset.key);
+      storageKeyDialog({ cluster: cl.id, cluster_name: cl.name, storage: st.storage, key_fp: st["encryption-key"], key_id: st.key_id, state: !st["encryption-key"] ? "plain" : st.key_id ? "ok" : "missing" }, kr.keys, draw);
+    });
     qsa("[data-del]", body).forEach((b) => b.onclick = async () => {
       if (await confirmDialog({ title: `Speicher ${b.dataset.del} austragen?`, text: "Proxmox VE kennt den Speicher danach nicht mehr; Sicherungsjobs mit diesem Ziel schlagen fehl. Die Sicherungen auf dem Backup-Server bleiben erhalten.", button: "Austragen" }))
         run(b, async () => { await DEL(`/api/pve/${cl.id}/storages/${enc(b.dataset.del)}`); await draw(); }, "Ausgetragen.");
@@ -1235,7 +1247,7 @@ async function snapshotsDialog(srv, store) {
     body.innerHTML = list.length ? `<div class="table-wrap" style="max-height:60dvh;overflow:auto"><table class="resp"><thead><tr><th>Gast</th><th>Zeitpunkt</th><th class="num">Größe</th><th>Geprüft</th><th></th></tr></thead><tbody>
       ${list.slice(0, 500).map((s) => `<tr><td data-l="Gast"><span class="tag mono">${esc(s["backup-type"])}</span> <b>${esc(s["backup-id"])}</b>${s.comment ? `<div class="t-sub">${esc(s.comment)}</div>` : ""}</td>
         <td data-l="Zeitpunkt" class="nowrap">${fmtTime(s["backup-time"], true)}</td><td class="num" data-l="Größe">${fmtBytes(s.size)}</td>
-        <td data-l="Geprüft">${s.verification ? (s.verification.state === "ok" ? pill("OK", "green") : pill("Fehler", "rose")) : '<span class="muted small">nein</span>'} ${s.protected ? pill("geschützt", "blue") : ""}</td>
+        <td data-l="Geprüft">${s.verification ? (s.verification.state === "ok" ? pill("OK", "green") : pill("Fehler", "rose")) : '<span class="muted small">nein</span>'} ${s.protected ? pill("geschützt", "blue") : ""} ${keyPill(s.fingerprint)}</td>
         <td class="act"><button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${esc(s["backup-type"])}|${esc(s["backup-id"])}|${s["backup-time"]}" ${s.protected ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${icon("archive")}<b>Keine Sicherungen</b></div>`;
     qsa("[data-del]", body).forEach((b) => b.onclick = async () => {
       const [t, id, time] = b.dataset.del.split("|");
@@ -2245,7 +2257,7 @@ async function restoreGuest(el, token, g, source) {
       <label class="row" style="cursor:pointer;align-items:center"><input type="radio" name="snap" value="${sn["backup-time"]}" ${i === 0 ? "checked" : ""} style="accent-color:var(--c600)">
         <div class="grow"><div class="title"><b>${fmtTime(sn["backup-time"], true)}</b> ${i === 0 ? pill("neueste", "blue") : ""}</div>
         <div class="t-sub">${fmtAgo(sn["backup-time"])} · ${fmtBytes(sn.size)}${sn.comment ? " · " + esc(sn.comment) : ""}</div></div>
-        ${sn.verification ? (sn.verification.state === "ok" ? pill("geprüft", "green") : pill("defekt", "rose")) : ""}</label>`).join("") || `<div class="row muted">Keine Stände.</div>`}</div>`;
+        ${keyPill(sn.fingerprint)} ${sn.verification ? (sn.verification.state === "ok" ? pill("geprüft", "green") : pill("defekt", "rose")) : ""}</label>`).join("") || `<div class="row muted">Keine Stände.</div>`}</div>`;
     qsa('[name="snap"]', box).forEach((r) => r.onchange = () => { sel = +r.value; drawRight(); });
     drawRight();
   };
@@ -2781,7 +2793,7 @@ PAGES["/festplatten"] = async (el, token) => {
 
 // ---------- Einstellungen ----------
 const SET_TABS = [
-  ["", "Benachrichtigungen", "bell"], ["sicherung", "Sicherung der Appliance", "shield"], ["aktualisierung", "Aktualisierung", "download"],
+  ["", "Benachrichtigungen", "bell"], ["sicherung", "Sicherung der Appliance", "shield"], ["verschluesselung", "Verschlüsselung", "lock"], ["aktualisierung", "Aktualisierung", "download"],
   ["zugriff", "Zugriff", "globe"], ["system", "System", "server"], ["konto", "Konto", "user"],
 ];
 
@@ -2950,6 +2962,134 @@ SET_PAGES.konto = async (box) => {
   pf.onsubmit = async (e) => { e.preventDefault(); try { showErrors(pf, null); await POST("/api/account/password", formValues(pf)); pf.reset(); toast("Passwort geändert. Andere Sitzungen wurden abgemeldet."); } catch (err) { showErrors(pf, err); } };
   totpPanel(qs("[data-totp]", box), tf, () => SET_PAGES.konto(box));
 };
+
+// ---------- Verschlüsselung der Sicherungen ----------
+const keyPill = (fp) => fp ? `<span class="pill blue" title="Verschlüsselt, Schlüssel ${esc(fp.slice(0, 23))}">${icon("lock", "sm")}verschlüsselt</span>` : "";
+
+function storageKeyCell(fp, name) {
+  if (!fp) return pill("unverschlüsselt");
+  if (!name) return `${pill("Schlüssel fehlt in der Appliance", "amber")}<div class="t-sub mono">${esc(fp.slice(0, 23))}</div>`;
+  return `${pill("verschlüsselt", "green", true)}<div class="t-sub">${esc(name)}</div>`;
+}
+
+SET_PAGES.verschluesselung = async (box) => {
+  const r = await GET("/api/enckeys");
+  const reload = () => SET_PAGES.verschluesselung(box);
+  const missing = r.storages.filter((s) => s.state === "missing");
+  const unsaved = r.keys.filter((k) => !k.saved);
+  const plain = r.storages.filter((s) => s.state === "plain");
+  const stRows = r.storages.map((s, i) => `<tr><td data-l="Speicher"><div class="t-main">${esc(s.storage)} ${s.disabled ? pill("aus") : ""}</div><div class="t-sub">${esc(s.cluster_name)}</div></td>
+      <td data-l="Ziel">${esc(s.target)}</td><td data-l="Verschlüsselung">${storageKeyCell(s.key_fp, s.key_name)}</td>
+      <td class="act"><button class="btn gray sm" type="button" data-st="${i}">${s.state === "plain" ? "Einschalten" : s.state === "missing" ? "Schlüssel importieren" : "Ändern"}</button></td></tr>`).join("");
+  const keyRows = r.keys.map((k) => `<tr><td data-l="Name"><div class="t-main">${esc(k.name)}</div><div class="t-sub"><span class="mono" title="Fingerabdruck">${esc(k.short)}</span> · erstellt ${esc(fmtTime(k.created, true))}</div></td>
+      <td data-l="Verwendet">${k.used.length ? k.used.map((u) => `<div>${esc(u.cluster_name)} / <b>${esc(u.storage)}</b></div>`).join("") : '<span class="muted small">nicht in Proxmox VE</span>'}</td>
+      <td data-l="Kopie außer Haus">${k.saved ? pill("gesichert", "green") : pill("noch nicht", "amber")}</td>
+      <td class="act"><button class="ib" type="button" title="Anzeigen und sichern" aria-label="${esc(k.name)} anzeigen und sichern" data-show="${k.id}">${icon("key")}</button><button class="ib" type="button" title="Umbenennen" aria-label="${esc(k.name)} umbenennen" data-ren="${k.id}">${icon("pencil")}</button><button class="ib red" type="button" title="Löschen" aria-label="${esc(k.name)} löschen" data-delkey="${k.id}">${icon("trash")}</button></td></tr>`).join("");
+  box.innerHTML = `<div class="settings-narrow">
+    <div class="panel"><div class="panel-head"><div class="panel-title">Verschlüsselte Sicherungen</div></div>
+      <p class="panel-intro">Proxmox VE verschlüsselt jede Sicherung, bevor sie den Knoten verlässt (AES-256-GCM). Auf dem Backup-Server, den Wechsel- und Archiv-Platten und in Kopien liegen dann nur verschlüsselte Daten – wer eine Platte findet, kann damit nichts anfangen. Prüfen, Aufräumen und Kopieren funktionieren wie bisher; für Wiederherstellungen und Restore-Tests trägt die Appliance den passenden Schlüssel selbst ein.</p>
+      ${(r.errors || []).map((e) => `<div class="callout red" style="margin:0 0 12px"><div class="ct"><div class="ch">Proxmox VE nicht erreichbar</div><div class="cb">${esc(e)}</div></div></div>`).join("")}
+      ${missing.length ? `<div class="callout yellow" style="margin:0 0 12px"><div class="ct"><div class="ch">${missing.length === 1 ? "Ein Speicher verschlüsselt" : missing.length + " Speicher verschlüsseln"} mit einem Schlüssel, den die Appliance nicht hat</div><div class="cb">Fällt Proxmox VE aus, sind diese Sicherungen ohne den Schlüssel verloren. Bitte importieren – Proxmox VE hat ihn auf jedem Knoten unter <code>/etc/pve/priv/storage/&lt;speicher&gt;.enc</code>.</div></div></div>` : ""}
+      ${unsaved.length ? `<div class="callout yellow" style="margin:0 0 12px"><div class="ct"><div class="ch">${unsaved.length === 1 ? "Ein Schlüssel ist" : unsaved.length + " Schlüssel sind"} noch nicht außer Haus gesichert</div><div class="cb">Die Appliance verwahrt die Schlüssel und nimmt sie in ihre eigene Sicherung auf. Für den Fall, dass alles weg ist, gehört zusätzlich eine Kopie in den Tresor: ausdrucken oder im Passwort-Manager ablegen.</div></div></div>` : ""}
+      ${r.storages.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Speicher in Proxmox VE</th><th>Ziel</th><th>Verschlüsselung</th><th></th></tr></thead><tbody>${stRows}</tbody></table></div>`
+        : `<div class="empty">${icon("database")}<b>Kein PBS-Speicher in Proxmox VE</b><p>Unter Verbindungen → Proxmox VE → Backup-Speicher eintragen.</p></div>`}
+      ${plain.length && !missing.length ? `<p class="hint mt">Beim Einschalten überträgt die nächste Sicherung jedes Gasts noch einmal alles (verschlüsselte Daten lassen sich nicht mit den bisherigen zusammenlegen) und braucht entsprechend Platz. Die alten, unverschlüsselten Stände verschwinden nach und nach über die Aufbewahrung.</p>` : ""}
+    </div>
+    <div class="panel"><div class="panel-head"><div class="panel-title">Schlüssel</div><div class="btn-row"><button class="btn gray sm" type="button" data-import>${icon("download")} Importieren</button><button class="btn sm" type="button" data-new>${icon("plus")} Neuer Schlüssel</button></div></div>
+      ${r.keys.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Name</th><th>Verwendet von</th><th>Kopie außer Haus</th><th></th></tr></thead><tbody>${keyRows}</tbody></table></div>`
+        : `<div class="empty">${icon("key")}<b>Noch kein Schlüssel</b><p>Beim Einschalten der Verschlüsselung erzeugt die Appliance einen.</p></div>`}
+    </div></div>`;
+  qsa("[data-st]", box).forEach((b) => b.onclick = () => {
+    const st = r.storages[+b.dataset.st];
+    if (st.state === "missing") importKeyDialog(reload, st);
+    else storageKeyDialog(st, r.keys, reload);
+  });
+  qs("[data-import]", box).onclick = () => importKeyDialog(reload);
+  qs("[data-new]", box).onclick = () => formDialog({
+    title: "Neuer Schlüssel", ic: "key", button: "Erzeugen", cls: "",
+    text: "Ein Schlüssel kann für mehrere Speicher und Cluster gelten. Eingesetzt wird er beim Einschalten der Verschlüsselung eines Speichers.",
+    fields: [{ name: "name", label: "Name", placeholder: "z. B. Kunde Müller", wide: true }],
+    submit: async (v) => { const res = await POST("/api/enckeys", v); setTimeout(() => keyDialog(res.id, reload, true), 0); },
+  });
+  qsa("[data-show]", box).forEach((b) => b.onclick = () => keyDialog(b.dataset.show, reload));
+  qsa("[data-ren]", box).forEach((b) => b.onclick = () => {
+    const k = r.keys.find((x) => x.id === b.dataset.ren);
+    formDialog({ title: "Schlüssel umbenennen", ic: "pencil", cls: "", fields: [{ name: "name", label: "Name", value: k.name, wide: true }],
+      submit: async (v) => { await PUT(`/api/enckeys/${k.id}`, { name: v.name }); toast("Gespeichert."); reload(); } });
+  });
+  qsa("[data-delkey]", box).forEach((b) => b.onclick = () => {
+    const k = r.keys.find((x) => x.id === b.dataset.delkey);
+    formDialog({
+      title: `Schlüssel „${k.name}“ löschen?`, ic: "trash", tone: "red", button: "Löschen", cls: "",
+      text: "Sicherungen, die mit diesem Schlüssel verschlüsselt sind, lassen sich danach nur noch mit einer Kopie (Papier oder Datei) wiederherstellen. Solange ein Speicher in Proxmox VE ihn verwendet, geht das Löschen nicht.",
+      fields: [{ name: "password", label: "Passwort", type: "password", autocomplete: "current-password", wide: true }],
+      submit: async (v) => { await POST(`/api/enckeys/${k.id}/delete`, v); toast("Schlüssel gelöscht."); reload(); },
+    });
+  });
+};
+
+// storageKeyDialog switches encryption of a PVE storage on, to another key or off.
+function storageKeyDialog(st, keys, reload) {
+  const on = st.state !== "plain";
+  const opts = [["new", "Neuer Schlüssel", "Die Appliance erzeugt einen Schlüssel und verwahrt ihn."],
+    ...keys.map((k) => [k.id, k.name, k.short + (!k.used ? "" : k.used.length ? " · schon für " + k.used.map((u) => u.storage).join(", ") : " · noch nicht verwendet")])];
+  if (on) opts.push(["", "Nicht mehr verschlüsseln", "Neue Sicherungen wieder unverschlüsselt. Bisherige brauchen weiter den Schlüssel."]);
+  formDialog({
+    title: `Verschlüsselung für ${st.storage}`, ic: "lock", button: on ? "Übernehmen" : "Einschalten",
+    text: `${esc(st.cluster_name)}${st.target ? " · " + esc(st.target) : ""}. Gilt für neue Sicherungen. Die nächste Sicherung jedes Gasts überträgt einmal alles neu und braucht entsprechend Platz; die bisherigen Stände bleiben lesbar.`,
+    fields: [{ name: "key", type: "radio", label: "Schlüssel", value: st.key_id || (keys[0]?.id ?? "new"), options: opts }],
+    submit: async (v) => {
+      if (v.key === (st.key_id || undefined)) return;
+      const res = await PUT(`/api/pve/${st.cluster}/storages/${enc(st.storage)}/key`, { key: v.key ?? "" });
+      toast(v.key ? "Verschlüsselung eingeschaltet." : "Verschlüsselung ausgeschaltet.");
+      await reload();
+      if (res.new_key) setTimeout(() => keyDialog(res.new_key, reload, true), 0);
+    },
+  });
+}
+
+function importKeyDialog(reload, st) {
+  formDialog({
+    title: "Schlüssel importieren", ic: "key", button: "Importieren",
+    text: st ? `Der Speicher <b>${esc(st.storage)}</b> in ${esc(st.cluster_name)} verschlüsselt mit dem Schlüssel <span class="mono">${esc(st.key_fp.slice(0, 23))}</span>. Auf einem Knoten in der Shell ausgeben und hier einfügen:${codeBlock(`cat /etc/pve/priv/storage/${st.storage}.enc`)}`
+      : "Schlüsseldatei (JSON) oder Papierschlüssel einfügen, z.&nbsp;B. von einer alten Appliance, aus Proxmox VE oder von einer fremden Platte. Die Appliance prüft den Fingerabdruck und meldet Tippfehler.",
+    fields: [{ name: "name", label: "Name", value: st ? `${st.cluster_name} / ${st.storage}` : "", wide: true },
+      { name: "key", label: "Schlüssel", type: "textarea", rows: 8, mono: true, wide: true, placeholder: '{"kdf":null,"created":"…","data":"…","fingerprint":"…"}' }],
+    onMount: (d) => bindCopy(d),
+    submit: async (v) => {
+      const res = await POST("/api/enckeys", v);
+      toast(res.existed ? `Den Schlüssel gab es schon („${res.name}“).` : "Schlüssel importiert.");
+      reload();
+    },
+  });
+}
+
+// keyDialog shows a key for saving it outside: QR code, text, paper key, file.
+async function keyDialog(id, reload, fresh) {
+  let k;
+  try { k = await GET(`/api/enckeys/${id}`); } catch (err) { return toastErr(err); }
+  const d = openDialog(`
+    <div class="dlg-head"><span class="dlg-ic">${icon("key")}</span><div class="grow"><div class="dlg-title">${fresh ? "Neuen Schlüssel sichern" : `Schlüssel „${esc(k.name)}“`}</div>
+      <p class="dlg-text">Ohne diesen Schlüssel lassen sich die verschlüsselten Sicherungen nicht wiederherstellen – auch nicht von den USB-Platten. Die Appliance verwahrt ihn und nimmt ihn in ihre eigene Sicherung auf. <b>Zusätzlich gehört eine Kopie in den Tresor:</b> ausdrucken oder als Datei im Passwort-Manager ablegen, getrennt von den Platten.</p></div></div>
+    <div class="dlg-body"><div class="totp-setup"><div class="qr-box" title="Papierschlüssel als QR-Code">${k.qr}</div>
+      <div><table class="kv"><tr><td>Name</td><td>${esc(k.name)}</td></tr><tr><td>Fingerabdruck</td><td class="mono small" style="word-break:break-all">${esc(k.fingerprint)}</td></tr>
+        <tr><td>Erstellt</td><td>${esc(fmtTime(k.created, true))}</td></tr><tr><td>Kopie außer Haus</td><td>${k.saved ? pill("gesichert am " + fmtTime(k.saved, true), "green") : pill("noch nicht", "amber")}</td></tr></table>
+      <div class="mt">${codeBlock(k.paper)}</div></div></div></div>
+    <div class="dlg-foot"><a class="btn gray" href="/api/enckeys/${esc(id)}/paper" target="_blank" rel="noopener">${icon("external")} Papierschlüssel drucken</a><button class="btn gray" type="button" data-file>${icon("download")} Als Datei laden</button><span class="spacer"></span>
+      ${k.saved ? `<button class="btn" type="button" data-close>Schließen</button>` : `<button class="btn gray" type="button" data-close>Später</button><button class="btn" type="button" data-saved>Schlüssel ist gesichert</button>`}</div>`, "wide");
+  if (fresh) d.dataset.busy = "1";
+  bindCopy(d);
+  qs("[data-file]", d).onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([k.key + "\n"], { type: "application/json" }));
+    a.download = `pk95-schluessel-${k.fingerprint.replaceAll(":", "").slice(0, 8)}.json`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  qs("[data-close]", d).onclick = () => d.close();
+  const sv = qs("[data-saved]", d);
+  if (sv) sv.onclick = () => run(sv, async () => { await PUT(`/api/enckeys/${id}`, { saved: true }); d.close(); }, "Vermerkt.");
+  d.addEventListener("close", () => { if (reload) reload(); });
+}
 
 // totpPanel shows the state of the two-factor sign-in and its actions.
 function totpPanel(el, tf, reload) {

@@ -162,6 +162,7 @@ type Snapshot struct {
 	Owner        string `json:"owner"`
 	Protected    bool   `json:"protected"`
 	Comment      string `json:"comment"`
+	Fingerprint  string `json:"fingerprint,omitempty"` // key of an encrypted backup
 	Verification *struct {
 		State string `json:"state"`
 	} `json:"verification,omitempty"`

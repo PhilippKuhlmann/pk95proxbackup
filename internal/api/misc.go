@@ -48,6 +48,14 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		out["restore_test"] = map[string]any{"plan": run.PlanName, "status": run.Status, "end": run.End, "ok": okN, "total": len(run.Results)}
 		break
 	}
+	// Encryption keys without a copy outside the appliance.
+	unsaved := []string{}
+	for _, k := range s.C.EncKeys() {
+		if k.Saved == 0 {
+			unsaved = append(unsaved, k.Name)
+		}
+	}
+	out["unsaved_keys"] = unsaved
 	// Disks with problems, archive disks that lay unchecked too long.
 	type diskIssue struct {
 		Status  string `json:"status"`

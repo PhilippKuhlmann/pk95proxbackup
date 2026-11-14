@@ -164,7 +164,7 @@ func TestImportForeignDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Automatic test of the read-in disk.
-	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store string) (string, error) {
+	c.EnsureStorage = func(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string) (string, error) {
 		return "pbs-appliance", nil
 	}
 	plan := core.RestoreTestPlan{ID: "pf", Name: "Fremde Platte", Cluster: "cluster", Node: "pve1", Storage: "local-lvm",
