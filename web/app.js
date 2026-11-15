@@ -115,6 +115,7 @@ const TASK_LABELS = {
   prunejob: "Aufräumjob", qmrestore: "Wiederherstellung VM", vzrestore: "Wiederherstellung CT", reader: "Lesezugriff",
   "mount-device": "Platte einhängen", "unmount-device": "Platte aushängen", "create-datastore": "Datastore anlegen",
   "delete-datastore": "Datastore löschen", dircreate: "Platte vorbereiten", wipedisk: "Platte löschen",
+  aptupdate: "Paketlisten laden", srvreload: "Dienste neu laden",
 };
 const taskLabel = (t) => TASK_LABELS[t] || t;
 
@@ -130,7 +131,7 @@ async function api(method, path, body) {
     state.user = null; render(); throw new Error(data.error || "Bitte anmelden.");
   }
   if (res.status === 403 && data.totp_required && !state.totpRequired) { state.totpRequired = true; go("/einstellungen/konto"); }
-  if (!res.ok) throw Object.assign(new Error(data.error || `Fehler ${res.status}`), { fields: data.fields || null, status: res.status });
+  if (!res.ok) throw Object.assign(new Error(data.error || `Fehler ${res.status}`), { fields: data.fields || null, status: res.status, data });
   return data;
 }
 const GET = (p) => api("GET", p);
@@ -153,7 +154,9 @@ async function upload(path, fd) {
 
 // waitForRestart shows a blocking note while the appliance restarts and reloads the page once
 // it answers again (with the expected version, if given).
-async function waitForRestart(title, wantVersion) {
+// waitForRestart reloads the page once the appliance answers again (with wantVersion, or after
+// it was down; mustGoDown gives a slow shutdown up to a minute to begin).
+async function waitForRestart(title, wantVersion, mustGoDown) {
   const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("refresh")}</span><div class="grow"><div class="dlg-title">${esc(title)}</div>
     <p class="dlg-text">Die Seite lädt neu, sobald die Appliance wieder antwortet. Das dauert meist unter einer Minute.</p></div><span class="spinner"></span></div>`);
   d.dataset.busy = "1";
@@ -165,7 +168,7 @@ async function waitForRestart(title, wantVersion) {
     try {
       const r = await fetch("/api/session", { credentials: "same-origin", cache: "no-store" });
       const s = await r.json();
-      if (wantVersion ? s.version === wantVersion : down || Date.now() - t0 > 10000) break;
+      if (wantVersion ? s.version === wantVersion : down || Date.now() - t0 > (mustGoDown ? 60000 : 10000)) break;
     } catch (e) { down = true; }
   }
   location.reload();
@@ -928,7 +931,7 @@ function softwareCell(h, id) {
   const upd = h.updates ? `${h.updates} ${h.updates === 1 ? "Update" : "Updates"} verfügbar${h.available ? ` (PBS ${esc(h.available.replace(/-\d+$/, ""))})` : ""}` : "keine Updates";
   const why = h.restart_needed ? `installiert ${esc(h.installed)}, läuft ${esc(h.running)}` : h.reboot_needed ? `Kernel ${esc(h.newest_kernel)} installiert, läuft ${esc(h.kernel)}` : "";
   return `${state}<div class="t-sub">PBS ${esc(h.running || "?")} · ${upd}</div>${why ? `<div class="t-sub warnc">${why}</div>` : ""}
-    <div class="flex" style="margin-top:4px;gap:6px">${h.restart_needed ? `<button class="btn sm" type="button" data-reload="${id}">${icon("refresh")} Dienste neu laden</button>` : ""}<button class="link-btn small" type="button" data-swcheck="${id}" title="Geprüft ${esc(fmtAgo(h.checked))}">prüfen</button></div>`;
+    <div class="flex" style="margin-top:4px;gap:6px">${h.restart_needed ? `<button class="btn sm" type="button" data-reload="${id}">${icon("refresh")} Dienste neu laden</button>` : ""}<button class="link-btn small" type="button" data-swcheck="${id}" title="Geprüft ${esc(fmtAgo(h.checked))}">prüfen</button>${h.updates || h.reboot_needed ? `<a class="link-btn small" href="/einstellungen/aktualisierung" data-go>${h.updates ? "einspielen" : "neu starten"}</a>` : ""}</div>`;
 }
 
 // ---------- Verbindungen ----------
@@ -3393,9 +3396,167 @@ SET_PAGES.sicherung = async (box) => {
 };
 
 SET_PAGES.aktualisierung = async (box) => {
-  box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Aktualisierung</div></div><div data-update></div></div></div>`;
-  await updatePanel(qs("[data-update]", box));
+  box.innerHTML = `<div class="settings-narrow">
+    <div class="panel"><div class="panel-head"><div class="panel-title">PK95 ProxBackup</div></div><div data-update></div></div>
+    <div class="panel"><div class="panel-head"><div class="panel-title">System und Proxmox Backup Server</div></div><div data-sys></div></div></div>`;
+  await Promise.all([updatePanel(qs("[data-update]", box)), sysUpdatesPanel(qs("[data-sys]", box))]);
 };
+
+// sysUpdatesPanel: Debian and Proxmox packages of the Backup Servers – look for updates,
+// install them (in the background, the log follows), restart services or the machine.
+async function sysUpdatesPanel(box) {
+  const following = new Set();
+  let list = [];
+  const load = async () => { list = (await GET("/api/sysupdates")).servers; draw(); };
+  const state = (s) => {
+    const h = s.health;
+    if (s.upgrade.state === "running") return pill("Updates laufen", "blue", true, true);
+    if (!h) return pill("Noch nicht geprüft");
+    if (h.error) return pill("Nicht erreichbar", "rose");
+    if (h.reboot_needed) return pill("Neustart nötig", "amber", true);
+    if (h.restart_needed) return pill("Dienste neu laden", "amber", true);
+    if (h.updates) return pill(`${h.updates} ${h.updates === 1 ? "Update" : "Updates"}`, "blue", true);
+    return pill("Aktuell", "green", true);
+  };
+  const last = (u) => {
+    if (u.state === "ok") return `<p class="small muted mt">Zuletzt eingespielt ${esc(fmtTime(u.finished, true))} von ${esc(u.by)}: ${u.upgraded ? `${u.upgraded} ${u.upgraded === 1 ? "Paket" : "Pakete"}` : "nichts zu tun"}.</p>`;
+    if (u.state === "failed") return `<div class="mt">${callout("red", "Updates nicht vollständig eingespielt", esc(u.error || "") + ` <span class="muted">(${esc(fmtTime(u.finished, true))}, ${esc(u.by)})</span>`)}</div>
+      ${u.log.length ? `<details class="sys-pkgs mt"><summary>Protokoll</summary><pre class="log">${u.log.map(esc).join("\n")}</pre></details>` : ""}`;
+    return "";
+  };
+  const block = (s) => {
+    const h = s.health || {}, u = s.upgrade, running = u.state === "running";
+    const facts = [h.running && "PBS " + h.running, h.kernel && "Kernel " + h.kernel.replace(/-pve$/, ""), h.checked && "geprüft " + fmtAgo(h.checked)].filter(Boolean);
+    const more = (h.updates || 0) - (h.update_list || []).length;
+    return `<div class="sys-srv" data-srv="${esc(s.server_id)}">
+      <div class="sys-head"><div><div class="t-main">${esc(s.name)} ${s.local ? pill("Appliance", "blue") : ""}</div>${facts.length ? `<div class="t-sub">${esc(facts.join(" · "))}</div>` : ""}</div>${state(s)}</div>
+      ${h.error ? `<p class="small bad mt">${esc(h.error)}</p>` : ""}
+      ${autoLine(s)}
+      ${!running && h.reboot_needed ? `<p class="small warnc mt">Kernel ${esc(h.newest_kernel)} ist installiert, es läuft noch ${esc(h.kernel)}. Ein Neustart bringt ihn in Betrieb.</p>` : ""}
+      ${!running && h.restart_needed ? `<p class="small warnc mt">Installiert ist PBS ${esc(h.installed)}, die Dienste laufen noch mit ${esc(h.running)}.</p>` : ""}
+      ${!running && h.updates ? `<details class="sys-pkgs mt"><summary>${h.updates} ${h.updates === 1 ? "Paket kann" : "Pakete können"} aktualisiert werden</summary>
+        <ul>${(h.update_list || []).map((l) => `<li>${esc(l)}</li>`).join("")}${more > 0 ? `<li class="muted">… und ${more} weitere</li>` : ""}</ul></details>` : ""}
+      ${running ? `<div class="phase-line mt"><span class="spinner"></span><span>Updates werden eingespielt – gestartet ${esc(fmtAgo(u.started))} von ${esc(u.by)}</span></div>
+        <pre class="log mt" data-log>${u.log.length ? u.log.map(esc).join("\n") : "Startet …"}</pre>` : last(u)}
+      ${!s.shell && h.updates ? `<div class="mt">${callout("yellow", "Einspielen nur mit SSH-Zugang", "Die Updates spielt die Appliance über die Kommandozeile des Servers ein. Einmal SSH einrichten – dann geht es per Klick oder automatisch.",
+        `<button class="btn sm" type="button" data-sshsetup>${icon("terminal")} SSH einrichten</button>`)}</div>` : ""}
+      ${running ? "" : `<div class="flex mt">
+        ${h.updates && s.shell ? `<button class="btn" type="button" data-upgrade>${icon("download")} Updates einspielen</button>` : ""}
+        ${h.restart_needed ? `<button class="btn" type="button" data-reload>${icon("refresh")} Dienste neu laden</button>` : ""}
+        ${h.reboot_needed ? `<button class="btn" type="button" data-reboot>${icon("power")} Neu starten</button>` : ""}
+        <button class="btn gray" type="button" data-refresh>${icon("refresh")} Nach Updates suchen</button>
+        ${!h.reboot_needed && !h.error ? `<button class="btn gray" type="button" data-reboot>${icon("power")} Neu starten</button>` : ""}
+      </div>`}</div>`;
+  };
+  const autoLine = (s) => {
+    const a = s.auto;
+    if (!a.enabled) return `<div class="sys-auto mt">${icon("clock", "sm")}<span class="muted">Automatisch: aus</span>${s.shell ? `<button class="link-btn small" type="button" data-auto>einrichten</button>` : `<span class="muted">– braucht den SSH-Zugang</span><button class="link-btn small" type="button" data-sshsetup>SSH einrichten</button>`}</div>`;
+    const days = a.weekdays.slice().sort().map((d) => DAY_SHORT[d - 1]).join(", ");
+    return `<div class="sys-auto mt">${icon("clock", "sm")}<span>Automatisch ${esc(days)} um ${esc(a.time)}${a.reboot ? ", danach bei Bedarf neu starten" : ", ohne Neustart"}${s.next ? ` <span class="muted">· nächster Termin ${esc(fmtTime(s.next, true))}</span>` : ""}</span><button class="link-btn small" type="button" data-auto>ändern</button></div>
+      ${s.postponed ? `<p class="small warnc">Neustart verschoben: ${esc(s.postponed)}</p>` : ""}`;
+  };
+  const autoForm = (s) => {
+    const a = s.auto;
+    formDialog({ title: s.local ? "Automatische Updates dieser Appliance" : `Automatische Updates – ${s.name}`, ic: "clock",
+      text: "Zum Termin lädt die Appliance die Paketlisten und spielt vorhandene Updates ein – am besten zu einer Zeit ohne Sicherungen. Läuft beim Neustart gerade eine Sicherung, Kopie oder Prüfung, wartet sie bis zu drei Stunden; sonst bleibt der Neustart bis zum nächsten Termin liegen.",
+      fields: [
+        { name: "enabled", label: "Updates automatisch einspielen", type: "checkbox", value: a.enabled, wide: true },
+        { type: "html", name: "weekdays", html: `<span class="fl">Wochentage</span><div class="daypick" data-wd>${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${a.weekdays.includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+        { name: "time", label: "Uhrzeit", type: "time", value: a.time },
+        { name: "reboot", label: "Danach neu starten, wenn ein neuer Kernel es braucht", type: "checkbox", value: a.reboot, wide: true,
+          hint: s.local ? "Die Appliance ist dabei ein bis zwei Minuten nicht erreichbar." : "Der Backup-Server ist dabei ein bis zwei Minuten nicht erreichbar." },
+      ],
+      submit: async (v, d) => {
+        v.weekdays = qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value));
+        await PUT(`/api/pbs/${enc(s.server_id)}/autoupdate`, v);
+        toast(v.enabled ? "Automatische Updates eingeschaltet." : "Automatische Updates ausgeschaltet.");
+        await load();
+      } });
+  };
+  const sshSetup = async (s) => {
+    let conn;
+    try { conn = await GET("/api/pbs"); } catch (e) { toastErr(e); return; }
+    const srv = conn.servers.find((x) => x.id === s.server_id) || {};
+    const cmd = `mkdir -p /root/.ssh && echo '${conn.ssh_key}' >> /root/.ssh/authorized_keys`;
+    formDialog({ title: `SSH-Zugang zu ${s.name}`, ic: "terminal", button: "Verbinden und prüfen", grid: "cols-3",
+      text: "Damit spielt die Appliance Updates auf diesem Backup-Server ein und kann dort auch NFS- und SMB-Freigaben einhängen. Eingeschaltet wird erst, wenn die Verbindung klappt.",
+      fields: [
+        { type: "html", wide: true, html: `<div class="section-title">1. Schlüssel der Appliance eintragen</div><p class="hint">In der Shell des Backup-Servers als root – in der PBS-Oberfläche unter Administration → Shell:</p>${codeBlock(cmd)}` },
+        { type: "html", wide: true, html: `<div class="section-title">2. Verbindung</div>` },
+        { name: "host", label: "SSH-Adresse", value: srv.ssh_host || srv.host || "", mono: true, required: true },
+        { name: "port", label: "Port", type: "number", min: 1, value: srv.ssh_port || 22 },
+        { name: "user", label: "Benutzer", value: srv.ssh_user || "root", mono: true, hint: "root – Updates brauchen volle Rechte." },
+      ],
+      onMount: (d) => bindCopy(d),
+      submit: async (v) => {
+        const r = await POST(`/api/pbs/${enc(s.server_id)}/ssh`, { host: v.host, port: Number(v.port) || 22, user: v.user });
+        toast(`SSH funktioniert – ${r.output}`);
+        await load();
+      } });
+  };
+  const draw = () => {
+    if (!box.isConnected) return;
+    box.innerHTML = `<p class="panel-intro">Debian- und Proxmox-Pakete der Backup-Server. Eingespielt wird auf Klick oder automatisch nach Plan; laufende Sicherungen arbeiten dabei weiter.</p>` +
+      (list.length ? list.map(block).join("") : empty("Kein Backup-Server verbunden", "", "", "server"));
+    for (const s of list) {
+      const el = qs(`[data-srv="${CSS.escape(s.server_id)}"]`, box);
+      const b = (k) => qs(`[data-${k}]`, el);
+      if (b("refresh")) b("refresh").onclick = (e) => run(e.currentTarget, async () => { await POST(`/api/pbs/${enc(s.server_id)}/packages`); await load(); }, "Paketlisten neu geladen.");
+      if (b("upgrade")) b("upgrade").onclick = async () => {
+        const ok = await confirmDialog({ title: s.local ? "Updates auf dieser Appliance einspielen?" : `Updates auf ${s.name} einspielen?`, tone: "", ic: "download", button: "Einspielen",
+          text: `${s.health.updates} ${s.health.updates === 1 ? "Paket wird" : "Pakete werden"} mit <code>apt dist-upgrade</code> aktualisiert; geänderte Konfigurationsdateien bleiben, wie sie sind. Laufende Sicherungen und Kopien arbeiten weiter. Das dauert meist ein paar Minuten.` +
+            ((s.health.update_list || []).some((l) => l.startsWith("proxmox-kernel")) ? " Ein neuer Kernel läuft erst nach einem Neustart." : "") });
+        if (ok) run(b("upgrade"), async () => { await POST(`/api/pbs/${enc(s.server_id)}/upgrade`); await load(); }, "Updates werden eingespielt.");
+      };
+      if (b("reload")) b("reload").onclick = async () => {
+        if (await confirmDialog({ title: "Dienste neu laden?", tone: "", ic: "refresh", button: "Neu laden",
+          text: "proxmox-backup und proxmox-backup-proxy werden sanft neu geladen; laufende Sicherungen und Kopien arbeiten im alten Prozess zu Ende." }))
+          run(b("reload"), async () => { await POST(`/api/pbs/${enc(s.server_id)}/reload`); await load(); }, "Dienste neu geladen.");
+      };
+      if (b("reboot")) b("reboot").onclick = () => reboot(s, b("reboot"));
+      if (b("auto")) b("auto").onclick = () => autoForm(s);
+      qsa("[data-sshsetup]", el).forEach((x) => x.onclick = () => sshSetup(s));
+    }
+    list.filter((s) => s.upgrade.state === "running").forEach((s) => follow(s.server_id));
+  };
+  const reboot = async (s, btn) => {
+    const what = s.local ? "Die Appliance" : s.name;
+    if (!await confirmDialog({ title: s.local ? "Appliance neu starten?" : `${s.name} neu starten?`, tone: "", ic: "power", button: "Neu starten",
+      text: `${esc(what)} ist ein bis zwei Minuten nicht erreichbar.${s.local ? " Diese Oberfläche lädt danach von selbst neu." : ""}` })) return;
+    const go = async (force) => { await POST(`/api/pbs/${enc(s.server_id)}/reboot`, { force }); };
+    try { await go(false); }
+    catch (e) {
+      if (e.status !== 409 || !e.data?.busy) { toastErr(e); return; }
+      if (!await confirmDialog({ title: "Es läuft gerade noch etwas", button: "Trotzdem neu starten", ic: "power",
+        text: `<b>${e.data.busy.map(esc).join(", ")}</b> würde abgebrochen. Besser warten, bis es fertig ist.` })) return;
+      try { await go(true); } catch (e2) { toastErr(e2); return; }
+    }
+    if (s.local) return waitForRestart("Die Appliance startet neu …", null, true);
+    toast(`${s.name} startet neu.`);
+    btn.disabled = true;
+    setTimeout(() => box.isConnected && POST(`/api/pbs/${enc(s.server_id)}/health`).catch(() => {}).then(load), 90000);
+  };
+  const follow = async (id) => {
+    if (following.has(id)) return;
+    following.add(id);
+    try {
+      while (box.isConnected) {
+        await sleep(2000);
+        const u = await GET(`/api/pbs/${enc(id)}/upgrade`);
+        const log = qs(`[data-srv="${CSS.escape(id)}"] [data-log]`, box);
+        if (u.state !== "running") {
+          const s = list.find((x) => x.server_id === id);
+          toast(u.state === "ok" ? `${s ? s.name : id}: Updates eingespielt.` : `${s ? s.name : id}: ${u.error}`, u.state === "ok" ? "ok" : "error");
+          await load();
+          break;
+        }
+        if (log && u.log.length) { const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8; log.textContent = u.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight; }
+      }
+    } catch (e) { /* page left or server gone: the next visit picks it up */ }
+    following.delete(id);
+  };
+  try { await load(); } catch (e) { box.innerHTML = `<p class="bad small">${esc(e.message)}</p>`; }
+}
 
 SET_PAGES.zugriff = async (box) => {
   const [sys, set] = await Promise.all([GET("/api/system"), GET("/api/settings")]);

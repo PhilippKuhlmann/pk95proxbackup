@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"regexp"
 	"sort"
@@ -202,6 +203,29 @@ func (s *Server) testSSH(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"output": strings.TrimSpace(out), "missing": missing})
+}
+
+// enableSSH tries the SSH access with the given address and switches it on when it works.
+func (s *Server) enableSSH(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host string `json:"host"`
+		Port int    `json:"port"`
+		User string `json:"user"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	line, err := s.C.EnableSSH(r.Context(), r.PathValue("id"), req.Host, req.Port, req.User)
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, err)
+		return
+	}
+	if err != nil {
+		msg := err.Error()
+		writeErr(w, http.StatusUnprocessableEntity, strings.ToUpper(msg[:1])+msg[1:]+".")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"output": line})
 }
 
 // ---- datastores ----

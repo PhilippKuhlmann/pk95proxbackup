@@ -253,6 +253,7 @@ func (c *Core) Run(ctx context.Context) {
 	var prev *Overview
 	localTry := time.Time{}
 	go c.afterStart(ctx)
+	c.resumeUpgrades()
 	for {
 		if time.Since(localTry) > 2*time.Minute {
 			localTry = time.Now()
@@ -269,6 +270,7 @@ func (c *Core) Run(ctx context.Context) {
 		c.scheduleRestoreTests(time.Now())
 		c.scheduleDiskHealth(time.Now())
 		c.scheduleServerHealth(time.Now())
+		c.scheduleAutoUpdates(time.Now())
 		c.scheduleMonthly(time.Now())
 		c.enforcePVEMail(time.Now())
 		c.scheduleUpdateCheck(time.Now())
@@ -438,6 +440,7 @@ func TaskLabel(t string) string {
 		"qmrestore": "Wiederherstellung VM", "vzrestore": "Wiederherstellung CT", "reader": "Lesezugriff",
 		"mount-device": "Platte einhängen", "unmount-device": "Platte aushängen", "create-datastore": "Datastore anlegen",
 		"delete-datastore": "Datastore löschen", "dircreate": "Platte vorbereiten", "wipedisk": "Platte löschen",
+		"aptupdate": "Paketlisten laden", "srvreload": "Dienste neu laden",
 	}
 	if l, ok := m[t]; ok {
 		return l

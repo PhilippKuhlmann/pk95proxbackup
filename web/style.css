@@ -658,10 +658,10 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
 .plan-table td { padding: 6px 8px; border-top: 1px solid var(--line-soft); vertical-align: middle; }
 .plan-table .plan-label { min-width: 120px; }
 .plan-table .plan-week { min-width: 130px; }
-.daypick { display: inline-flex; border: 1px solid var(--control, var(--line)); border-radius: var(--r); overflow: hidden; }
-.daypick label { position: relative; cursor: pointer; }
+.daypick { display: inline-flex; max-width: 100%; border: 1px solid var(--control, var(--line)); border-radius: var(--r); overflow: hidden; }
+.daypick label { position: relative; cursor: pointer; flex: 0 1 34px; min-width: 0; }
 .daypick input { position: absolute; opacity: 0; pointer-events: none; }
-.daypick span { display: block; min-width: 34px; padding: 7px 0; text-align: center; font-size: 13px; font-weight: 500; color: var(--ink-2); border-left: 1px solid var(--control, var(--line)); user-select: none; }
+.daypick span { display: block; padding: 7px 0; text-align: center; font-size: 13px; font-weight: 500; color: var(--ink-2); border-left: 1px solid var(--control, var(--line)); user-select: none; }
 .daypick label:first-child span { border-left: 0; }
 .daypick input:checked + span { background: var(--c600); color: #fff; }
 .daypick input:focus-visible + span { outline: 2px solid var(--c500); outline-offset: -2px; }
@@ -769,3 +769,16 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 @media (max-width: 560px) { .form-grid.cols-2, .form-grid.cols-3 { grid-template-columns: minmax(0, 1fr); } }
 
 .uname .urole { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); line-height: 1.1; }
+
+/* System updates of the Backup Servers */
+.sys-srv { padding: 16px 0; border-top: 1px solid var(--line-soft); }
+.sys-srv:first-of-type { border-top: 0; padding-top: 0; }
+.sys-srv:last-child { padding-bottom: 0; }
+.sys-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.sys-srv .log { max-height: 240px; }
+.sys-pkgs > summary { cursor: pointer; font-size: 13px; color: var(--accent-ink); width: fit-content; }
+.sys-pkgs > summary:hover { text-decoration: underline; }
+.sys-pkgs ul { margin: 6px 0 0; padding-left: 18px; font: 12px/1.6 var(--mono); color: var(--muted); }
+.sys-pkgs .log { margin-top: 6px; }
+.sys-auto { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; }
+.sys-auto > .icon { color: var(--muted); flex: none; }

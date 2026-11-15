@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"pk95proxbackup/internal/core"
+	"pk95proxbackup/internal/hostexec"
 	"pk95proxbackup/internal/notify"
 	"pk95proxbackup/internal/prox"
 	"pk95proxbackup/internal/shares"
@@ -301,9 +302,11 @@ func Setup(c *core.Core) (func(), error) {
 	local.tasks.seed("pbs-appliance", "syncjob", "pk95r-demo-a1:backup:usb-a", "OK", now.Add(-26*time.Hour), 18*time.Minute)
 
 	// Software: the appliance is current; the office server was upgraded but not restarted.
-	upd := []prox.AptPackage{{Package: "tzdata", OldVersion: "2026c-0+deb13u1", Version: "2026f-0+deb13u1"}, {Package: "apt", OldVersion: "3.0.3", Version: "3.0.4"}}
+	upd := []prox.AptPackage{{Package: "tzdata", OldVersion: "2026c-0+deb13u1", Version: "2026f-0+deb13u1"}, {Package: "apt", OldVersion: "3.0.3", Version: "3.0.4"},
+		{Package: "proxmox-kernel-7.0.14-28-pve-signed", Version: "7.0.14-28"}}
 	local.SetPackages("4.2.10", "4.2.10-1", "", "7.0.14-26", []string{"7.0.14-26", "6.14.11-9"}, upd)
-	offsite.SetPackages("4.2.6", "4.2.10-1", "", "7.0.14-17", []string{"7.0.14-26", "7.0.14-17"}, nil)
+	offsite.SetPackages("4.2.6", "4.2.10-1", "", "7.0.14-17", []string{"7.0.14-26", "7.0.14-17"},
+		[]prox.AptPackage{{Package: "openssl", OldVersion: "3.5.1-1", Version: "3.5.4-1"}, {Package: "libssl3t64", OldVersion: "3.5.1-1", Version: "3.5.4-1"}})
 	// SMART: disk A is fine, the spare Seagate has replaced sectors, the Intenso adapter
 	// passes no SMART values on, the virtual disk has none.
 	local.SetSmart("sdc", SmartATA("passed", 0, 0, 8760, 34))
@@ -349,7 +352,18 @@ func Setup(c *core.Core) (func(), error) {
 
 	runner := NewRunner()
 	runner.scans["/dev/sde1"] = "STORE\tusb-montag\t2\t1\n"
+	runner.OnUpgrade = local.Upgrade
 	c.LocalRunner = runner
+	// SSH to the office server: root works, any other account is not root.
+	office := NewRunner()
+	office.OnUpgrade = offsite.Upgrade
+	notRoot := &Runner{mounted: map[string]bool{}, files: map[string]string{}, scans: map[string]string{}, UID: "1000"}
+	c.SSHRunner = func(s core.PBSServer) hostexec.Runner {
+		if s.SSHUser != "" && s.SSHUser != "root" {
+			return notRoot
+		}
+		return office
+	}
 	c.SelfUUID = func() string { return "6b0f6f6e-3c55-4e2b-9d0e-3a7c95b0f120" }
 
 	host := func(s *httptest.Server) (string, int) {
@@ -420,6 +434,55 @@ type Runner struct {
 	mounted map[string]bool
 	files   map[string]string
 	scans   map[string]string // device → output of the datastore scan
+	// package upgrade (systemd-run pk95-apt-upgrade)
+	upgradeAt   time.Time
+	upgradeDone bool
+	upgraded    int
+	// OnUpgrade applies the upgrade to the simulated server and returns the package count.
+	OnUpgrade func() int
+	// UID is what "id -u" answers ("" = 0, root).
+	UID string
+}
+
+// UpgradeDuration is how long a simulated package upgrade runs.
+var UpgradeDuration = 12 * time.Second
+
+var upgradeLines = []string{
+	"== apt-get update",
+	"Hit:1 http://deb.debian.org/debian trixie InRelease",
+	"Hit:2 http://download.proxmox.com/debian/pbs trixie InRelease",
+	"Reading package lists...",
+	"== apt-get dist-upgrade",
+	"Reading package lists...",
+	"Building dependency tree...",
+	"Calculating upgrade...",
+}
+
+// upgradeStatus answers the status script of the package upgrade.
+func (r *Runner) upgradeStatus() string {
+	if r.upgradeAt.IsZero() {
+		return "inactive\n--rc\n--log\n"
+	}
+	el := time.Since(r.upgradeAt)
+	if el < UpgradeDuration {
+		n := 1 + int(float64(len(upgradeLines)+3)*el.Seconds()/UpgradeDuration.Seconds())
+		lines := upgradeLines
+		if n < len(lines) {
+			lines = lines[:n]
+		} else {
+			lines = append(append([]string{}, lines...), "Unpacking tzdata (2026f-0+deb13u1) over (2026c-0+deb13u1) ...", "Setting up tzdata (2026f-0+deb13u1) ...")
+		}
+		return "active\n--rc\n--log\n" + strings.Join(lines, "\n") + "\n"
+	}
+	if !r.upgradeDone {
+		r.upgradeDone = true
+		if r.OnUpgrade != nil {
+			r.upgraded = r.OnUpgrade()
+		}
+	}
+	tail := []string{fmt.Sprintf("%d upgraded, 0 newly installed, 0 to remove and 0 not upgraded.", r.upgraded),
+		"Setting up tzdata (2026f-0+deb13u1) ...", "Processing triggers for man-db (2.13.1-1) ..."}
+	return "inactive\n--rc\n0\n--log\n" + strings.Join(append(append([]string{}, upgradeLines...), tail...), "\n") + "\n"
 }
 
 // NewRunner returns a runner where the demo share is mounted.
@@ -438,7 +501,21 @@ func (r *Runner) Run(_ context.Context, name string, args ...string) (string, er
 			return fmt.Sprintf("%d %d %d\n", 4000*gib, 1310*gib, 2690*gib), nil
 		}
 		return "", fmt.Errorf("findmnt: exit status 1")
+	case "systemd-run":
+		if len(args) > 0 && args[0] == "--unit=pk95-apt-upgrade" {
+			r.upgradeAt, r.upgradeDone = time.Now(), false
+			return "Running as unit: pk95-apt-upgrade.service", nil
+		}
 	case "systemctl":
+		if len(args) == 2 && args[1] == "pk95-apt-upgrade" {
+			if args[0] == "is-active" && !r.upgradeAt.IsZero() && time.Since(r.upgradeAt) < UpgradeDuration {
+				return "active\n", nil
+			}
+			if args[0] == "is-active" {
+				return "inactive\n", fmt.Errorf("systemctl: exit status 3")
+			}
+			return "", nil
+		}
 		if len(args) >= 2 {
 			unit := args[len(args)-1]
 			mp := shares.Root + "/" + strings.TrimSuffix(strings.TrimPrefix(unit, "mnt-pk95-"), ".mount")
@@ -455,6 +532,9 @@ func (r *Runner) Run(_ context.Context, name string, args ...string) (string, er
 		}
 		return "", nil
 	case "sh":
+		if len(args) == 2 && strings.Contains(args[1], "pk95-apt-upgrade") {
+			return r.upgradeStatus(), nil
+		}
 		// datastore scan of a partition: sh -c <script> sh <device>
 		if len(args) == 4 && strings.Contains(args[1], ".chunks") {
 			out, ok := r.scans[args[3]]
@@ -463,6 +543,11 @@ func (r *Runner) Run(_ context.Context, name string, args ...string) (string, er
 			}
 			return out, nil
 		}
+	case "id":
+		if r.UID != "" {
+			return r.UID + "\n", nil
+		}
+		return "0\n", nil
 	case "proxmox-backup-manager":
 		return "proxmox-backup-server 4.0.18-1 running version: 4.0.18", nil
 	}

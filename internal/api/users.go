@@ -171,6 +171,8 @@ var actionNames = map[string]string{
 	"POST /api/account/password": "Eigenes Passwort geändert", "POST /api/account/totp/enable": "Zwei-Faktor eingeschaltet",
 	"POST /api/account/totp/disable": "Zwei-Faktor ausgeschaltet", "POST /api/account/totp/recovery": "Neue Wiederherstellungscodes",
 	"PUT /api/update": "Aktualisierung eingestellt", "POST /api/update/install": "Aktualisierung installiert",
+	"POST /api/pbs/{id}/packages": "Paketlisten aktualisiert", "POST /api/pbs/{id}/upgrade": "Systemupdates gestartet", "POST /api/pbs/{id}/reboot": "Backup-Server neu gestartet",
+	"PUT /api/pbs/{id}/autoupdate": "Automatische Updates eingestellt", "POST /api/pbs/{id}/ssh": "SSH-Zugang eingerichtet",
 	"PUT /api/selfbackup": "Sicherung der Appliance eingestellt", "POST /api/selfbackup/run": "Sicherung der Appliance gestartet",
 	"GET /api/selfbackup/download": "Sicherung der Appliance heruntergeladen", "POST /api/selfbackup/restore": "Appliance wiederhergestellt",
 	"POST /api/pbs": "Backup-Server verbunden", "PUT /api/pbs/{id}": "Backup-Server geändert", "DELETE /api/pbs/{id}": "Backup-Server entfernt",

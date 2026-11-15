@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -306,4 +307,78 @@ func (s *Server) reloadServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h)
+}
+
+// ---- system updates of the Backup Servers ----
+
+func (s *Server) listSysUpdates(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"servers": s.C.SystemUpdates()})
+}
+
+func (s *Server) refreshPackages(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Minute)
+	defer cancel()
+	h, err := s.C.RefreshPackages(ctx, r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h)
+}
+
+func (s *Server) startUpgrade(w http.ResponseWriter, r *http.Request) {
+	u, err := s.C.StartUpgrade(r.Context(), r.PathValue("id"), currentUser(r).Username)
+	if errors.Is(err, core.ErrNoShell) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (s *Server) upgradeStatus(w http.ResponseWriter, r *http.Request) {
+	u, err := s.C.UpgradeStatus(r.Context(), r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (s *Server) rebootServer(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Force bool `json:"force"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	busy, err := s.C.RebootServer(r.Context(), r.PathValue("id"), currentUser(r).Username, req.Force)
+	if errors.Is(err, core.ErrBusy) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "Es läuft gerade noch etwas.", "busy": busy})
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	ok(w)
+}
+
+func (s *Server) setAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	var req core.AutoUpdate
+	if !decode(w, r, &req) {
+		return
+	}
+	errs, err := s.C.SetAutoUpdate(r.PathValue("id"), req)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if fieldErrs(w, errs) {
+		return
+	}
+	ok(w)
 }

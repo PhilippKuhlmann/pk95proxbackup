@@ -648,6 +648,20 @@ func (p *PBS) AptUpdates(ctx context.Context) ([]AptPackage, error) {
 	return out, err
 }
 
+// RefreshPackages reads the package lists again (apt update) and waits for it.
+func (p *PBS) RefreshPackages(ctx context.Context) error {
+	var upid string
+	if err := p.Do(ctx, http.MethodPost, "/nodes/localhost/apt/update", Params{"quiet": true}, &upid); err != nil {
+		return err
+	}
+	return p.waitIfTask(ctx, upid, 5*time.Minute)
+}
+
+// Reboot restarts the machine of the Backup Server.
+func (p *PBS) Reboot(ctx context.Context) error {
+	return p.Do(ctx, http.MethodPost, "/nodes/localhost/status", Params{"command": "reboot"}, nil)
+}
+
 // RunningKernel returns the release of the running kernel ("7.0.14-17-pve").
 func (p *PBS) RunningKernel(ctx context.Context) (string, error) {
 	var out struct {

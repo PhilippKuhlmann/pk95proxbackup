@@ -57,6 +57,15 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Appliance das, entfernt den verwaisten Mount und liest die Platte nach der nächsten Kopie zur Kontrolle zurück.
 - **Zustand der Backup-Server:** laufende und installierte PBS-Version („Dienste neu laden“ per Klick), Neustart nötig
   wegen neuem Kernel, verfügbare Updates – geprüft alle sechs Stunden, zu sehen unter Verbindungen.
+- **Systemupdates:** unter Einstellungen → Aktualisierung je Backup-Server nach Updates suchen, die Debian- und
+  Proxmox-Pakete per Klick einspielen (`apt dist-upgrade` im Hintergrund, geänderte Konfigurationsdateien bleiben,
+  das Protokoll läuft mit) und den Server neu starten. Der Neustart fragt nach, wenn gerade Sicherungen, Kopien oder
+  Prüfungen laufen. Bei einem angebundenen PBS braucht das Einspielen den SSH-Zugang (als root); er lässt sich direkt
+  dort einrichten – die Appliance zeigt den Befehl für ihren Schlüssel und schaltet SSH erst ein, wenn die Verbindung
+  klappt.
+- **Automatische Updates:** je Backup-Server nach Plan (Wochentage, Uhrzeit) einspielen und bei Bedarf (neuer
+  Kernel) neu starten. Läuft dabei noch eine Sicherung, Kopie oder Prüfung, wartet die Appliance bis zu drei Stunden;
+  sonst verschiebt sie den Neustart auf den nächsten Termin und meldet das.
 - **Monatsbericht:** am 1. jedes Monats per Mail, Telegram oder Push – Sicherungen je Server, USB-Kopien,
   Restore-Tests, Festplatten, Backup-Server, Archiv-Platten und alle Hinweise des Vormonats, vollständig als
   HTML-Datei (druckbar als PDF); jederzeit unter Benachrichtigungen → Monatsbericht ansehbar.

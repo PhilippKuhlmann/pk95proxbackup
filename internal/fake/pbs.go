@@ -77,6 +77,7 @@ type PBS struct {
 	// busy are datastores the proxy holds open: unmount fails until the proxy is reloaded.
 	busy     map[string]bool
 	reloads  int
+	reboots  int
 	apt      aptState
 	remotePw map[string]string
 }
@@ -94,6 +95,31 @@ func (p *PBS) SetPackages(running, installed, candidate, kernel string, kernels 
 	p.mu.Lock()
 	p.apt = aptState{running: running, installed: installed, candidate: candidate, kernel: kernel, kernels: kernels, updates: updates}
 	p.mu.Unlock()
+}
+
+// Upgrade installs the available updates (what apt dist-upgrade would do) and returns how
+// many packages it changed.
+func (p *PBS) Upgrade() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.apt.updates)
+	for _, u := range p.apt.updates {
+		switch {
+		case u.Package == "proxmox-backup-server":
+			p.apt.installed, p.apt.candidate = u.Version, ""
+		case strings.HasPrefix(u.Package, "proxmox-kernel-"):
+			p.apt.kernels = append([]string{u.Version}, p.apt.kernels...)
+		}
+	}
+	p.apt.updates = nil
+	return n
+}
+
+// Reboots counts the reboots of the machine.
+func (p *PBS) Reboots() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.reboots
 }
 
 // Reloads counts the reloads of proxmox-backup-proxy.
@@ -368,6 +394,20 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/version":
 		data(w, map[string]string{"version": "4.0", "release": "18", "repoid": "demo"})
+	case path == "/nodes/localhost/status" && m == "POST":
+		if f.Get("command") != "reboot" && f.Get("command") != "shutdown" {
+			apiErr(w, 400, "parameter verification errors")
+			return
+		}
+		// comes back with the newest kernel and the installed version running
+		p.reboots++
+		if len(p.apt.kernels) > 0 {
+			p.apt.kernel = p.apt.kernels[0]
+		}
+		if p.apt.installed != "" {
+			p.apt.running = strings.TrimSuffix(p.apt.installed, "-1")
+		}
+		data(w, nil)
 	case path == "/nodes/localhost/status":
 		data(w, map[string]any{"current-kernel": map[string]string{"release": p.apt.kernel + "-pve"}, "cpu": 0.07, "uptime": 864000, "memory": map[string]int64{"total": 8 * gib, "used": 3 * gib}, "root": map[string]int64{"total": p.root, "used": 9 * gib}})
 	case path == "/config/datastore" && m == "GET":
@@ -807,6 +847,8 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, prox.AptPackage{Package: "proxmox-kernel-" + k + "-pve-signed", Version: k, OldVersion: k})
 		}
 		data(w, out)
+	case path == "/nodes/localhost/apt/update" && m == "POST":
+		data(w, p.tasks.start(p.node, "aptupdate", "", time.Second, []string{"starting apt-get update"}, nil))
 	case path == "/nodes/localhost/apt/update":
 		data(w, p.apt.updates)
 	case path == "/nodes/localhost/disks/smart":

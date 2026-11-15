@@ -77,6 +77,8 @@ type Core struct {
 	Signer  ssh.Signer
 	// LocalRunner runs commands on this machine (replaced in demo mode).
 	LocalRunner hostexec.Runner
+	// SSHRunner replaces the SSH connection to a Backup Server (demo mode; nil = real SSH).
+	SSHRunner func(s PBSServer) hostexec.Runner
 	// SelfUUID returns the SMBIOS UUID of this VM (for USB passthrough).
 	SelfUUID func() string
 	// EnsureStorage returns (and if needed adds) the PVE storage of a datastore that can read
@@ -107,6 +109,7 @@ type Core struct {
 	refresh     chan struct{}
 	health      healthRuntime
 	update      updateRuntime
+	upgrades    upgradeRuntime
 	selfBackup  selfBackupRuntime
 	plan        planRuntime
 	unplug      unplugRuntime
@@ -200,6 +203,9 @@ func (c *Core) Runner(s PBSServer) (hostexec.Runner, error) {
 	if !s.SSHEnabled {
 		return nil, ErrNoShell
 	}
+	if c.SSHRunner != nil {
+		return c.SSHRunner(s), nil
+	}
 	host := s.SSHHost
 	if host == "" {
 		host = s.Host
@@ -219,6 +225,79 @@ func (c *Core) Runner(s PBSServer) (hostexec.Runner, error) {
 			}
 		},
 	}, nil
+}
+
+// EnableSSH tries the SSH access to a Backup Server and switches it on only when it works:
+// the appliance's key is accepted, the user is root (updates and mounts need it) and the
+// machine is a Backup Server. It returns the PBS version line.
+func (c *Core) EnableSSH(ctx context.Context, id, host string, port int, user string) (string, error) {
+	srv, err := c.Server(id)
+	if err != nil {
+		return "", err
+	}
+	if srv.Local {
+		return "", errors.New("die Appliance braucht für sich selbst kein SSH")
+	}
+	host, user = strings.TrimSpace(host), strings.TrimSpace(user)
+	if host == "" {
+		host = srv.Host
+	}
+	if port == 0 {
+		port = 22
+	}
+	if user == "" {
+		user = "root"
+	}
+	if port < 1 || port > 65535 {
+		return "", errors.New("Port 1 bis 65535")
+	}
+	cand := srv
+	cand.SSHEnabled, cand.SSHHost, cand.SSHPort, cand.SSHUser = true, host, port, user
+	if host != srv.SSHHost || port != srv.SSHPort || user != srv.SSHUser {
+		cand.SSHHostKey = "" // another machine or account: learn its key anew
+	}
+	run, err := c.Runner(cand)
+	if err != nil {
+		return "", err
+	}
+	learned := ""
+	if r, ok := run.(*hostexec.SSH); ok {
+		r.OnLearn = func(key string) { learned = key }
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	uid, err := run.Run(ctx, "id", "-u")
+	if err != nil {
+		return "", sshProblem(err, host, port)
+	}
+	if strings.TrimSpace(uid) != "0" {
+		return "", fmt.Errorf("der Benutzer %s ist nicht root – Updates und Freigaben brauchen root. Als Benutzer root eintragen", user)
+	}
+	ver, err := run.Run(ctx, "proxmox-backup-manager", "versions")
+	if err != nil {
+		return "", fmt.Errorf("auf %s läuft kein Proxmox Backup Server (proxmox-backup-manager fehlt)", host)
+	}
+	if learned != "" {
+		cand.SSHHostKey = learned
+	}
+	if err := c.St.Put(KindPBS, id, cand); err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(strings.SplitN(ver, "\n", 2)[0])
+	c.Event("info", srv.Name, "SSH-Zugang eingerichtet", user+"@"+host+" – "+line)
+	return line, nil
+}
+
+// sshProblem words a failed SSH connection.
+func sshProblem(err error, host string, port int) error {
+	m := err.Error()
+	switch {
+	case strings.Contains(m, "unable to authenticate"):
+		return errors.New("der Server lehnt den Schlüssel der Appliance ab – den Befehl aus Schritt 1 als root auf dem Server ausführen")
+	case strings.Contains(m, "nicht erreichbar"):
+		return fmt.Errorf("SSH auf %s:%d nicht erreichbar – Adresse und Port prüfen, läuft dort ein SSH-Server?", host, port)
+	}
+	return err
 }
 
 // ---- shares ----

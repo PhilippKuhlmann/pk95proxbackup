@@ -3,9 +3,11 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,5 +94,61 @@ func TestSelfBackupAndSetupRestore(t *testing.T) {
 	// The setup restore is closed once an account exists.
 	if code, _ := cl.multipart("/api/setup/restore", map[string]string{"code": "ABCD-EFGH", "password": "Langes-Passwort-1"}, file, false); code != 409 {
 		t.Fatalf("setup restore after setup: %d", code)
+	}
+}
+
+// System updates: list, start (admins only), reboot refused while work runs.
+func TestSysUpdatesAPI(t *testing.T) {
+	admin := login(t)
+	code, out := admin.do("GET", "/api/sysupdates", nil, false)
+	if code != 200 || len(out["servers"].([]any)) < 2 {
+		t.Fatalf("list: %d %v", code, out)
+	}
+	if code, out = admin.do("POST", "/api/pbs/buero/upgrade", nil, true); code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "SSH") {
+		t.Fatalf("server without shell: %d %v", code, out)
+	}
+	// switch SSH on from here: only when it works, as root
+	if code, out = admin.do("POST", "/api/pbs/buero/ssh", map[string]any{"host": "10.20.0.5", "user": "backup"}, true); code != 422 || !strings.Contains(fmt.Sprint(out["error"]), "nicht root") {
+		t.Fatalf("not root: %d %v", code, out)
+	}
+	if _, out = admin.do("GET", "/api/sysupdates", nil, false); out["servers"].([]any)[1].(map[string]any)["shell"] == true {
+		t.Fatal("failed attempt switched SSH on")
+	}
+	if code, out = admin.do("POST", "/api/pbs/buero/ssh", map[string]any{"host": "10.20.0.5", "port": 22, "user": "root"}, true); code != 200 || out["output"] == "" {
+		t.Fatalf("ssh: %d %v", code, out)
+	}
+	if code, out = admin.do("POST", "/api/pbs/local/ssh", map[string]any{}, true); code != 422 {
+		t.Fatalf("ssh for the appliance: %d %v", code, out)
+	}
+	if code, out = admin.do("POST", "/api/pbs/buero/upgrade", nil, true); code != 200 || out["state"] != "running" {
+		t.Fatalf("upgrade over ssh: %d %v", code, out)
+	}
+	admin.do("POST", "/api/users", map[string]any{"username": "bediener", "password": "bedienen-bedienen", "role": "operator"}, true)
+	op := second(t, admin, "bediener", "bedienen-bedienen")
+	for _, p := range []string{"/api/pbs/local/upgrade", "/api/pbs/local/reboot", "/api/pbs/local/packages"} {
+		if code, _ := op.do("POST", p, map[string]any{}, true); code != 403 {
+			t.Errorf("operator %s: %d", p, code)
+		}
+	}
+	if code, out = admin.do("PUT", "/api/pbs/local/autoupdate", map[string]any{"enabled": true, "weekdays": []int{}, "time": "4 Uhr"}, true); code != 422 {
+		t.Fatalf("bad plan: %d %v", code, out)
+	}
+	if code, out = admin.do("PUT", "/api/pbs/local/autoupdate", map[string]any{"enabled": true, "weekdays": []int{6, 7}, "time": "04:30", "reboot": true}, true); code != 200 {
+		t.Fatalf("plan: %d %v", code, out)
+	}
+	if code, _ = op.do("PUT", "/api/pbs/local/autoupdate", map[string]any{"enabled": false, "time": "04:30"}, true); code != 403 {
+		t.Fatalf("operator changed the plan: %d", code)
+	}
+	_, out = admin.do("GET", "/api/sysupdates", nil, false)
+	for _, v := range out["servers"].([]any) {
+		if m := v.(map[string]any); m["server_id"] == "local" && (m["auto"].(map[string]any)["enabled"] != true || m["next"] == nil) {
+			t.Fatalf("plan not shown: %v", m)
+		}
+	}
+	if code, out = admin.do("POST", "/api/pbs/local/datastores/backup/verify", nil, true); code != 200 {
+		t.Fatalf("verify: %d %v", code, out)
+	}
+	if code, out = admin.do("POST", "/api/pbs/local/reboot", map[string]any{}, true); code != 409 || len(out["busy"].([]any)) == 0 {
+		t.Fatalf("reboot while verifying: %d %v", code, out)
 	}
 }
