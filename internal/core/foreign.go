@@ -209,7 +209,7 @@ func (c *Core) scanForeignDisks(ctx context.Context, now time.Time) {
 		c.foreign.sig[id] = sig
 		c.foreign.mu.Unlock()
 		if run != nil && due {
-			c.releaseStaleMounts(ctx, srv, run, st)
+			c.releaseStaleMounts(ctx, srv, pbs, run, st)
 		}
 	}
 }
@@ -217,10 +217,22 @@ func (c *Core) scanForeignDisks(ctx context.Context, now time.Time) {
 // staleMountScript lists the mounts below /mnt/datastore in mount order: target and source.
 const staleMountScript = `findmnt -rn -o TARGET,SOURCE | while read -r t s; do case "$t" in /mnt/datastore/*) echo "$t $s";; esac; done`
 
-// releaseStaleMounts unmounts datastore mounts whose device is gone. Only the top mount of a
-// path is touched (a live mount over a stale one stays until it is unmounted itself), and
-// only datastores of rotation and archive disks.
-func (c *Core) releaseStaleMounts(ctx context.Context, srv PBSServer, run hostexec.Runner, stores map[string]bool) []string {
+// releaseStaleMounts unmounts datastore mounts whose device is gone. Only datastores of
+// rotation and archive disks that the Backup Server reports as not mounted are touched, and
+// only the top mount of their path (a live mount over a stale one stays until it is
+// unmounted itself).
+func (c *Core) releaseStaleMounts(ctx context.Context, srv PBSServer, pbs *prox.PBS, run hostexec.Runner, stores map[string]bool) []string {
+	us, err := pbs.Usage(ctx)
+	if err != nil {
+		return nil // without the server's view nothing is touched
+	}
+	candidates := map[string]bool{}
+	for _, u := range us {
+		if stores[u.Store] && u.MountStatus != "mounted" {
+			candidates[u.Store] = true
+		}
+	}
+	stores = candidates
 	out, err := run.Run(ctx, "sh", "-c", staleMountScript)
 	if err != nil {
 		return nil
@@ -360,7 +372,7 @@ func (c *Core) adoptDisk(ctx context.Context, r Rotation, d RotDisk, rt *diskRun
 	c.setPhase(key, rt, "rebuilding")
 	// The old disk's mount can still be there: free the path for the new one.
 	if run := c.runnerOrNil(srv); run != nil {
-		c.releaseStaleMounts(ctx, srv, run, map[string]bool{d.Store: true})
+		c.releaseStaleMounts(ctx, srv, pbs, run, map[string]bool{d.Store: true})
 	}
 	if storeExists(cfgs, d.Store) {
 		if us, err := pbs.Usage(ctx); err == nil {

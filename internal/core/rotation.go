@@ -460,11 +460,7 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 			if ds.LastOK > st.LastCopy {
 				st.LastCopy = ds.LastOK
 			}
-			ref := ds.LastOK
-			if ref == 0 {
-				ref = d.Added
-			}
-			ds.Stale, ds.StaleHint = r.staleness(d, ref, now)
+			ds.Stale, ds.StaleHint = r.diskStale(d, ds.Present, ds.LastOK, now)
 			ds.Health = hidx.rotation[r.ID+"/"+d.Key]
 			st.Disks = append(st.Disks, ds)
 		}

@@ -86,6 +86,13 @@ func TestRotationStaleness(t *testing.T) {
 	if st, hint := daily.staleness(daily.Disks[0], at(11, 9), now); !st || !strings.Contains(hint, "alle 2 Tage") {
 		t.Errorf("5 days: %v %q", st, hint)
 	}
+	// plugged in (being copied right now): never "long not plugged in"
+	if st, _ := daily.diskStale(daily.Disks[0], true, at(11, 7), now); st {
+		t.Error("plugged-in disk with an old copy counts as stale")
+	}
+	if st, _ := daily.diskStale(daily.Disks[0], false, at(11, 7), now); !st {
+		t.Error("disk away with an old copy is not stale")
+	}
 
 	// Mo–Do disks and one Friday disk: the Friday disk after two missed Fridays
 	plan := Rotation{Rhythm: "daily", Disks: []RotDisk{{Key: "mo", Days: []int{1}}, {Key: "fr", Days: []int{5}}}}

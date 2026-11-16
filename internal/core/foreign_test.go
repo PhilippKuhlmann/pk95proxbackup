@@ -16,7 +16,9 @@ func TestForeignDisks(t *testing.T) {
 	c := newCore(t)
 	ctx := context.Background()
 	run := c.LocalRunner.(*fake.Runner)
-	run.StaleMounts = []string{"/mnt/datastore/usb-b /dev/sdz1[/usb-b]", "/mnt/datastore/fremd /dev/sdy1"}
+	// usb-a is mounted (the server says so): its path is never touched, even if a check
+	// of its device went wrong
+	run.StaleMounts = []string{"/mnt/datastore/usb-b /dev/sdz1[/usb-b]", "/mnt/datastore/fremd /dev/sdy1", "/mnt/datastore/usb-a /dev/sdx1[/usb-a]"}
 	c.ScanForeignForTest(ctx, time.Now())
 
 	st := c.RotationStates(ctx)[0]

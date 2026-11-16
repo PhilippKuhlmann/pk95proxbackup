@@ -297,6 +297,19 @@ var weekdayShort = []string{"", "Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"}
 // With a swap plan, a disk counts as long unused once it missed two of its own turns – a
 // Friday disk after two Fridays, a disk for the 1st Friday of the month after two months.
 // Without a plan, the disks of a set take turns: one missed round plus a day.
+// diskStale tells whether a disk counts as long not plugged in. A disk that is plugged in
+// (and maybe being copied right now) never does, however old its last copy is.
+func (r Rotation) diskStale(d RotDisk, present bool, lastOK int64, now time.Time) (bool, string) {
+	if present {
+		return false, ""
+	}
+	ref := lastOK
+	if ref == 0 {
+		ref = d.Added
+	}
+	return r.staleness(d, ref, now)
+}
+
 func (r Rotation) staleness(d RotDisk, ref int64, now time.Time) (bool, string) {
 	if len(r.Disks) < 2 && len(d.Days) == 0 {
 		return false, ""
