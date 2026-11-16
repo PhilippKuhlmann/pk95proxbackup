@@ -310,10 +310,12 @@ type RotationState struct {
 	// Swap plan: the disk due today, the next one, and whether the right one is plugged in
 	// ("" no plan today, ok, swap, missing).
 	PlanToday string `json:"plan_today,omitempty"`
-	PlanNext  string `json:"plan_next,omitempty"`
-	PlanState string `json:"plan_state,omitempty"`
-	PlanLate  bool   `json:"plan_late,omitempty"` // the copy time has passed
-	Error     string `json:"error,omitempty"`
+	// Foreign are disks plugged into the server that belong to no datastore.
+	Foreign   []ForeignDisk `json:"foreign"`
+	PlanNext  string        `json:"plan_next,omitempty"`
+	PlanState string        `json:"plan_state,omitempty"`
+	PlanLate  bool          `json:"plan_late,omitempty"` // the copy time has passed
+	Error     string        `json:"error,omitempty"`
 }
 
 type pbsFacts struct {
@@ -324,6 +326,7 @@ type pbsFacts struct {
 	err   error
 	// disksOK: the disk list could be read (only then is a missing disk really missing).
 	disksOK bool
+	diskSig string // names and filesystems of the disks
 }
 
 func (c *Core) facts(ctx context.Context, pbs *prox.PBS) pbsFacts {
@@ -342,7 +345,7 @@ func (c *Core) facts(ctx context.Context, pbs *prox.PBS) pbsFacts {
 		}
 	}
 	if disks, err := pbs.Disks(ctx); err == nil {
-		f.disksOK = true
+		f.disksOK, f.diskSig = true, diskSig(disks)
 		for _, d := range disks {
 			for _, p := range d.Partitions {
 				if p.UUID != "" {
@@ -401,7 +404,11 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 				f = c.facts(ctx, pbs)
 			}
 			factsBy[r.ServerID] = f
+			if f.disksOK {
+				c.noteDiskList(r.ServerID, f.diskSig)
+			}
 		}
+		st.Foreign = c.ForeignDisks(r.ServerID)
 		if f.err != nil {
 			st.Error = f.err.Error()
 		}

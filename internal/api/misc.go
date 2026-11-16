@@ -801,6 +801,25 @@ func (s *Server) rotationDiskAction(w http.ResponseWriter, r *http.Request) {
 		err = s.C.RunRotationDisk(ctx, rot, d)
 	case "eject":
 		err = s.C.EjectRotationDisk(ctx, rot, d)
+	case "adopt":
+		// Take a disk that belongs to no datastore over as this disk (formats it).
+		var req struct {
+			Disk string `json:"disk"`
+		}
+		if !decode(w, r, &req) {
+			return
+		}
+		if err := s.C.CheckAdopt(ctx, rot, d, req.Disk); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		go func() {
+			bctx, bcancel := context.WithTimeout(context.Background(), time.Hour)
+			defer bcancel()
+			if err := s.C.AdoptDisk(bctx, rot, d, req.Disk); err != nil {
+				s.C.EventDetails("critical", "USB-Sicherung", "Festplatte „"+d.Label+"“ konnte nicht neu aufgesetzt werden", err.Error(), nil)
+			}
+		}()
 	case "rebuild":
 		// Formatting and creating the datastore can take a while: in the background.
 		go func() {

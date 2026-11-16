@@ -1919,6 +1919,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
           `Wer eine eingehängte Platte abzieht, riskiert Datenverlust auf der Platte. Empfehlung: „Nach der Kopie aushängen“ einschalten – dann kann jede fertige Platte gefahrlos gezogen werden.${x.disks.some((d) => d.unplugged_at) ? ` Zuletzt wurde eine Platte am ${esc(fmtTime(Math.max(...x.disks.map((d) => d.unplugged_at || 0))))} eingehängt abgezogen.` : ""}`,
           `<button class="btn sm" type="button" data-autounmount="${x.id}">Einschalten</button>`) : ""}
         ${planCallout(x)}
+        ${foreignCallouts(x)}
         ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : `<div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
           <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? " · Platten werden nach der Kopie ausgehängt" : ""}</div></div></div>`}
         ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte Kopie</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
@@ -1969,6 +1970,14 @@ PAGES["/wechselplatten"] = async (el, token) => {
       await run(b, async () => { await POST(`/api/rotations/${rid}/disks/${k}/rebuild`); setTimeout(draw, 1500); }, "Die Platte wird neu aufgesetzt – das dauert je nach Größe einige Minuten.");
     });
     qsa("[data-adddisk]", el).forEach((b) => b.onclick = () => addDiskForm(rots.find((x) => x.id === b.dataset.adddisk), draw));
+    qsa("[data-adopt]", el).forEach((b) => b.onclick = async () => {
+      const [rid, k, dev] = b.dataset.adopt.split("|");
+      const x = rots.find((r1) => r1.id === rid), d = x.disks.find((d1) => d1.key === k), f = x.foreign.find((f1) => f1.name === dev);
+      const ok = await confirmDialog({ title: `Als „${d.label}“ neu aufsetzen?`, button: "Formatieren und neu befüllen", ic: "refresh",
+        text: `Alles auf <b>${esc(foreignName(f))}</b> (/dev/${esc(f.name)}, ${esc(fmtBytes(f.size))}${f.uuid ? `, Kennung ${esc(f.uuid.slice(0, 8))}…` : ""}) wird gelöscht. Die Platte wird als „${esc(d.label)}“ formatiert, mit den Sicherungen von ${esc(x.source_name)} / ${esc(x.source_store)} neu befüllt und danach vollständig zurückgelesen.` });
+      if (!ok) return;
+      await run(b, async () => { await POST(`/api/rotations/${rid}/disks/${k}/adopt`, { disk: dev }); setTimeout(draw, 1500); }, `„${d.label}“ wird neu aufgesetzt – das dauert je nach Größe einige Minuten.`);
+    });
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
       const x = rots.find((y) => y.id === b.dataset.del);
       if (await confirmDialog({ title: `Satz „${x.name}“ entfernen?`, text: "Die Kopierjobs werden gelöscht. Die Wechsel-Datastores und die Sicherungen auf den Platten bleiben erhalten.", button: "Entfernen" }))
@@ -1986,6 +1995,24 @@ PAGES["/wechselplatten"] = async (el, token) => {
   await draw();
   every(3000, token, () => (document.hidden ? null : draw(false)));
 };
+
+const foreignName = (f) => [f.vendor, f.model].filter(Boolean).join(" ").replace(/_/g, " ") || "Unbekannte Platte";
+
+// foreignCallouts: disks plugged into the server of a set that belong to no datastore – a new
+// disk to add, or a disk of the set whose datastore no longer matches it (take it over).
+function foreignCallouts(x) {
+  const away = x.disks.filter((d) => !d.present && !d.phase && !d.running);
+  return (x.foreign || []).map((f) => {
+    const what = `${esc(foreignName(f))} · ${esc(fmtBytes(f.size))} · /dev/${esc(f.name)}`;
+    const adopt = can("admin") ? away.map((d) => `<button class="btn ${f.blank ? "gray " : ""}sm" type="button" data-adopt="${x.id}|${d.key}|${esc(f.name)}">${icon("refresh")} Als „${esc(d.label)}“ einrichten</button>`).join("") : "";
+    if (f.blank) return callout("", `Neue Platte angesteckt an ${x.server_name}`, `${what} – noch leer. Als weitere Platte in den Satz aufnehmen oder als Ersatz für eine fehlende.`,
+      `<button class="btn sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>${adopt}`);
+    return callout("yellow", `Platte angesteckt, die zu keinem Datastore gehört`,
+      `${what}${f.uuid ? ` · Kennung <span class="mono">${esc(f.uuid.slice(0, 8))}…</span>` : ""}. ${esc(x.server_name)} hängt sie deshalb nicht ein. ` +
+      (away.length ? `Ist es eine Platte dieses Satzes, passt ihr Datastore nicht mehr zu ihr (etwa nach Formatieren an einem anderen Rechner) – dann als die fehlende Platte neu einrichten. Alles auf ihr wird dabei gelöscht.` : `Alle Platten dieses Satzes sind da; gehört sie nicht dazu, einfach abziehen.`) +
+      ` Trägt sie Sicherungen von anderswo, unten bei den Archiv-Platten „Fremde Platte einlesen“ wählen.`, adopt);
+  }).join("");
+}
 
 const TRANSFER_OPTIONS = [[1, "Nur die neueste Sicherung"], [2, "Die neuesten 2"], [3, "Die neuesten 3"], [7, "Die neuesten 7"], [14, "Die neuesten 14"], [0, "Alle Sicherungen"]];
 const transferText = (n) => (!n ? "alle Sicherungen" : n === 1 ? "nur die neueste Sicherung" : `die neuesten ${n} Sicherungen`);

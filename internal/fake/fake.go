@@ -353,6 +353,7 @@ func Setup(c *core.Core) (func(), error) {
 	runner := NewRunner()
 	runner.scans["/dev/sde1"] = "STORE\tusb-montag\t2\t1\n"
 	runner.OnUpgrade = local.Upgrade
+	runner.USB = map[string]bool{"sdc": true, "sdd": true, "sde": true}
 	c.LocalRunner = runner
 	// SSH to the office server: root works, any other account is not root.
 	office := NewRunner()
@@ -442,6 +443,19 @@ type Runner struct {
 	OnUpgrade func() int
 	// UID is what "id -u" answers ("" = 0, root).
 	UID string
+	// USB are the disks attached over USB (/sys/block/<name> leads through a USB port).
+	USB map[string]bool
+	// StaleMounts are datastore mounts whose device is gone ("/mnt/datastore/x /dev/sdz1");
+	// umount -l of the path removes them.
+	StaleMounts []string
+	unmounted   []string
+}
+
+// Unmounted lists the paths unmounted with umount -l.
+func (r *Runner) Unmounted() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string{}, r.unmounted...)
 }
 
 // UpgradeDuration is how long a simulated package upgrade runs.
@@ -531,7 +545,36 @@ func (r *Runner) Run(_ context.Context, name string, args ...string) (string, er
 			}
 		}
 		return "", nil
+	case "umount":
+		if len(args) == 2 && args[0] == "-l" {
+			keep := r.StaleMounts[:0]
+			for _, m := range r.StaleMounts {
+				if !strings.HasPrefix(m, args[1]+" ") {
+					keep = append(keep, m)
+				}
+			}
+			r.StaleMounts = keep
+			r.unmounted = append(r.unmounted, args[1])
+		}
+		return "", nil
 	case "sh":
+		if len(args) >= 3 && strings.Contains(args[1], "/sys/block") {
+			var out strings.Builder
+			for _, d := range args[3:] {
+				p := "/sys/devices/pci0000:00/0000:00:05.0/ata1/host0/target0:0:0/0:0:0:0/block/" + d
+				if r.USB[d] {
+					p = "/sys/devices/pci0000:00/0000:00:1e.0/usb3/3-1/3-1:1.0/host6/target6:0:0/6:0:0:0/block/" + d
+				}
+				out.WriteString(d + " " + p + "\n")
+			}
+			return out.String(), nil
+		}
+		if len(args) == 2 && strings.Contains(args[1], "findmnt") && strings.Contains(args[1], "/mnt/datastore") {
+			return strings.Join(r.StaleMounts, "\n") + "\n", nil
+		}
+		if len(args) >= 3 && strings.Contains(args[1], "[ -b") {
+			return "", nil // the devices of the stale mounts are gone
+		}
 		if len(args) == 2 && strings.Contains(args[1], "pk95-apt-upgrade") {
 			return r.upgradeStatus(), nil
 		}

@@ -31,3 +31,6 @@ func (c *Core) CheckUnpluggedForTest(ctx context.Context, r Rotation, st Rotatio
 
 // ResumeForTest exposes resumeRotations.
 func (c *Core) ResumeForTest(ctx context.Context) { c.resumeRotations(ctx) }
+
+// ScanForeignForTest exposes scanForeignDisks.
+func (c *Core) ScanForeignForTest(ctx context.Context, now time.Time) { c.scanForeignDisks(ctx, now) }

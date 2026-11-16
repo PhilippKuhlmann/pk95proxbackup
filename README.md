@@ -55,6 +55,11 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   als Hinweis in der Übersicht.
 - **Abgezogen ohne Aushängen:** Wird eine Wechsel- oder Archiv-Platte im eingehängten Zustand gezogen, meldet die
   Appliance das, entfernt den verwaisten Mount und liest die Platte nach der nächsten Kopie zur Kontrolle zurück.
+  Bleibt ein Mount zurück, obwohl der Backup-Server den Datastore schon als ausgehängt meldet, löst sie ihn ebenfalls
+  (mit Kommandozeilen-Zugang zum Server).
+- **Fremde Platten:** Steckt an einem Backup-Server mit Wechselplatten eine USB-Platte, die zu keinem Datastore gehört
+  (neu, von anderswo oder eine Platte des Satzes, deren Datastore nicht mehr passt), zeigt die Seite Wechselplatten sie
+  an – zum Hinzufügen oder um sie als fehlende Platte des Satzes neu einzurichten (formatieren und neu befüllen).
 - **Zustand der Backup-Server:** laufende und installierte PBS-Version („Dienste neu laden“ per Klick), Neustart nötig
   wegen neuem Kernel, verfügbare Updates – geprüft alle sechs Stunden, zu sehen unter Verbindungen.
 - **Systemupdates:** unter Einstellungen → Aktualisierung je Backup-Server nach Updates suchen, die Debian- und

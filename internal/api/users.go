@@ -142,7 +142,7 @@ func (s *Server) auth(pattern string, next http.HandlerFunc) http.Handler {
 		}
 		need := requiredRole(pattern)
 		// Rebuilding a rotation disk formats it: administrators only.
-		if pattern == "POST /api/rotations/{id}/disks/{key}/{action}" && r.PathValue("action") == "rebuild" {
+		if pattern == "POST /api/rotations/{id}/disks/{key}/{action}" && (r.PathValue("action") == "rebuild" || r.PathValue("action") == "adopt") {
 			need = "admin"
 		}
 		if roleRank[role] < roleRank[need] {
