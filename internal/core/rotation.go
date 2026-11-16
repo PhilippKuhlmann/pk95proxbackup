@@ -359,6 +359,23 @@ func (c *Core) facts(ctx context.Context, pbs *prox.PBS) pbsFacts {
 	return f
 }
 
+// noteDiskChange wakes the monitor when a rotation disk was plugged in, pulled, mounted or
+// unmounted since the last look, so that it reacts (copy on plug-in, aftercare) within
+// seconds instead of at the next minute.
+func (c *Core) noteDiskChange(key string, present, mounted bool) {
+	now := fmt.Sprint(present, mounted)
+	c.mu.Lock()
+	if c.diskSeen == nil {
+		c.diskSeen = map[string]string{}
+	}
+	before, known := c.diskSeen[key]
+	c.diskSeen[key] = now
+	c.mu.Unlock()
+	if known && before != now {
+		c.RequestRefresh()
+	}
+}
+
 // RotationStates evaluates all rotation sets (used by the monitor and the API).
 func (c *Core) RotationStates(ctx context.Context) []RotationState {
 	rots, _ := c.Rotations()
@@ -406,6 +423,9 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 				ds.Present, ds.Orphan = false, true
 			}
 			ds.Total, ds.Used = u.Total, u.Used
+			if f.err == nil {
+				c.noteDiskChange(key, ds.Present, ds.Mounted)
+			}
 			if j, ok := f.jobs[r.SyncJobID(d)]; ok && f.err == nil {
 				if pbs := clients[r.ServerID]; pbs != nil {
 					c.trackJob(ctx, pbs, r, d, rt, j)

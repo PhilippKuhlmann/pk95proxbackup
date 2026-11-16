@@ -1890,9 +1890,15 @@ const PHASE = { pruning: "räumt auf", gc: "gibt Speicher frei", unmounting: "h�
 
 PAGES["/wechselplatten"] = async (el, token) => {
   await loadConn();
-  const draw = async () => {
+  // Polled every few seconds so plugging, pulling and ejecting show up at once; the page
+  // is only drawn again when something changed (and once a minute for the times).
+  let lastSig = "", lastDraw = 0;
+  const draw = async (force = true) => {
     const [r, ar] = await Promise.all([GET("/api/rotations"), GET("/api/archives")]);
     if (token !== pageToken) return;
+    const sig = JSON.stringify([r, ar]);
+    if (!force && sig === lastSig && Date.now() - lastDraw < 60000) return;
+    lastSig = sig; lastDraw = Date.now();
     const rots = r.rotations, archives = ar.archives;
     el.innerHTML = pageHead("Wechselplatten", "USB-Platten, die sich abwechseln: Eine steckt am Backup-Server und bekommt die Kopie, die andere liegt sicher außer Haus. Getauscht wird täglich oder wöchentlich.",
       `<button class="btn gray" type="button" data-usb>${icon("usb")} USB an diese VM durchreichen</button><button class="btn gray" type="button" data-archive>${icon("archive")} Archiv-Sicherung</button><button class="btn" type="button" data-add>${icon("plus")} Satz anlegen</button>`) +
@@ -1978,7 +1984,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
   };
   el.innerHTML = pageHead("Wechselplatten", "Lade …");
   await draw();
-  every(10000, token, draw);
+  every(3000, token, () => (document.hidden ? null : draw(false)));
 };
 
 const TRANSFER_OPTIONS = [[1, "Nur die neueste Sicherung"], [2, "Die neuesten 2"], [3, "Die neuesten 3"], [7, "Die neuesten 7"], [14, "Die neuesten 14"], [0, "Alle Sicherungen"]];

@@ -114,6 +114,7 @@ type Core struct {
 	plan        planRuntime
 	unplug      unplugRuntime
 	usageAt     map[string]time.Time // last usage value written per datastore
+	diskSeen    map[string]string    // rotation disk → "present/mounted" at the last look
 }
 
 // New creates the core.
