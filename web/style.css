@@ -658,8 +658,10 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
 .plan-table td { padding: 6px 8px; border-top: 1px solid var(--line-soft); vertical-align: middle; }
 .plan-table .plan-label { min-width: 120px; }
 .plan-table .plan-week { min-width: 130px; }
+.plan-table .daypick label { flex: 0 0 38px; }
+.plan-table .daypick span { padding: 10px 0; }
 .daypick { display: inline-flex; max-width: 100%; border: 1px solid var(--control, var(--line)); border-radius: var(--r); overflow: hidden; }
-.daypick label { position: relative; cursor: pointer; flex: 0 1 34px; min-width: 0; }
+.daypick label { position: relative; cursor: pointer; flex: 0 1 34px; min-width: 30px; }
 .daypick input { position: absolute; opacity: 0; pointer-events: none; }
 .daypick span { display: block; padding: 7px 0; text-align: center; font-size: 13px; font-weight: 500; color: var(--ink-2); border-left: 1px solid var(--control, var(--line)); user-select: none; }
 .daypick label:first-child span { border-left: 0; }
