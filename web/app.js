@@ -2691,7 +2691,20 @@ async function restoreGuest(el, token, g, source) {
       <div data-right></div></div>`;
   const srcSel = qs('[name="src"]', el);
   if (srcSel) srcSel.onchange = () => { src = +srcSel.value; loadSnaps(); };
-  const query = () => { const b = g.backups[src]; return `cluster=${enc(g.cluster)}&pbs=${enc(b.server)}&store=${enc(b.store)}&type=${typ}&bid=${g.vmid}&time=${sel}`; };
+  const queryAt = (t) => { const b = g.backups[src]; return `cluster=${enc(g.cluster)}&pbs=${enc(b.server)}&store=${enc(b.store)}&type=${typ}&bid=${g.vmid}&time=${t}`; };
+  const query = () => queryAt(sel);
+  // ver lets the file browser look at the other backups: versions of a file, open one of them.
+  const ver = {
+    times: () => snaps.map((sn) => sn["backup-time"]), queryAt,
+    pick: (t) => {
+      const r = qs(`[name="snap"][value="${t}"]`, el);
+      if (!r) return;
+      r.checked = true;
+      r.closest("label").scrollIntoView({ block: "nearest" });
+      sel = t;
+      drawRight();
+    },
+  };
 
   const drawRight = () => {
     const right = qs("[data-right]", el);
@@ -2702,8 +2715,8 @@ async function restoreGuest(el, token, g, source) {
           ${can("operator") ? `<button type="button" class="radio-card" data-whole style="text-align:left;font:inherit;color:inherit">${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>` : ""}
         </div>` : `<p class="muted small" style="margin:0">Mit der Rolle „${esc(ROLE_NAMES[state.role] || "")}“ lassen sich Sicherungen nur ansehen.</p>`}</div><div data-browser></div>`;
     const fb = qs("[data-files]", right), wb = qs("[data-whole]", right);
-    if (fb) fb.onclick = () => { browse = fileBrowser(qs("[data-browser]", right), query(), g, typ, null, sel); };
-    if (fb && browse) fileBrowser(qs("[data-browser]", right), query(), g, typ, browse, sel);
+    if (fb) fb.onclick = () => { browse = fileBrowser(qs("[data-browser]", right), query(), g, typ, null, sel, ver); };
+    if (fb && browse) fileBrowser(qs("[data-browser]", right), query(), g, typ, browse, sel, ver);
     if (wb) wb.onclick = () => restoreWhole(g, typ, g.backups[src], sel);
   };
 
@@ -2731,7 +2744,7 @@ async function restoreGuest(el, token, g, source) {
 // want holds the folder the user opened ({stack}); passing it back for another backup opens the
 // same folder there. A folder that backup lacks shows its nearest existing parent, while want keeps
 // the folder, so the next backup that has it shows it again. Returns want.
-function fileBrowser(box, query, g, typ, want, time) {
+function fileBrowser(box, query, g, typ, want, time, ver) {
   const carried = !!want;
   if (!want) want = { stack: [{ name: typ === "ct" ? "Container" : "VM", path: "" }] };
   const stack = want.stack.slice();
@@ -2766,15 +2779,91 @@ function fileBrowser(box, query, g, typ, want, time) {
         return `<div class="row" style="align-items:center">${icon(typeIcon[e.type] || "copy")}
           <div class="grow">${folder ? `<a href="#" data-open="${i}"><b>${esc(label)}</b></a>` : `<span>${esc(label)}</span>`}
             <div class="t-sub">${e.type === "f" ? fmtBytes(e.size) + " · " : ""}${e.mtime ? fmtTime(e.mtime, true) : ""}</div></div>
+          ${e.type === "f" && ver ? `<button class="btn gray sm" type="button" data-ver="${i}" title="In welchen Ständen es diese Datei gibt und wann sie sich geändert hat">${icon("clock")} Versionen</button>` : ""}
           ${e.type === "v" ? "" : `<a class="btn gray sm" href="${dl(e)}" download>${icon("download")} ${folder ? "Ordner (ZIP)" : "Herunterladen"}</a>`}</div>`;
       }).join("") || `<div class="row muted">Dieser Ordner ist leer.</div>`);
     const up = qs("[data-up]", box);
     if (up) up.onclick = () => { stack.pop(); go(); };
+    qsa("[data-ver]", box).forEach((b) => b.onclick = () => versionsDialog(list[+b.dataset.ver], cur.path, typ, ver, time));
     qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.text.replace(/\.pxar\.didx$/, ""), path: e.filepath }); go(); });
   };
   show();
   if (!carried) box.scrollIntoView({ behavior: "smooth", block: "start" });
   return want;
+}
+
+// versionsDialog looks for a file in every backup of the guest (same folder, same name) and
+// shows where it changed (size or modification time), appeared or went missing. Containers are
+// read a few backups at a time, VMs one after another (each needs a helper VM); closing the
+// dialog stops the search.
+function versionsDialog(file, dir, typ, ver, current) {
+  const res = ver.times().map((t) => ({ t, state: "wait" })); // wait | ok | missing | error
+  const cur = res.find((r) => r.t === current);
+  if (cur) Object.assign(cur, { state: "ok", size: file.size, mtime: file.mtime, filepath: file.filepath });
+  let only = true, stopped = false;
+  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("clock")}</span><div class="grow"><div class="dlg-title">Versionen von „${esc(file.text)}“</div>
+      <p class="dlg-text">Sucht die Datei im selben Ordner aller ${res.length} Stände dieser Quelle.${typ === "vm" ? " Bei VMs startet Proxmox für jeden Stand eine Hilfs-VM – das dauert je Stand bis zu einer Minute." : ""}</p></div></div>
+    <div class="dlg-body"><div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px"><span class="small muted flex" data-sum></span>
+      <label class="check"><input type="checkbox" data-only checked> Nur Stände mit Änderung</label></div>
+      <div class="table-wrap"><table class="resp"><thead><tr><th>Stand</th><th>Datei geändert am</th><th class="num">Größe</th><th>Status</th><th></th></tr></thead><tbody data-rows></tbody></table></div></div>
+    <div class="dlg-foot"><span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`, "xwide");
+  dlg.addEventListener("close", () => { stopped = true; });
+  qs("[data-close]", dlg).onclick = () => dlg.close();
+  qs("[data-only]", dlg).onchange = (e) => { only = e.target.checked; draw(); };
+  const same = (a, b) => a.size === b.size && a.mtime === b.mtime;
+  // status compares a backup with the next older one (res is newest first).
+  const status = (r, older) => {
+    if (r.state === "wait") return ["wait"];
+    if (r.state === "error") return ["error"];
+    if (!older) return r.state === "ok" ? ["first", "älteste", "blue"] : ["gone"];
+    if (older.state === "wait") return [r.state === "ok" ? "pending" : "gone"];
+    if (r.state === "missing") return older.state === "ok" ? ["deleted", "fehlt ab hier", "amber"] : ["gone"];
+    if (older.state !== "ok") return older.state === "missing" ? ["new", "neu", "blue"] : ["new", "vorhanden", ""];
+    return same(r, older) ? ["same", "unverändert", ""] : ["changed", "geändert", "blue"];
+  };
+  const draw = () => {
+    const done = res.filter((r) => r.state !== "wait").length;
+    const oks = res.filter((r) => r.state === "ok");
+    const kinds = oks.reduce((n, r, i) => n + (i === oks.length - 1 || !same(r, oks[i + 1]) ? 1 : 0), 0);
+    qs("[data-sum]", dlg).innerHTML = (done < res.length ? `<span class="spinner"></span> Stand ${done} von ${res.length} geprüft · ` : "") +
+      `In ${oks.length} von ${res.length} Ständen vorhanden${oks.length ? ` · ${kinds} ${kinds === 1 ? "Fassung" : "verschiedene Fassungen"}` : ""}`;
+    const all = res.map((r, i) => [r, status(r, res[i + 1])]);
+    // until names the newest backup that still holds the same version as row i.
+    const until = (i) => { let j = i; while (j > 0 && all[j - 1][1][0] === "same") j--; return j < i ? res[j].t : 0; };
+    const rows = all.map(([r, st], i) => [r, st, until(i)]).filter(([, st]) => !only || !["same", "gone"].includes(st[0]));
+    qs("[data-rows]", dlg).innerHTML = rows.map(([r, st, upto]) => `<tr>
+        <td data-l="Stand" style="white-space:nowrap"><b>${fmtTime(r.t, true)}</b>${r.t === current ? ` ${pill("geöffnet", "blue")}` : ""}<div class="t-sub">${fmtAgo(r.t)}</div></td>
+        <td data-l="Geändert am">${r.state === "ok" && r.mtime ? fmtTime(r.mtime, true) : "–"}</td>
+        <td data-l="Größe" class="num">${r.state === "ok" ? fmtBytes(r.size) : "–"}</td>
+        <td data-l="Status" style="white-space:nowrap">${st[0] === "wait" || st[0] === "pending" ? `<span class="muted small">${st[0] === "wait" ? "wird gelesen …" : "vorhanden"}</span>` : st[0] === "error" ? `<span title="${esc(r.err)}">${pill("nicht lesbar", "rose")}</span>` : st[0] === "gone" ? `<span class="muted small">nicht vorhanden</span>` : pill(st[1], st[2])}${upto ? `<div class="t-sub">gleich bis ${new Date(upto * 1000).toLocaleDateString("de-DE")}${upto === current ? " (geöffnet)" : ""}</div>` : ""}</td>
+        <td class="act" style="white-space:nowrap">${r.t !== current && r.state !== "error" ? `<button class="ib" type="button" data-pick="${r.t}" title="Diesen Stand links öffnen – der Ordner bleibt">${icon("folder")}</button>` : ""}
+          ${r.state === "ok" ? `<a class="ib" href="/api/restore/download?${ver.queryAt(r.t)}&path=${enc(r.filepath)}&name=${enc(file.text)}" download title="Diese Fassung herunterladen">${icon("download")}</a>` : ""}</td></tr>`).join("") ||
+      `<tr><td colspan="5" class="muted">${done < res.length ? "Noch keine Änderung gefunden …" : "Die Datei ist in allen Ständen gleich."}</td></tr>`;
+    qsa("[data-pick]", dlg).forEach((b) => b.onclick = () => { dlg.close(); ver.pick(+b.dataset.pick); });
+  };
+  const load = async (r) => {
+    try {
+      const out = await GET(`/api/restore/files?${ver.queryAt(r.t)}${dir ? "&path=" + enc(dir) : ""}`);
+      const e = out.entries.find((x) => x.text === file.text && x.type === "f");
+      if (e) Object.assign(r, { state: "ok", size: e.size, mtime: e.mtime, filepath: e.filepath });
+      else r.state = "missing";
+    } catch (err) {
+      // The folder itself is missing in that backup: so is the file.
+      if (/no such file|not found|nicht gefunden/i.test(err.message)) r.state = "missing";
+      else Object.assign(r, { state: "error", err: err.message });
+    }
+  };
+  let next = 0;
+  const worker = async () => {
+    while (!stopped && next < res.length) {
+      const r = res[next++];
+      if (r.state !== "wait") continue;
+      await load(r);
+      if (!stopped) draw();
+    }
+  };
+  draw();
+  for (let i = 0; i < (typ === "vm" ? 1 : 3); i++) worker();
 }
 
 async function restoreWhole(g, typ, b, time) {

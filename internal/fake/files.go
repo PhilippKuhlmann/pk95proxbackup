@@ -20,16 +20,50 @@ var fileTree = []string{
 	"var/log/syslog", "var/www/html/index.html", "root/.bashrc",
 }
 
+// changeEvery makes some files change between backups: every n days a new version (size and
+// modification time); all other files stay the same in every backup.
+var changeEvery = map[string]int{
+	"home/anna/Dokumente/Angebot Müller.docx":       3,
+	"home/anna/Dokumente/Projekte/Kalkulation.xlsx": 2,
+	"srv/daten/Buchhaltung/2026/November.xlsx":      1,
+	"var/log/syslog":                  1,
+	"etc/nginx/sites-enabled/default": 9,
+}
+
+// backupTime is the time of the backup a volume id names (zero if unknown).
+func backupTime(volume string) time.Time {
+	if i := strings.LastIndex(volume, "/"); i >= 0 {
+		if t, err := time.Parse("2006-01-02T15:04:05Z", volume[i+1:]); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
 // treeFor varies the content by backup day, so a folder can be missing in some backups:
 // "Projekte" exists only in backups taken on even days.
 func treeFor(volume string) []string {
-	tree := fileTree
-	if i := strings.LastIndex(volume, "/"); i >= 0 {
-		if t, err := time.Parse("2006-01-02T15:04:05Z", volume[i+1:]); err == nil && t.Day()%2 == 0 {
-			tree = append(slices.Clone(fileTree), "home/anna/Dokumente/Projekte/Neubau/Grundriss.pdf", "home/anna/Dokumente/Projekte/Kalkulation.xlsx")
-		}
+	if t := backupTime(volume); !t.IsZero() && t.Day()%2 == 0 {
+		return append(slices.Clone(fileTree), "home/anna/Dokumente/Projekte/Neubau/Grundriss.pdf", "home/anna/Dokumente/Projekte/Kalkulation.xlsx")
 	}
-	return tree
+	return fileTree
+}
+
+// fileVersion is size and modification time of a file in the backup taken at bt.
+func fileVersion(rel string, bt time.Time) (int64, int64) {
+	size := int64(len(path.Base(rel))) * 7919
+	n := changeEvery[rel]
+	if n == 0 || bt.IsZero() {
+		return size, time.Date(2026, 1, 15, 9, 12, 0, 0, time.UTC).Unix()
+	}
+	// The version changes every n days; the file was saved on that day at 10:00.
+	day := bt.Truncate(24 * time.Hour)
+	k := day.Unix() / 86400 / int64(n)
+	changed := time.Unix(k*int64(n)*86400, 0).UTC().Add(10 * time.Hour)
+	if changed.After(bt) {
+		changed = changed.Add(-time.Duration(n) * 24 * time.Hour)
+	}
+	return size + (k%5)*4096, changed.Unix()
 }
 
 // fileList answers GET …/file-restore/list like Proxmox VE: VMs show disk → partition → files,
@@ -47,9 +81,11 @@ func (p *PVE) fileList(w http.ResponseWriter, volume, b64 string) {
 		prefix = "/drive-scsi0.img.fidx/part/2"
 		time.Sleep(1500 * time.Millisecond) // the helper VM boots
 	}
+	bt := backupTime(volume)
+	mtime := time.Now().Add(-26 * time.Hour).Unix()
 	entry := func(full, text, typ string, size int64) map[string]any {
 		return map[string]any{"filepath": base64.StdEncoding.EncodeToString([]byte(full)), "text": text, "type": typ,
-			"leaf": typ == "f", "size": size, "mtime": time.Now().Add(-26 * time.Hour).Unix()}
+			"leaf": typ == "f", "size": size, "mtime": mtime}
 	}
 	out := []map[string]any{}
 	switch {
@@ -83,7 +119,9 @@ func (p *PVE) fileList(w http.ResponseWriter, volume, b64 string) {
 			if more != "" || strings.HasSuffix(rest, "/") {
 				out = append(out, entry(full, name, "d", 0))
 			} else {
-				out = append(out, entry(full, name, "f", int64(len(name))*7919))
+				e := entry(full, name, "f", 0)
+				e["size"], e["mtime"] = fileVersion(strings.TrimPrefix(f, "/"), bt)
+				out = append(out, e)
 			}
 		}
 		if len(out) == 0 && rel != "" {

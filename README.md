@@ -10,6 +10,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   jeder Kopie – auch abgezogene Platten zählen. Reißt die Kette (z. B. gesichert, aber seit drei Wochen auf keiner
   Platte), erscheint ein Hinweis in der Übersicht.
 - **Wiederherstellen** aus jeder Sicherung als neuer Gast (das Original bleibt unberührt).
+- **Dateien aus Sicherungen:** Ordner durchklicken, Dateien einzeln oder Ordner als ZIP laden. Der geöffnete Ordner
+  bleibt beim Wechsel des Stands offen (fehlt er dort, zeigt die Appliance den Ordner darüber). **Versionen** einer Datei:
+  in welchen Ständen es sie gibt, wann sie sich geändert hat oder verschwunden ist – jede Fassung direkt ladbar.
 - **Datastores** auf einer freien (virtuellen) Platte, einer **NFS-/SMB-Freigabe** oder in einem Verzeichnis,
   mit Aufbewahrung (keep-last/daily/weekly/…), Prüfung (Verify) und Speicherfreigabe (Garbage Collection) nach Zeitplan.
 - **Cloud-Speicher (S3):** Datastore im Bucket eines S3-Anbieters (Proxmox Backup Server 4) als Kopie außer Haus.

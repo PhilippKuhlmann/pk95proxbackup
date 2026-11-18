@@ -486,3 +486,28 @@ func TestRestoreTestReport(t *testing.T) {
 		t.Fatal("unknown run")
 	}
 }
+
+// Saving the settings of a datastore with an empty field clears it (PBS needs "delete",
+// an empty schedule is invalid there) and sets up the verify job.
+func TestDatastoreSchedules(t *testing.T) {
+	cl := login(t)
+	body := map[string]any{"comment": "", "gc_schedule": "", "verify_schedule": "sat 04:00", "keep_daily": 6, "keep_weekly": 1, "keep_monthly": 1, "prune_schedule": "daily"}
+	if code, out := cl.do("PUT", "/api/pbs/local/datastores/backup", body, true); code != 200 {
+		t.Fatalf("save with empty GC schedule: %d %v", code, out)
+	}
+	_, out := cl.do("GET", "/api/pbs/local/datastores", nil, false)
+	for _, d := range out["datastores"].([]any) {
+		m := d.(map[string]any)
+		if m["name"] != "backup" {
+			continue
+		}
+		if m["gc_schedule"] != nil && m["gc_schedule"] != "" {
+			t.Fatalf("GC schedule not cleared: %v", m["gc_schedule"])
+		}
+		if v, _ := m["verify"].(map[string]any); v == nil || v["schedule"] != "sat 04:00" {
+			t.Fatalf("verify job: %v", m["verify"])
+		}
+		return
+	}
+	t.Fatal("datastore backup missing")
+}

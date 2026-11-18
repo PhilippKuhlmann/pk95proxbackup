@@ -505,6 +505,11 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			data(w, p.tasks.start(p.node, "delete-datastore", seg[2], time.Second, nil, nil))
 			return
 		}
+		// Like PBS: an empty schedule is not "none" but an invalid calendar event (use delete).
+		if v, ok := f["gc-schedule"]; ok && v[0] == "" {
+			apiErr(w, 400, "parameter verification failed - 'gc-schedule': unable to parse calendar event at '' - Context(\"date or time specification\")")
+			return
+		}
 		p.updateDatastore(seg[2], f)
 		data(w, nil)
 	case path == "/status/datastore-usage":

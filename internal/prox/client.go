@@ -250,6 +250,10 @@ func apiMessage(resp *http.Response, raw []byte) string {
 		for k, v := range env.Errors {
 			msg = strings.TrimSpace(msg + " " + k + ": " + strings.TrimSpace(v))
 		}
+	} else if t := strings.TrimSpace(string(raw)); t != "" && len(t) < 2000 && !strings.HasPrefix(t, "<") {
+		// PBS answers a failed parameter check with the reason as plain text
+		// ("parameter verification failed - 'gc-schedule': …"), not as JSON.
+		msg = t
 	}
 	if msg == "" {
 		// PVE puts the reason into the status line.

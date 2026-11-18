@@ -348,7 +348,7 @@ func (rt retention) validate(errs map[string]string) {
 
 // applyRetention writes GC schedule, prune job and verify job of a datastore.
 func (s *Server) applyRetention(ctx context.Context, pbs *prox.PBS, store string, rt retention) error {
-	if err := pbs.UpdateDatastore(ctx, store, prox.Params{"gc-schedule": rt.GCSched, "comment": rt.Comment, "delete": deleteIfEmpty(map[string]string{"gc-schedule": rt.GCSched, "comment": rt.Comment})}); err != nil {
+	if err := pbs.UpdateDatastore(ctx, store, setOrDelete(map[string]string{"gc-schedule": rt.GCSched, "comment": rt.Comment})); err != nil {
 		return err
 	}
 	prunes, _ := pbs.Jobs(ctx, "prune")
@@ -409,6 +409,21 @@ func (s *Server) applyRetention(ctx context.Context, pbs *prox.PBS, store string
 		return pbs.DeleteJob(ctx, "verify", vid)
 	}
 	return nil
+}
+
+// setOrDelete sets the non-empty values and deletes the empty ones: PBS rejects an empty
+// value (e.g. gc-schedule "" is an invalid calendar event), clearing needs "delete".
+func setOrDelete(m map[string]string) prox.Params {
+	p := prox.Params{}
+	for k, v := range m {
+		if v != "" {
+			p[k] = v
+		}
+	}
+	if del := deleteIfEmpty(m); del != nil {
+		p["delete"] = del
+	}
+	return p
 }
 
 func deleteIfEmpty(m map[string]string) any {
