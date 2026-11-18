@@ -207,7 +207,6 @@ type diskRuntime struct {
 	DoneAt     int64  `json:"done_at"` // aftercare finished: disk can be swapped
 	CopyStart  int64  `json:"copy_start,omitempty"`
 	CopyUPID   string `json:"copy_upid,omitempty"`
-	LastDay    string `json:"last_day,omitempty"`
 	Remind     int64  `json:"remind,omitempty"`
 	// Damaged is the log line that showed a damaged filesystem on the disk ("" = fine).
 	Damaged      string `json:"damaged,omitempty"`
@@ -846,28 +845,11 @@ func (c *Core) EjectRotationDisk(ctx context.Context, r Rotation, d RotDisk) err
 func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, now time.Time) {
 	for _, st := range states {
 		r := st.Rotation
-		day := now.Format("2006-01-02")
-		if r.Time != "" && now.Format("15:04") >= r.Time {
+		if c.copyDue(r, now) {
 			for _, d := range st.Disks {
 				if !d.Present || d.Running || d.Phase != "" {
 					continue
 				}
-				key := rtKey(r, d.RotDisk)
-				rt := c.runtime(key)
-				c.mu.Lock()
-				doneToday := rt.LastDay == day
-				// A copy that ran today already (e.g. when it was plugged in) counts.
-				if time.Unix(rt.LastOK, 0).Format("2006-01-02") == day && rt.LastOK >= dayAt(now, r.Time) {
-					doneToday = true
-				}
-				if !doneToday {
-					rt.LastDay = day
-				}
-				c.mu.Unlock()
-				if doneToday {
-					continue
-				}
-				c.saveRuntime(key, rt)
 				if err := c.RunRotationDisk(ctx, r, d.RotDisk); err != nil {
 					c.EventDetails("warning", rotationSource, "Geplante USB-Sicherung konnte nicht starten",
 						"Um "+r.Time+" Uhr sollte auf die Festplatte „"+d.Label+"“ gesichert werden, das hat nicht geklappt. "+
@@ -880,6 +862,33 @@ func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, no
 		c.checkUnplugged(ctx, r, st, now)
 		c.remind(r, st, now)
 	}
+}
+
+// copyGrace is how late after its time the daily copy may still start: covers a monitor
+// tick that came late or a restart of the appliance around that time.
+const copyGrace = 15 * time.Minute
+
+// copyDue reports once a day, at the set's copy time, that the daily copy is due for the
+// disks plugged in right then. Missed times are not caught up: a disk plugged in later gets
+// its copy at the next time (or at once when "beim Anstecken kopieren" is on, which PBS
+// handles via run-on-mount).
+func (c *Core) copyDue(r Rotation, now time.Time) bool {
+	if r.Time == "" {
+		return false
+	}
+	at := dayAt(now, r.Time)
+	if now.Unix() < at {
+		return false
+	}
+	key := "rotcopy:" + r.ID
+	day := now.Format("2006-01-02")
+	var last string
+	_ = c.St.GetSetting(key, &last)
+	if last == day {
+		return false
+	}
+	_ = c.St.SetSetting(key, day)
+	return now.Unix()-at <= int64(copyGrace/time.Second)
 }
 
 func dayAt(now time.Time, hhmm string) int64 {

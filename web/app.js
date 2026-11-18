@@ -2104,7 +2104,7 @@ function rotationForm(x, done) {
       { name: "source_store", label: "Datastore mit den Sicherungen", type: "select", options: [["", "Lade …"]] },
       { name: "rhythm", type: "radio", label: "Wechsel", value: x.rhythm, options: [["daily", "Täglich", "Jeden Tag eine andere Platte (z. B. Mo–Fr)"], ["weekly", "Wöchentlich", "Eine Platte pro Woche"]] },
       { name: "swap_day", label: "Wechseltag", type: "select", value: x.swap_day || 5, options: [[1, "Montag"], [2, "Dienstag"], [3, "Mittwoch"], [4, "Donnerstag"], [5, "Freitag"], [6, "Samstag"], [7, "Sonntag"]] },
-      { name: "time", label: "Täglich kopieren um", type: "time", value: x.time, hint: "Leer = nur beim Anstecken kopieren." },
+      { name: "time", label: "Täglich kopieren um", type: "time", value: x.time, hint: "Kopiert auf die Platte, die zu dieser Zeit steckt. Wird später angesteckt, wartet sie auf den nächsten Termin. Leer = nur beim Anstecken kopieren." },
       { name: "run_on_mount", label: "Beim Anstecken sofort kopieren", type: "checkbox", value: x.run_on_mount, wide: true },
       { name: "unmount_on_done", label: "Nach der Kopie aushängen", type: "checkbox", value: x.unmount_on_done, wide: true, hint: "Dann kann die Platte gefahrlos abgezogen werden." },
       { name: "transfer_last", label: "Was auf die Platte kopieren?", type: "select", wide: true, value: x.transfer_last ?? 0, options: TRANSFER_OPTIONS,

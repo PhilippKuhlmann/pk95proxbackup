@@ -199,6 +199,7 @@ Jede Platte eines Satzes ist ein **Wechsel-Datastore** (removable datastore, PBS
 Quell-Datastore (auch von einem anderen PBS). Ablauf:
 
 1. Platte anstecken – PBS hängt sie ein; mit „beim Anstecken kopieren“ startet die Kopie sofort, sonst zur Uhrzeit.
+   Eine verpasste Uhrzeit wird nicht nachgeholt: Wird die Platte erst danach angesteckt, kopiert die Appliance beim nächsten Termin.
 2. Nach der Kopie räumt die Appliance auf der Platte nach den Regeln des Satzes auf, gibt einmal pro Woche Speicher frei
    und hängt die Platte aus.
 3. „Fertig – abziehen“ erscheint (auf Wunsch als Benachrichtigung). Platte abziehen und außer Haus bringen.
