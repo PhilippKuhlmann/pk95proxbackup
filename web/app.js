@@ -447,7 +447,8 @@ const NAV = [
 ];
 
 function go(path) {
-  if (location.pathname !== path) history.pushState({}, "", path);
+  // Compare with the query too: /wiederherstellen?src=… → /wiederherstellen is a different page.
+  if (location.pathname + location.search !== path) history.pushState({}, "", path);
   document.body.classList.remove("menu-open");
   render();
   window.scrollTo(0, 0);
