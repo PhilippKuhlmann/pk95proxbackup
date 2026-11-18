@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -13,10 +14,22 @@ import (
 // fileTree is the content of every simulated backup: dirs end with "/".
 var fileTree = []string{
 	"etc/hostname", "etc/hosts", "etc/fstab", "etc/nginx/nginx.conf", "etc/nginx/sites-enabled/default",
-	"home/anna/Dokumente/Rechnung-2026-10.pdf", "home/anna/Dokumente/Angebot Müller.docx", "home/anna/Dokumente/Projekte/",
+	"home/anna/Dokumente/Rechnung-2026-10.pdf", "home/anna/Dokumente/Angebot Müller.docx",
 	"home/anna/Bilder/Firmenfeier.jpg", "home/anna/.bashrc",
 	"srv/daten/Buchhaltung/2026/Oktober.xlsx", "srv/daten/Buchhaltung/2026/November.xlsx", "srv/daten/Vorlagen/Briefkopf.dotx",
 	"var/log/syslog", "var/www/html/index.html", "root/.bashrc",
+}
+
+// treeFor varies the content by backup day, so a folder can be missing in some backups:
+// "Projekte" exists only in backups taken on even days.
+func treeFor(volume string) []string {
+	tree := fileTree
+	if i := strings.LastIndex(volume, "/"); i >= 0 {
+		if t, err := time.Parse("2006-01-02T15:04:05Z", volume[i+1:]); err == nil && t.Day()%2 == 0 {
+			tree = append(slices.Clone(fileTree), "home/anna/Dokumente/Projekte/Neubau/Grundriss.pdf", "home/anna/Dokumente/Projekte/Kalkulation.xlsx")
+		}
+	}
+	return tree
 }
 
 // fileList answers GET …/file-restore/list like Proxmox VE: VMs show disk → partition → files,
@@ -53,7 +66,7 @@ func (p *PVE) fileList(w http.ResponseWriter, volume, b64 string) {
 	case strings.HasPrefix(dir, prefix):
 		rel := strings.TrimPrefix(strings.TrimPrefix(dir, prefix), "/")
 		seen := map[string]bool{}
-		for _, f := range fileTree {
+		for _, f := range treeFor(volume) {
 			if rel != "" && !strings.HasPrefix(f, rel+"/") {
 				continue
 			}

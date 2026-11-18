@@ -2678,7 +2678,8 @@ async function restoreSourceList(el, token, x) {
 async function restoreGuest(el, token, g, source) {
   const typ = g.type === "lxc" ? "ct" : "vm";
   const kind = typ === "ct" ? "Container" : "VM";
-  let src = 0, snaps = [], sel = null;
+  // browse is the open folder path of the file browser; it survives switching to another backup.
+  let src = 0, snaps = [], sel = null, browse = null;
   const where = g.node ? `${kind} auf ${esc(g.node)} (${esc(g.cluster_name)})` : `${kind}, in keinem verbundenen Proxmox VE – wird in ${esc(g.cluster_name)} wiederhergestellt`;
   el.innerHTML = pageHead(`${g.vmid} ${esc(g.name || "")} wiederherstellen`, where + (source ? ` · Quelle: ${esc(source.label)}` : ""), "",
     source ? [srcHref(source), "Zurück zu „" + source.label + "“"] : ["/wiederherstellen", "Anderen Server wählen"]) +
@@ -2700,7 +2701,8 @@ async function restoreGuest(el, token, g, source) {
           ${can("operator") ? `<button type="button" class="radio-card" data-whole style="text-align:left;font:inherit;color:inherit">${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>` : ""}
         </div>` : `<p class="muted small" style="margin:0">Mit der Rolle „${esc(ROLE_NAMES[state.role] || "")}“ lassen sich Sicherungen nur ansehen.</p>`}</div><div data-browser></div>`;
     const fb = qs("[data-files]", right), wb = qs("[data-whole]", right);
-    if (fb) fb.onclick = () => fileBrowser(qs("[data-browser]", right), query(), g, typ);
+    if (fb) fb.onclick = () => { browse = fileBrowser(qs("[data-browser]", right), query(), g, typ, null, sel); };
+    if (fb && browse) fileBrowser(qs("[data-browser]", right), query(), g, typ, browse, sel);
     if (wb) wb.onclick = () => restoreWhole(g, typ, g.backups[src], sel);
   };
 
@@ -2725,18 +2727,35 @@ async function restoreGuest(el, token, g, source) {
 }
 
 // File browser inside a backup: folders open on click, files download, folders download as zip.
-function fileBrowser(box, query, g, typ) {
-  const stack = [{ name: typ === "ct" ? "Container" : "VM", path: "" }];
+// want holds the folder the user opened ({stack}); passing it back for another backup opens the
+// same folder there. A folder that backup lacks shows its nearest existing parent, while want keeps
+// the folder, so the next backup that has it shows it again. Returns want.
+function fileBrowser(box, query, g, typ, want, time) {
+  const carried = !!want;
+  if (!want) want = { stack: [{ name: typ === "ct" ? "Container" : "VM", path: "" }] };
+  const stack = want.stack.slice();
   const typeIcon = { d: "folder", v: "disk", f: "copy", l: "link", h: "link" };
+  let fresh = true;
+  // go navigates on the user's behalf: the new folder becomes the wanted one.
+  const go = () => { want.stack = stack.slice(); show(); };
   const show = async () => {
     const cur = stack[stack.length - 1];
-    box.innerHTML = `<div class="panel flush"><div class="panel-head"><div class="panel-title">3. Dateien auswählen</div></div>
-      <div style="padding:0 16px 12px" class="flex small">${stack.map((s2, i) => i < stack.length - 1 ? `<a href="#" data-crumb="${i}">${esc(s2.name)}</a> /` : `<b>${esc(s2.name)}</b>`).join(" ")}</div>
-      <div class="rows" data-entries><div class="row flex"><span class="spinner"></span> Sicherung wird geöffnet …${typ === "vm" && stack.length === 1 ? " Bei VMs startet Proxmox dafür kurz eine Hilfs-VM, das dauert bis zu einer Minute." : ""}</div></div></div>`;
-    qsa("[data-crumb]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); stack.length = +a.dataset.crumb + 1; show(); });
+    const missing = want.stack.slice(stack.length).map((s2) => s2.name);
+    const note = missing.length ? `<div style="padding:0 16px 12px">${callout("yellow", `„${esc(missing.join("/"))}“ gibt es in diesem Stand nicht`, "Angezeigt wird der Ordner darüber. Ein anderer Stand links zeigt den Ordner wieder, wenn es ihn dort gibt.")}</div>` : "";
+    box.innerHTML = `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">3. Dateien auswählen</div>${time ? `<div class="muted small">Stand vom ${fmtTime(time, true)}</div>` : ""}</div></div>
+      ${note}<div style="padding:0 16px 12px" class="flex small">${stack.map((s2, i) => i < stack.length - 1 ? `<a href="#" data-crumb="${i}">${esc(s2.name)}</a> /` : `<b>${esc(s2.name)}</b>`).join(" ")}</div>
+      <div class="rows" data-entries><div class="row flex"><span class="spinner"></span> Sicherung wird geöffnet …${typ === "vm" && fresh ? " Bei VMs startet Proxmox dafür kurz eine Hilfs-VM, das dauert bis zu einer Minute." : ""}</div></div></div>`;
+    qsa("[data-crumb]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); stack.length = +a.dataset.crumb + 1; go(); });
     let r;
     try { r = await GET(`/api/restore/files?${query}${cur.path ? "&path=" + enc(cur.path) : ""}`); }
-    catch (e) { qs("[data-entries]", box).innerHTML = `<div class="row"><div class="form-error grow">${esc(e.message)}</div></div>`; return; }
+    catch (e) {
+      if (!box.isConnected) return; // another backup was picked meanwhile
+      // The carried-over folder is not in this backup: try its parent.
+      if (carried && fresh && stack.length > 1) { stack.pop(); return show(); }
+      qs("[data-entries]", box).innerHTML = `<div class="row"><div class="form-error grow">${esc(e.message)}</div></div>`; return;
+    }
+    if (!box.isConnected) return;
+    fresh = false;
     const list = r.entries.slice().sort((a, b) => (a.type === "f") - (b.type === "f") || a.text.localeCompare(b.text, "de"));
     const dl = (e) => `/api/restore/download?${query}&path=${enc(e.filepath)}&name=${enc(e.text)}${e.type === "f" ? "" : "&dir=1"}`;
     qs("[data-entries]", box).innerHTML = (stack.length > 1 ? `<div class="row" style="cursor:pointer" data-up>${icon("back")} <span class="grow">Eine Ebene zurück</span></div>` : "") +
@@ -2749,11 +2768,12 @@ function fileBrowser(box, query, g, typ) {
           ${e.type === "v" ? "" : `<a class="btn gray sm" href="${dl(e)}" download>${icon("download")} ${folder ? "Ordner (ZIP)" : "Herunterladen"}</a>`}</div>`;
       }).join("") || `<div class="row muted">Dieser Ordner ist leer.</div>`);
     const up = qs("[data-up]", box);
-    if (up) up.onclick = () => { stack.pop(); show(); };
-    qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.text.replace(/\.pxar\.didx$/, ""), path: e.filepath }); show(); });
+    if (up) up.onclick = () => { stack.pop(); go(); };
+    qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.text.replace(/\.pxar\.didx$/, ""), path: e.filepath }); go(); });
   };
   show();
-  box.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!carried) box.scrollIntoView({ behavior: "smooth", block: "start" });
+  return want;
 }
 
 async function restoreWhole(g, typ, b, time) {

@@ -291,6 +291,16 @@ func TestFileRestore(t *testing.T) {
 	if names["Rechnung-2026-10.pdf"] != "f" || names["Projekte"] != "d" {
 		t.Fatalf("entries %v", names)
 	}
+	// The simulated backups differ by day: "Projekte" is missing on odd days, which the file
+	// browser has to cope with when it keeps the folder across backups.
+	proj := base64.StdEncoding.EncodeToString([]byte("/drive-scsi0.img.fidx/part/2/home/anna/Dokumente/Projekte"))
+	if code, out = cl.do("GET", q+"&path="+url.QueryEscape(proj), nil, false); code != 200 {
+		t.Fatalf("projekte: %d %v", code, out)
+	}
+	odd := strings.Replace(q, "1794168000", "1794254400", 1)
+	if code, _ = cl.do("GET", odd+"&path="+url.QueryEscape(proj), nil, false); code == 200 {
+		t.Fatal("Projekte should be missing in the backup of an odd day")
+	}
 	resp, err := cl.http.Get(cl.base + "/api/restore/download?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1794168000&path=" + url.QueryEscape(pdf) + "&name=Rechnung-2026-10.pdf")
 	if err != nil {
 		t.Fatal(err)
