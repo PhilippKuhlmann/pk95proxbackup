@@ -323,6 +323,31 @@ func Setup(c *core.Core) (func(), error) {
 		local.tasks.seed("pbs-appliance", "garbage_collection", "backup", "OK", t.Add(3*time.Hour), 9*time.Minute)
 	}
 	pve.tasks.seed("pve2", "vzdump", "112", "ERROR: VM 112 - unable to find configuration file", now.Add(-20*time.Hour), time.Minute)
+	// Two failed verifications: on "backup" only a snapshot the retention removed meanwhile
+	// (harmless), on "offsite" a backup of VM 101 whose data is damaged.
+	seedVerify := func(p *PBS, typ, id, store string, start time.Time, items [][2]string) {
+		stamp := func(t time.Time, l string) string { return t.Format(time.RFC3339) + ": " + l }
+		log := []string{stamp(start, "verify datastore "+store), stamp(start, "found 5 groups")}
+		var failed []string
+		for _, it := range items {
+			log = append(log, stamp(start, "verify "+store+":"+it[0]+it[1]))
+			if it[1] == "" {
+				log = append(log, stamp(start, "  check drive-scsi0.img.fidx"), stamp(start, "  can't verify chunk, load failed - store '"+store+"', unable to load chunk '4e1c…' - No such file or directory (os error 2)"),
+					stamp(start, "  verified 3021.40/9216.00 MiB in 41.10 seconds, speed 73.51/224.23 MiB/s (1 errors)"))
+			}
+			failed = append(failed, it[0])
+		}
+		log = append(log, stamp(start, "Failed to verify the following snapshots/groups:"))
+		for _, f := range failed {
+			log = append(log, stamp(start, "\t"+f))
+		}
+		p.tasks.seedLog(p.node, typ, id, "verification failed - please check the log for details", start, 40*time.Minute, log)
+	}
+	gone := time.Date(now.Year(), now.Month(), now.Day()-40, 21, 0, 16, 0, time.UTC).Format("2006-01-02T15:04:05Z")
+	seedVerify(local, "verificationjob", "backup:pk95-verify-backup", "backup", now.Add(-3*time.Hour),
+		[][2]string{{"ct/110/" + gone, " - manifest load error: unable to load blob '\"/mnt/datastore/backup/ct/110/" + gone + "/index.json.blob\"' - No such file or directory (os error 2)"}})
+	bad := time.Date(now.Year(), now.Month(), now.Day()-2, 21, 1, 0, 0, now.Location()).UTC().Format("2006-01-02T15:04:05Z")
+	seedVerify(offsite, "verify", "offsite", "offsite", now.Add(-5*time.Hour), [][2]string{{"vm/101/" + bad, ""}})
 	local.tasks.seed("pbs-appliance", "syncjob", "pk95r-demo-a1:backup:usb-a", "OK", now.Add(-26*time.Hour), 18*time.Minute)
 
 	// Software: the appliance is current; the office server was upgraded but not restarted.

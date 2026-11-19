@@ -241,6 +241,8 @@ type datastoreView struct {
 	GCSchedule string         `json:"gc_schedule"`
 	Forecast   *core.Forecast `json:"forecast,omitempty"`
 	Advice     []string       `json:"advice,omitempty"` // what helps when it runs full
+	// LastCheck is the reading of the newest failed verification of the last two weeks.
+	LastCheck *core.VerifyResult `json:"last_check,omitempty"`
 }
 
 func pruneJobID(store string) string  { return core.JobID("pk95-prune", store) }
@@ -296,6 +298,12 @@ func (s *Server) listDatastores(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	checks := map[string]core.VerifyResult{} // newest reading per datastore
+	for _, x := range s.C.VerifyResults() {
+		if x.ServerID == srv.ID && x.State != "unknown" && time.Since(time.Unix(x.End, 0)) <= 14*24*time.Hour && x.End > checks[x.Store].End {
+			checks[x.Store] = x
+		}
+	}
 	out := []datastoreView{}
 	for _, c := range cfgs {
 		v := datastoreView{DatastoreConfig: c, DatastoreUsage: usage[c.Name], Removable: c.BackingDevice != "", Share: shareBy[c.Name], Rotation: rotBy[c.Name], GCSchedule: c.GCSchedule}
@@ -305,6 +313,9 @@ func (s *Server) listDatastores(w http.ResponseWriter, r *http.Request) {
 		}
 		if j, ok := verifies[verifyJobID(c.Name)]; ok {
 			v.Verify = &j
+		}
+		if x, ok := checks[c.Name]; ok && (v.Verify == nil || v.Verify.LastRunEnd <= x.End+60) {
+			v.LastCheck = &x // a later successful run makes it history
 		}
 		f := s.C.Forecast(srv.ID, c.Name, v.Removable)
 		v.Forecast = &f

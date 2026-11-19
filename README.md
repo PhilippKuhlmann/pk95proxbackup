@@ -94,6 +94,10 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   jemand Proxmox VE (Erpressersoftware), bleiben die Sicherungen auf dem Backup-Server. Die letzte Sicherung jedes
   Monats und Jahres lässt sich automatisch schützen (wird weder aufgeräumt noch gelöscht), einzelne Stände per Klick.
   Verschwinden alle Sicherungen eines Servers oder mehr als ein Fünftel eines Datastores auf einmal, kommt Alarm.
+- **Prüfergebnisse verständlich:** Schlägt eine Prüfung (Verify) fehl, liest die Appliance das Protokoll. Stände, die
+  das Aufräumen während der stundenlangen Prüfung entfernt hat, gelten nicht als Fehler („Ohne Befund“ unter Aufgaben,
+  keine Fehlermeldung). Echte Schäden erscheinen je Server mit Datum und Fehler – in der Übersicht, beim Datastore und
+  als Meldung, mit dem Rat, die betroffenen Server neu zu sichern.
 - **Auffällige Sicherungen:** Die Appliance liest aus jeder Sicherung auf den Backup-Servern, wie viele neue Daten
   hinzukamen. Sind es mindestens 1 GiB und mehr als das Fünffache des Üblichen (Median der letzten 14 Sicherungen) –
   typisch für einen Verschlüsselungstrojaner – oder ist eine Sicherung nur noch halb so groß wie sonst, kommt eine

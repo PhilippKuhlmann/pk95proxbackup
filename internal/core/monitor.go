@@ -61,6 +61,10 @@ type TaskInfo struct {
 	StartTime int64  `json:"starttime"`
 	EndTime   int64  `json:"endtime"`
 	Status    string `json:"status"`
+	// A failed verification the appliance read: harmless (only snapshots the retention
+	// removed meanwhile) or what was damaged.
+	Harmless bool   `json:"harmless,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 // Overview is the dashboard snapshot built by the monitor.
@@ -134,6 +138,7 @@ func (c *Core) BuildOverview(ctx context.Context) Overview {
 		mu.Unlock()
 	}()
 	wg.Wait()
+	c.annotateTasks(ov.Tasks)
 	for i := range ov.Servers {
 		ov.Servers[i].Secret = ""
 	}
@@ -387,20 +392,38 @@ func (c *Core) checkFailedTasks(ctx context.Context, cur *Overview) {
 	first := len(seen) == 0
 	changed := false
 	keep := map[string]bool{}
+	read := c.VerifyResults()
 	for _, t := range cur.Tasks {
 		if t.EndTime == 0 || t.Status == "" || t.Status == "OK" || strings.HasPrefix(t.Status, "WARNINGS") {
 			continue
 		}
 		keep[t.UPID] = true
+		old := first || time.Since(time.Unix(t.EndTime, 0)) > 24*time.Hour
+		// Failed verifications that are not reported (any more) are still read once, so the
+		// task list can tell harmless ones from damage.
+		if isVerifyTask(t.Type) && (seen[t.UPID] || old) {
+			if _, done := read[t.UPID]; !done {
+				r, ok := c.analyzeVerify(ctx, t)
+				if !ok {
+					r = VerifyResult{UPID: t.UPID, End: t.EndTime, State: "unknown"}
+				}
+				c.saveVerifyResult(r)
+				read[t.UPID] = r
+			}
+		}
 		if seen[t.UPID] {
 			continue
 		}
 		changed = true
-		if first || time.Since(time.Unix(t.EndTime, 0)) > 24*time.Hour || (t.Type == "vzdump" && strings.HasPrefix(t.Source, "pve:")) {
+		if old || (t.Type == "vzdump" && strings.HasPrefix(t.Source, "pve:")) {
 			continue
 		}
 		// A busy disk is let go by the appliance itself (unmountStore); it reports when that fails.
 		if t.Type == "unmount-device" && strings.Contains(t.Status, "target is busy") {
+			continue
+		}
+		// A failed verification: harmless (snapshots pruned meanwhile) or damaged backups.
+		if isVerifyTask(t.Type) && c.handleFailedVerify(ctx, t) {
 			continue
 		}
 		d := &notify.Details{Status: "error", Link: "/aufgaben", Facts: []notify.Fact{

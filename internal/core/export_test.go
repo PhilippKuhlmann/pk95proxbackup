@@ -34,3 +34,5 @@ func (c *Core) ResumeForTest(ctx context.Context) { c.resumeRotations(ctx) }
 
 // ScanForeignForTest exposes scanForeignDisks.
 func (c *Core) ScanForeignForTest(ctx context.Context, now time.Time) { c.scanForeignDisks(ctx, now) }
+
+func (c *Core) CheckFailedForTest(ctx context.Context, ov *Overview) { c.checkFailedTasks(ctx, ov) }

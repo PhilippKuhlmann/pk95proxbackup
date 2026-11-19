@@ -106,6 +106,7 @@ const pill = (text, tone = "", dot = false, pulse = false) => `<span class="pill
 function taskPill(t) {
   if (!t.endtime) return pill("Läuft", "blue", true, true);
   if (t.status === "OK") return pill("OK", "green");
+  if (t.harmless) return pill("Ohne Befund", "green");
   if ((t.status || "").startsWith("WARNINGS")) return pill("Warnung", "amber");
   return pill("Fehler", "rose");
 }
@@ -774,7 +775,7 @@ PAGES["/"] = async (el, token) => {
     const guests = clusters.reduce((a, c) => a + (c.guests || 0), 0);
     const notBacked = clusters.reduce((a, c) => a + (c.not_backed_up || 0), 0);
     const day = Date.now() / 1000 - 86400;
-    const failed = tasks.filter((t) => t.endtime && t.endtime > day && t.status && t.status !== "OK" && !t.status.startsWith("WARNINGS"));
+    const failed = tasks.filter((t) => t.endtime && t.endtime > day && t.status && t.status !== "OK" && !t.status.startsWith("WARNINGS") && !t.harmless);
     const backups24 = tasks.filter((t) => t.type === "vzdump" && t.endtime > day);
     const disksIn = rots.flatMap((x) => x.disks).filter((d) => d.present).length;
 
@@ -823,6 +824,7 @@ PAGES["/"] = async (el, token) => {
     for (const x of r.space || []) issue(x.state === "critical" ? "error" : "warning", `Datastore ${x.store} auf ${x.server}: ${x.days_left <= 0 ? "voll" : `voraussichtlich in ${x.days_left} ${x.days_left === 1 ? "Tag" : "Tagen"} voll`}`, `/datastores?server=${x.server_id}`);
     const cov = r.coverage || {};
     if (cov.bad) issue("warning", `${cov.bad} ${cov.bad === 1 ? "VM bzw. Container hat" : "VMs und Container haben"} eine Lücke in der Sicherungskette${cov.names?.length ? " (" + cov.names.join(", ") + (cov.bad > cov.names.length ? ", …" : "") + ")" : ""}`, "/sicherungen?luecken=1");
+    for (const x of r.damaged || []) issue("error", `${x.damaged.length} ${x.damaged.length === 1 ? "beschädigte Sicherung" : "beschädigte Sicherungen"} auf ${x.server_name} / ${x.store} – betroffene Server neu sichern`, `/datastores?server=${x.server_id}`);
     for (const a of r.anomalies || []) issue("warning", `Auffällige Sicherung: ${a.type === "ct" ? "CT" : "VM"} ${a.guest_id}${a.name ? " " + a.name : ""} – ${a.text}`, "/sicherungen?auffaellig=1");
     for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
     const sb = r.selfbackup || {};
@@ -1199,6 +1201,7 @@ PAGES["/datastores"] = async (el, token) => {
     const list = r.datastores;
     el.innerHTML = pageHead("Datastores", `Speicherorte der Sicherungen auf <b>${esc(srv.name)}</b>. Aufbewahrung, Prüfung und Speicherfreigabe laufen nach Zeitplan auf dem Backup-Server.`,
       `${serverPicker(sid)}${s3 ? `<button class="btn gray" type="button" data-s3>${icon("globe")} Cloud (S3)</button>` : ""}<button class="btn" type="button" data-add>${icon("plus")} Datastore anlegen</button>`) +
+      damageCallouts(list) +
       (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Datastore</th><th style="min-width:180px">Belegung</th><th>Aufbewahrung</th><th>Zeitpläne</th><th></th></tr></thead><tbody>
       ${list.map((d) => {
         const mounted = d["mount-status"] !== "notmounted";
@@ -1208,7 +1211,7 @@ PAGES["/datastores"] = async (el, token) => {
         <td data-l="Belegung">${d.total ? usageBar(d.used, d.total) + `<div class="t-sub">${fmtBytes(d.used)} von ${fmtBytes(d.total)}</div>` : `<span class="small muted">${esc(d.error || (mounted ? "—" : "Platte nicht eingehängt"))}</span>`}
           ${fcLine(d.forecast, d.name)}</td>
         <td data-l="Aufbewahrung" class="small">${d.prune ? esc(keepText(d.prune)) + `<div class="t-sub">${esc(d.prune.schedule)}${d.prune["last-run-state"] && d.prune["last-run-state"] !== "OK" ? ' · <span class="bad">' + esc(d.prune["last-run-state"]) + "</span>" : ""}</div>` : d.rotation ? '<span class="muted">über Wechselplatten-Satz</span>' : '<span class="muted">alles behalten</span>'}</td>
-        <td data-l="Zeitpläne" class="small"><div>Freigeben: ${esc(d.gc_schedule || "—")}</div><div>Prüfen: ${esc(d.verify?.schedule || "—")}</div></td>
+        <td data-l="Zeitpläne" class="small"><div>Freigeben: ${esc(d.gc_schedule || "—")}</div><div>Prüfen: ${esc(d.verify?.schedule || "—")}</div>${checkLine(d)}</td>
         <td class="act"><div class="row-actions">
           ${d.removable ? `<button class="btn gray sm" type="button" data-mount="${esc(d.name)}" data-on="${mounted ? 0 : 1}">${icon(mounted ? "eject" : "download")} ${mounted ? "Aushängen" : "Einhängen"}</button>` : ""}
           <button class="btn gray sm" type="button" data-snaps="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("archive")} Sicherungen</button>
@@ -1520,6 +1523,30 @@ function datastoreCreate(srv, done) {
       done();
     },
   });
+}
+
+// damageCallouts lists the backups the last verification could not read back.
+function damageCallouts(list) {
+  return list.filter((d) => d.last_check?.state === "damaged").map((d) => {
+    const x = d.last_check;
+    const rows = x.damaged.map((b) => `<li><b>${b.type.toUpperCase()} ${esc(b.id)}${b.name ? " " + esc(b.name) : ""}</b> – ${b.time ? "Stand vom " + fmtTime(b.time, true) : "alle Stände"}${b.error ? `<div class="t-sub mono">${esc(b.error)}</div>` : ""}</li>`).join("");
+    return `<div style="margin-bottom:16px">${callout("red", `Prüfung von ${d.name}: ${x.damaged.length} ${x.damaged.length === 1 ? "Sicherung ist" : "Sicherungen sind"} beschädigt`,
+      `Aus diesen Ständen lässt sich nicht verlässlich wiederherstellen. Bei der nächsten Sicherung schickt Proxmox VE die fehlenden Daten neu – am besten die betroffenen Server jetzt sichern. Treten immer wieder neue Schäden auf, die Festplatten des Backup-Servers prüfen.<ul class="fc-advice">${rows}</ul>`,
+      `<a class="btn gray sm" href="/sicherungen" data-go>${icon("download")} Server sichern</a>`)}</div>`;
+  }).join("");
+}
+
+// checkLine says how the last verification of a datastore went.
+function checkLine(d) {
+  const x = d.last_check;
+  if (x && x.state === "damaged") {
+    const list = x.damaged.map((b) => `${b.type.toUpperCase()} ${b.id}${b.name ? " " + b.name : ""}${b.time ? " vom " + fmtTime(b.time, true) : " (alle Stände)"}`).join("\n");
+    return `<div class="t-sub bad" title="${esc(list)}">${icon("warn", "sm")} ${x.damaged.length} beschädigt (${fmtAgo(x.end)})</div>`;
+  }
+  if (x) return `<div class="t-sub" title="${esc(x.vanished.join("\n"))}">zuletzt ohne Befund · ${x.vanished.length} ${x.vanished.length === 1 ? "Stand" : "Stände"} währenddessen aufgeräumt</div>`;
+  const j = d.verify;
+  if (j && j["last-run-endtime"]) return `<div class="t-sub">zuletzt ${j["last-run-state"] === "OK" ? "OK" : `<span class="bad">${esc(j["last-run-state"] || "")}</span>`} · ${fmtAgo(j["last-run-endtime"])}</div>`;
+  return "";
 }
 
 function datastoreSettings(srv, d, done) {
@@ -3296,7 +3323,7 @@ PAGES["/aufgaben"] = async (el, token) => {
     const r = await GET("/api/overview" + (fresh ? "?fresh=1" : ""));
     if (token !== pageToken) return;
     let tasks = r.overview.tasks || [];
-    if (kind === "errors") tasks = tasks.filter((t) => t.endtime && t.status !== "OK" && !(t.status || "").startsWith("WARNINGS"));
+    if (kind === "errors") tasks = tasks.filter((t) => t.endtime && t.status !== "OK" && !(t.status || "").startsWith("WARNINGS") && !t.harmless);
     if (kind === "backup") tasks = tasks.filter((t) => t.type === "vzdump");
     if (kind === "running") tasks = tasks.filter((t) => !t.endtime);
     qs("[data-list]", el).innerHTML = tasks.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Start</th><th>Aufgabe</th><th>Server</th><th>Dauer</th><th>Status</th></tr></thead><tbody>
@@ -3304,7 +3331,7 @@ PAGES["/aufgaben"] = async (el, token) => {
         <td data-l="Aufgabe"><div class="t-main">${esc(taskLabel(t.type))}</div><div class="t-sub mono">${esc(t.id || "")}</div></td>
         <td data-l="Server" class="small">${esc(t.server)}${t.node ? `<div class="t-sub">${esc(t.node)}</div>` : ""}</td>
         <td data-l="Dauer" class="small nowrap">${t.endtime ? fmtDur(t.starttime, t.endtime) : "…"}</td>
-        <td data-l="Status">${taskPill(t)}${t.endtime && t.status !== "OK" ? `<div class="t-sub">${esc(t.status)}</div>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : empty("Keine Aufgaben", "", "", "list");
+        <td data-l="Status">${taskPill(t)}${t.endtime && t.status !== "OK" ? `<div class="t-sub">${esc(t.note || t.status)}</div>` : ""}</td></tr>`).join("")}</tbody></table></div></div>` : empty("Keine Aufgaben", "", "", "list");
     qsa("[data-task]", el).forEach((row) => row.onclick = () => { const [s, u, l] = row.dataset.task.split("|"); showTask(s, u, l); });
   };
   el.innerHTML = pageHead("Aufgaben", "Die letzten Aufgaben aller Backup-Server sowie Sicherungen und Wiederherstellungen aus Proxmox VE. Klick zeigt das Protokoll.",
