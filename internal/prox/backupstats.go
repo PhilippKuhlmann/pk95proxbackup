@@ -28,12 +28,16 @@ var (
 	bsStats  = regexp.MustCompile(`^Upload statistics for '`)
 	bsSize   = regexp.MustCompile(`^Size: (\d+)`)
 	bsUpload = regexp.MustCompile(`^Upload size: (\d+)`)
+	// The API puts the time in front of every line ("2026-11-19T12:16:18+01:00: …"); the CLI does not.
+	bsStamp = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:\d\d): `)
 )
+
+func logText(l TaskLine) string { return bsStamp.ReplaceAllString(strings.TrimSpace(l.T), "") }
 
 // ParseBackupHead reads snapshot and number of archives from the first lines of the log.
 func ParseBackupHead(lines []TaskLine, st *BackupStats) bool {
 	for _, l := range lines {
-		t := strings.TrimSpace(l.T)
+		t := logText(l)
 		if m := bsStart.FindStringSubmatch(t); m != nil {
 			parts := strings.Split(m[1], "/")
 			if len(parts) < 3 {
@@ -59,7 +63,7 @@ func ParseBackupTail(lines []TaskLine, st *BackupStats) {
 	st.Archives, st.Upload, st.Size = 0, 0, 0
 	in := false
 	for _, l := range lines {
-		t := strings.TrimSpace(l.T)
+		t := logText(l)
 		switch {
 		case bsStats.MatchString(t):
 			in = true

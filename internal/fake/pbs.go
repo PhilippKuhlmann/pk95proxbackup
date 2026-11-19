@@ -224,6 +224,9 @@ func (p *PBS) AddBackupTask(store, typ, id string, t time.Time, size, upload int
 	log = append(log, "Upload statistics for '"+archive+"'", fmt.Sprintf("Size: %d", size), "Chunk count: 4096",
 		fmt.Sprintf("Upload size: %d (%d%%)", upload, upload*100/max(size, 1)), "Duplicates: 0+0 (0%)", "Compression: 40%",
 		"successfully closed "+kind+" index 1", "successfully finished backup", "backup finished successfully")
+	for i := range log { // like the API: the time in front of every line
+		log[i] = t.Format(time.RFC3339) + ": " + log[i]
+	}
 	p.tasks.seedLog(p.node, "backup", store+":"+typ+"/"+id, "OK", t, 4*time.Minute, log)
 }
 

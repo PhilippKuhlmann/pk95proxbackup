@@ -17,6 +17,15 @@ func TestBackupStats(t *testing.T) {
 	if st.Archives != 2 || st.Upload != 164167965+2474193 || st.Size != 10372811503+2474193 {
 		t.Fatalf("tail: %+v", st)
 	}
+	// as the API delivers it: with the time in front of every line
+	var api BackupStats
+	ParseBackupHead(lines(`2026-11-19T12:16:18+01:00: starting new backup on datastore 'local' from ::ffff:10.10.250.10: "vm/250200/2026-11-19T11:16:13Z"`,
+		`2026-11-19T12:16:18+01:00: created new fixed index 1 ("vm/250200/2026-11-19T11:16:13Z/drive-scsi0.img.fidx")`), &api)
+	ParseBackupTail(lines("2026-11-19T12:16:40+01:00: Upload statistics for 'drive-scsi0.img.fidx'", "2026-11-19T12:16:40+01:00: Size: 713031680",
+		"2026-11-19T12:16:40+01:00: Upload size: 700448768 (98%)"), &api)
+	if api.Type != "vm" || api.Indexes != 1 || api.Archives != 1 || api.Upload != 700448768 {
+		t.Fatalf("with time stamps: %+v", api)
+	}
 	var ns BackupStats
 	ParseBackupHead(lines(`starting new backup on datastore 'b' from x: "ns/kunde/ns/a/vm/100/2026-11-19T11:16:17Z"`), &ns)
 	if ns.NS != "kunde/a" || ns.Type != "vm" || ns.ID != "100" {

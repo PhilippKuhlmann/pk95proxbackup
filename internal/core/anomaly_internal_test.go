@@ -1,6 +1,11 @@
 package core
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+
+	"pk95proxbackup/internal/store"
+)
 
 func TestJudgeBackup(t *testing.T) {
 	const gib = 1 << 30
@@ -28,5 +33,30 @@ func TestJudgeBackup(t *testing.T) {
 		if got, _, _ := judgeBackup(c.h, c.s); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// State written by 1.25.0 (tasks marked read without numbers) is read again once.
+func TestAnomalyStateUpgrade(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	c := &Core{St: st}
+	old := anomalyState{Seen: map[string]int64{"UPID:x": 1}, LastScan: map[string]int64{"local": 1}, Behind: map[string]bool{"local": true},
+		List: []BackupAnomaly{{ID: "a"}}}
+	if err := st.SetSetting("anomalies", old); err != nil {
+		t.Fatal(err)
+	}
+	got := c.anomalyState()
+	if len(got.Seen) != 0 || len(got.LastScan) != 0 || len(got.Behind) != 0 || len(got.List) != 1 || got.Version != anomalyVersion {
+		t.Fatalf("upgrade: %+v", got)
+	}
+	_ = st.SetSetting("anomalies", got)
+	got.Seen["UPID:y"] = 2
+	_ = st.SetSetting("anomalies", got)
+	if len(c.anomalyState().Seen) != 1 {
+		t.Fatal("current state must be kept")
 	}
 }

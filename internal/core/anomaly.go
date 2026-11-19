@@ -72,13 +72,21 @@ type anomalyState struct {
 	List     []BackupAnomaly           `json:"list"`
 	LastScan map[string]int64          `json:"last_scan"`
 	Behind   map[string]bool           `json:"behind,omitempty"` // more to read than one scan took
+	Version  int                       `json:"version"`
 }
+
+// anomalyVersion: 1.25.0 marked tasks as read without understanding their logs (time stamps
+// in front of the lines); version 2 reads them again.
+const anomalyVersion = 2
 
 type anomalyRuntime struct{ busy atomic.Bool }
 
 func (c *Core) anomalyState() anomalyState {
 	var st anomalyState
 	_ = c.St.GetSetting("anomalies", &st)
+	if st.Version < anomalyVersion {
+		st = anomalyState{List: st.List, Version: anomalyVersion}
+	}
 	if st.Seen == nil {
 		st.Seen = map[string]int64{}
 	}
