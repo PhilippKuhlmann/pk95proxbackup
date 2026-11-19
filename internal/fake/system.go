@@ -82,6 +82,17 @@ func (p *PVE) AddNodeDisk(node string, d prox.NodeDisk, smart map[string]any) {
 	p.mu.Unlock()
 }
 
+// SetNodeSmart changes the SMART answer of a node disk.
+func (p *PVE) SetNodeSmart(node, dev string, smart map[string]any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, d := range p.disks[node] {
+		if d.Disk.DevPath == dev {
+			p.disks[node][i].Smart = smart
+		}
+	}
+}
+
 func (p *PVE) serveDisks(w http.ResponseWriter, node string) {
 	out := []prox.NodeDisk{}
 	for _, d := range p.disks[node] {

@@ -54,6 +54,8 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   kommt eine Meldung, die Übersicht zeigt es ebenfalls.
 - **Festplatten (SMART):** alle Platten der Backup-Server und der Proxmox-VE-Knoten werden täglich und gleich nach dem
   Einstecken geprüft – schwebende oder unlesbare Sektoren, ersetzte Sektoren, Selbsttest, SSD-Verschleiß, Temperatur.
+  Lesefehler im Flash-Speicher einer SSD: wenige, die nicht mehr werden, sind gelb (beobachten); neue (in den letzten
+  30 Tagen hinzugekommene) oder ab 10 sind rot (bald tauschen).
   Wird eine Platte schlechter, kommt eine Meldung. Archiv-Platten, die über ein Jahr nicht angesteckt waren, erscheinen
   als Hinweis in der Übersicht.
 - **Abgezogen ohne Aushängen:** Wird eine Wechsel- oder Archiv-Platte im eingehängten Zustand gezogen, meldet die

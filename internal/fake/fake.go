@@ -272,6 +272,10 @@ func Setup(c *core.Core) (func(), error) {
 	}
 	// history: backups of all guests on "backup"
 	now := time.Now()
+	newest := 0 // day of the newest backup: today once 21:00 has passed
+	if time.Date(now.Year(), now.Month(), now.Day(), 21, 0, 0, 0, now.Location()).After(now) {
+		newest = 1
+	}
 	for d := 13; d >= 0; d-- {
 		t := time.Date(now.Year(), now.Month(), now.Day()-d, 21, 0, 0, 0, now.Location())
 		if t.After(now) {
@@ -286,7 +290,7 @@ func Setup(c *core.Core) (func(), error) {
 			local.AddSnapshot("backup", g.typ, strconv.Itoa(g.id), bt.Unix(), g.gb*gib)
 			// New data per backup: about 2 % of the guest, varying a little from day to day.
 			upload := g.gb*gib/50 + int64(d%4)*g.gb*gib/400
-			if g.id == 102 && now.Sub(bt) < 30*time.Hour {
+			if g.id == 102 && d == newest {
 				upload = 74 * gib // the newest backup of VM 102 is unusual (ransomware-like)
 			}
 			local.AddBackupTask("backup", g.typ, strconv.Itoa(g.id), bt, g.gb*gib, upload)

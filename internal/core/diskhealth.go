@@ -58,6 +58,8 @@ type DiskHealth struct {
 	Status    string           `json:"status"` // ok, warning, error, unknown
 	Problems  []string         `json:"problems"`
 	Note      string           `json:"note"`
+	// MediaGrewAt is when the count of read errors in the flash memory last went up.
+	MediaGrewAt int64 `json:"media_grew_at,omitempty"`
 }
 
 // DiskMap says how the disks of the Proxmox VE nodes under the backups were found.
@@ -347,7 +349,7 @@ func (c *Core) diskUses(ctx context.Context) map[string]diskUse {
 func (c *Core) updateHealth(known map[string]DiskHealth, h DiskHealth, uses map[string]diskUse,
 	now time.Time, prevList int64, force bool, smart func() (prox.SmartReport, error)) {
 	old, had := known[h.ID]
-	h.FirstSeen, h.LastSeen = old.FirstSeen, now.Unix()
+	h.FirstSeen, h.LastSeen, h.MediaGrewAt = old.FirstSeen, now.Unix(), old.MediaGrewAt
 	if !had {
 		h.FirstSeen = now.Unix()
 	}
@@ -377,7 +379,10 @@ func (c *Core) updateHealth(known map[string]DiskHealth, h DiskHealth, uses map[
 	rep, err := smart()
 	h.LastCheck = now.Unix()
 	h.Smart = rep
-	h.Status, h.Problems = EvaluateSmart(rep)
+	if had && old.Smart.MediaErrors >= 0 && rep.MediaErrors > old.Smart.MediaErrors {
+		h.MediaGrewAt = now.Unix()
+	}
+	h.Status, h.Problems = EvaluateSmartAt(rep, h.MediaGrewAt, now)
 	h.Note = ""
 	nothing := rep.Health == "unknown" && rep.Reallocated < 0 && rep.Pending < 0 && rep.MediaErrors < 0 && rep.Wearout < 0
 	if (err != nil || nothing) && h.Status == "ok" {
@@ -421,8 +426,13 @@ func EvaluateSmart(r prox.SmartReport) (string, []string) {
 	if r.Uncorrectable > 0 {
 		bad("error", "%d %s nicht lesbar.", r.Uncorrectable, plural(int(r.Uncorrectable), "Sektor ist", "Sektoren sind"))
 	}
-	if r.MediaErrors > 0 {
+	// Read errors in the flash memory of an SSD: a few that stay put are worth watching (one
+	// block the SSD could not correct, e.g. once after a power loss); many, or more and more
+	// (see EvaluateSmartAt), mean the flash is failing.
+	if r.MediaErrors >= mediaErrorsMany {
 		bad("error", "%d Lesefehler im Flash-Speicher.", r.MediaErrors)
+	} else if r.MediaErrors > 0 {
+		bad("warning", "%d Lesefehler im Flash-Speicher – beobachten: kommen weitere dazu, die SSD tauschen.", r.MediaErrors)
 	}
 	if r.Reallocated > 0 {
 		bad("warning", "%d %s schon durch Reserve ersetzt.", r.Reallocated, plural(int(r.Reallocated), "defekter Sektor wurde", "defekte Sektoren wurden"))
@@ -434,6 +444,26 @@ func EvaluateSmart(r prox.SmartReport) (string, []string) {
 		bad("warning", "Die Platte ist %d °C warm (über 60 °C).", r.Temperature)
 	}
 	return status, problems
+}
+
+const (
+	mediaErrorsMany  = 10                  // this many read errors: replace the SSD
+	mediaErrorsFresh = 30 * 24 * time.Hour // read errors that came up within this time: replace it
+)
+
+// EvaluateSmartAt rates a SMART report knowing when the read errors of the flash memory last
+// went up: errors that keep coming make the disk an error, a few old ones only a warning.
+func EvaluateSmartAt(r prox.SmartReport, mediaGrewAt int64, now time.Time) (string, []string) {
+	status, problems := EvaluateSmart(r)
+	if r.MediaErrors <= 0 || r.MediaErrors >= mediaErrorsMany || mediaGrewAt == 0 || now.Sub(time.Unix(mediaGrewAt, 0)) > mediaErrorsFresh {
+		return status, problems
+	}
+	for i, p := range problems {
+		if strings.Contains(p, "im Flash-Speicher") {
+			problems[i] = fmt.Sprintf("%d Lesefehler im Flash-Speicher, zuletzt am %s mehr geworden.", r.MediaErrors, time.Unix(mediaGrewAt, 0).Format("02.01.2006"))
+		}
+	}
+	return "error", problems
 }
 
 func healthRank(s string) int {

@@ -117,6 +117,15 @@ func TestDiskHealth(t *testing.T) {
 	if !strings.Contains(eventTitles(t, c), "Festplatte bald tauschen: Seagate Expansion HDD") {
 		t.Fatal("error must be reported")
 	}
+	// The NVMe of pve1 reports its first read error: it came up just now, so replace it.
+	fake.Current.PVE.SetNodeSmart("pve1", "/dev/nvme0n1", fake.PVESmartNVMe(3, 1, 9130, 41))
+	c.CheckDisksNow(ctx)
+	if nvme = findHealth(t, c, "S5GXNF0R123456"); nvme.Status != "error" || nvme.MediaGrewAt == 0 || !strings.Contains(nvme.Problems[0], "mehr geworden") {
+		t.Fatalf("nvme with a new read error: %+v", nvme)
+	}
+	if !strings.Contains(eventTitles(t, c), "Festplatte bald tauschen: Samsung SSD 980 PRO 1TB") {
+		t.Fatalf("new read error not reported:\n%s", eventTitles(t, c))
+	}
 	// No change: no further event.
 	before := strings.Count(eventTitles(t, c), "Seagate")
 	c.CheckDisksNow(ctx)
@@ -139,6 +148,26 @@ func TestEvaluateSmart(t *testing.T) {
 	s, p := core.EvaluateSmart(r)
 	if s != "warning" || len(p) != 2 || !strings.Contains(p[0], "1 defekter Sektor wurde") {
 		t.Fatalf("got %s %v", s, p)
+	}
+}
+
+// Read errors of the flash memory: a few that stay put are a warning, many or new ones an error.
+func TestEvaluateMediaErrors(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.Local)
+	r := prox.NewSmartReport()
+	r.MediaErrors = 1
+	if s, p := core.EvaluateSmartAt(r, 0, now); s != "warning" || !strings.Contains(p[0], "beobachten") {
+		t.Fatalf("one old error: %s %v", s, p)
+	}
+	if s, p := core.EvaluateSmartAt(r, now.AddDate(0, 0, -3).Unix(), now); s != "error" || !strings.Contains(p[0], "17.11.2026 mehr geworden") {
+		t.Fatalf("an error that came up three days ago: %s %v", s, p)
+	}
+	if s, _ := core.EvaluateSmartAt(r, now.AddDate(0, 0, -40).Unix(), now); s != "warning" {
+		t.Fatalf("grown long ago and stayed: %s", s)
+	}
+	r.MediaErrors = 12
+	if s, _ := core.EvaluateSmartAt(r, 0, now); s != "error" {
+		t.Fatalf("many errors: %s", s)
 	}
 }
 
