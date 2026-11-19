@@ -14,9 +14,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -53,9 +55,12 @@ type UpdateInfo struct {
 	// Busy is work the appliance follows right now that a restart would interrupt.
 	Busy   []string `json:"busy"`
 	Reason string   `json:"reason,omitempty"` // why it cannot be installed from here
+	// Auto is the plan for installing new versions automatically.
+	Auto SelfAutoUpdateInfo `json:"auto"`
 }
 
 type updateRuntime struct {
+	auto     atomic.Bool // a planned self-update is being looked at
 	mu       sync.Mutex
 	busy     bool
 	checking bool
@@ -98,6 +103,7 @@ func (c *Core) Update() UpdateInfo {
 	info.Available = st.Latest != "" && NewerVersion(st.Latest, c.Version)
 	info.CanInstall, info.Reason = c.canSelfUpdate()
 	info.Busy = c.BusyWork()
+	info.Auto = c.SelfAutoUpdateState(time.Now())
 	c.update.mu.Lock()
 	info.Phase, info.PhaseError = c.update.phase, c.update.err
 	c.update.mu.Unlock()
@@ -495,7 +501,12 @@ func (c *Core) afterStart(ctx context.Context) {
 	var m updateMarker
 	_ = json.Unmarshal(b, &m)
 	os.Remove(markerPath(c.DataDir))
-	c.Event("info", "Appliance", "Auf Version "+m.To+" aktualisiert", "Vorher lief "+m.From+". Die alte Programmdatei liegt als "+filepath.Base(m.Exe)+".old daneben.")
+	body := "Vorher lief " + m.From + ". Die alte Programmdatei liegt als " + filepath.Base(m.Exe) + ".old daneben."
+	var st updateState
+	if _ = c.St.GetSetting("update-state", &st); st.Latest == m.To && st.Notes != "" {
+		body += "\n\nNeu in " + m.To + ":\n" + st.Notes
+	}
+	c.Event("info", "Appliance", "Auf Version "+m.To+" aktualisiert", body)
 }
 
 var phaseWords = map[string]string{"pruning": "räumt auf", "gc": "gibt Speicher frei", "unmounting": "wird ausgehängt", "mounting": "wird eingehängt",
@@ -530,5 +541,13 @@ func (c *Core) BusyWork() []string {
 	if c.SelfBackup().Running {
 		out = append(out, "Sicherung der Appliance-Konfiguration")
 	}
-	return out
+	var upgrading []string
+	c.upgrades.following.Range(func(k, _ any) bool {
+		if s, err := c.Server(k.(string)); err == nil {
+			upgrading = append(upgrading, "Systemupdate auf "+s.Name)
+		}
+		return true
+	})
+	slices.Sort(upgrading)
+	return append(out, upgrading...)
 }

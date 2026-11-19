@@ -171,7 +171,7 @@ var actionNames = map[string]string{
 	"PUT /api/settings": "Benachrichtigungen geändert", "POST /api/settings/test": "Testnachricht", "PUT /api/settings/access": "Zugriff geändert",
 	"POST /api/account/password": "Eigenes Passwort geändert", "POST /api/account/totp/enable": "Zwei-Faktor eingeschaltet",
 	"POST /api/account/totp/disable": "Zwei-Faktor ausgeschaltet", "POST /api/account/totp/recovery": "Neue Wiederherstellungscodes",
-	"PUT /api/update": "Aktualisierung eingestellt", "POST /api/update/install": "Aktualisierung installiert",
+	"PUT /api/update": "Aktualisierung eingestellt", "POST /api/update/install": "Aktualisierung installiert", "PUT /api/update/auto": "Automatische Aktualisierung eingestellt",
 	"POST /api/pbs/{id}/packages": "Paketlisten aktualisiert", "POST /api/pbs/{id}/upgrade": "Systemupdates gestartet", "POST /api/pbs/{id}/reboot": "Backup-Server neu gestartet", "POST /api/anomalies/{id}/ack": "Auffällige Sicherung als geprüft markiert",
 	"PUT /api/pbs/{id}/autoupdate": "Automatische Updates eingestellt", "POST /api/pbs/{id}/ssh": "SSH-Zugang eingerichtet",
 	"PUT /api/selfbackup": "Sicherung der Appliance eingestellt", "POST /api/selfbackup/run": "Sicherung der Appliance gestartet",

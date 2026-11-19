@@ -81,7 +81,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   HTML-Datei (druckbar als PDF); jederzeit unter Benachrichtigungen → Monatsbericht ansehbar.
 - **Update per Klick:** die Appliance sieht zweimal täglich bei GitHub nach (übertragen wird nur die Versionsnummer),
   prüft die Prüfsumme, testet das neue Programm vor dem Einsetzen und kehrt von selbst zur alten Version zurück, wenn
-  die neue dreimal nicht startet.
+  die neue dreimal nicht startet. Auf Wunsch installiert sie neue Versionen selbst nach Plan (Wochentage, Uhrzeit);
+  kopiert sie gerade auf eine USB- oder Archiv-Platte, läuft ein Restore-Test oder ein Systemupdate, wartet sie bis zu
+  drei Stunden, sonst folgt das Update zum nächsten Termin. Nach dem Update meldet sie, was neu ist.
 - **Sicherung der Appliance selbst:** Datenbank, SSH-Schlüssel, Zertifikat und die Konfiguration des lokalen PBS
   (`/etc/proxmox-backup`, Mount-Units) werden täglich mit einem Wiederherstellungs-Passwort verschlüsselt (AES-256-GCM,
   scrypt) als Gruppe `host/pk95proxbackup` in den Datastore geschrieben und wandern so auf die Wechselplatten. Eine

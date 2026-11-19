@@ -118,6 +118,7 @@ func (s *Server) routes() {
 	a("PUT /api/update", s.putUpdate)
 	a("POST /api/update/check", s.checkUpdate)
 	a("POST /api/update/install", s.installUpdate)
+	a("PUT /api/update/auto", s.setSelfAutoUpdate)
 	a("GET /api/selfbackup", s.getSelfBackup)
 	a("PUT /api/selfbackup", s.putSelfBackup)
 	a("POST /api/selfbackup/run", s.runSelfBackup)

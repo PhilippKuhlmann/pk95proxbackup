@@ -4164,6 +4164,34 @@ function notesHTML(md) {
 
 const UPDATE_STEPS = [["downloading", "Laden"], ["verifying", "Prüfsumme"], ["installing", "Probelauf und Einsetzen"], ["restarting", "Neustart"]];
 
+// selfAutoLine shows the plan for installing new versions of the appliance automatically.
+function selfAutoLine(u) {
+  const a = u.auto || {};
+  const edit = can("admin") ? `<button class="link-btn small" type="button" data-selfauto>${a.enabled ? "ändern" : "einrichten"}</button>` : "";
+  if (!a.enabled) return `<div class="sys-auto mt">${icon("clock", "sm")}<span class="muted">Neue Versionen automatisch installieren: aus</span>${edit}</div>`;
+  const days = a.weekdays.length === 7 ? "täglich" : a.weekdays.slice().sort().map((d) => DAY_SHORT[d - 1]).join(", ");
+  return `<div class="sys-auto mt">${icon("clock", "sm")}<span>Neue Versionen automatisch installieren: ${esc(days)} um ${esc(a.time)}${a.next ? ` <span class="muted">· nächster Termin ${esc(fmtTime(a.next, true))}</span>` : ""}</span>${edit}</div>
+    ${a.waiting?.length ? `<p class="small muted">Das geplante Update wartet, bis fertig ist: ${a.waiting.map(esc).join(", ")}.</p>` : ""}
+    ${a.postponed ? `<p class="small warnc">Zuletzt verschoben: ${esc(a.postponed)}</p>` : ""}`;
+}
+
+function selfAutoForm(u, done) {
+  const a = u.auto || {};
+  formDialog({ title: "Neue Versionen automatisch installieren", ic: "clock",
+    text: "Zum Termin sieht die Appliance bei GitHub nach und installiert eine neue Version selbst. Sie startet dabei neu und ist etwa eine Minute nicht erreichbar; Sicherungen in Proxmox VE laufen weiter. Kopiert sie gerade auf eine USB- oder Archiv-Platte, läuft ein Restore-Test oder ein Systemupdate, wartet sie bis zu drei Stunden – sonst folgt das Update zum nächsten Termin. Startet die neue Version nicht, kehrt sie von selbst zur bisherigen zurück.",
+    fields: [
+      { name: "enabled", label: "Neue Versionen automatisch installieren", type: "checkbox", value: a.enabled, wide: true },
+      { type: "html", name: "weekdays", html: `<span class="fl">Wochentage</span><div class="daypick" data-wd>${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(a.weekdays || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+      { name: "time", label: "Uhrzeit", type: "time", value: a.time || "05:00", hint: "Am besten eine Zeit ohne Sicherungen und USB-Kopien." },
+    ],
+    submit: async (v, d) => {
+      v.weekdays = qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value));
+      await PUT("/api/update/auto", v);
+      toast(v.enabled ? "Neue Versionen werden automatisch installiert." : "Automatisches Installieren ausgeschaltet.");
+      await done();
+    } });
+}
+
 async function updatePanel(box) {
   const draw = (u) => {
     if (!box.isConnected) return;
@@ -4183,7 +4211,8 @@ async function updatePanel(box) {
         <button class="btn gray" type="button" data-check ${busy ? "disabled" : ""}>${icon("refresh")} Nach Updates suchen</button>
         ${u.url ? `<a class="btn gray" href="${esc(u.url)}" target="_blank" rel="noopener">${icon("external")} Release</a>` : ""}</div>
       <label class="check mt"><input type="checkbox" data-auto ${u.auto_check ? "checked" : ""}><span class="ct"><span>Zweimal täglich nach Updates suchen</span>
-        <small>Fragt nur bei GitHub nach der neuesten Version; übertragen wird dabei allein die installierte Versionsnummer. Installiert wird nur auf Klick.</small></span></label>`;
+        <small>Fragt nur bei GitHub nach der neuesten Version; übertragen wird dabei allein die installierte Versionsnummer.</small></span></label>
+      ${selfAutoLine(u)}`;
     const ib = qs("[data-install]", box);
     if (ib) ib.onclick = async () => {
       const cur = await GET("/api/update");
@@ -4196,6 +4225,8 @@ async function updatePanel(box) {
       await run(ib, async () => { draw(await POST("/api/update/install")); poll(u.latest); });
     };
     qs("[data-check]", box).onclick = (e) => run(e.currentTarget, async () => { const r = await POST("/api/update/check"); draw(r); toast(r.available ? `Version ${r.latest} ist verfügbar.` : "Die Appliance ist auf dem neuesten Stand."); });
+    const sa = qs("[data-selfauto]", box);
+    if (sa) sa.onclick = () => selfAutoForm(u, async () => draw(await GET("/api/update")));
     qs("[data-auto]", box).onchange = async (e) => { try { draw(await PUT("/api/update", { auto_check: e.target.checked })); } catch (err) { toastErr(err); } };
     if (busy) poll(u.latest);
   };

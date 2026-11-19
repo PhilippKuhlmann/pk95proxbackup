@@ -367,6 +367,23 @@ func (s *Server) rebootServer(w http.ResponseWriter, r *http.Request) {
 	ok(w)
 }
 
+// setSelfAutoUpdate stores the plan for installing new versions of the appliance itself.
+func (s *Server) setSelfAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	var req core.AutoUpdate
+	if !decode(w, r, &req) {
+		return
+	}
+	errs, err := s.C.SetSelfAutoUpdate(req)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if fieldErrs(w, errs) {
+		return
+	}
+	ok(w)
+}
+
 func (s *Server) setAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	var req core.AutoUpdate
 	if !decode(w, r, &req) {

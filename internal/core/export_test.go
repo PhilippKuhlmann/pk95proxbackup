@@ -36,3 +36,12 @@ func (c *Core) ResumeForTest(ctx context.Context) { c.resumeRotations(ctx) }
 func (c *Core) ScanForeignForTest(ctx context.Context, now time.Time) { c.scanForeignDisks(ctx, now) }
 
 func (c *Core) CheckFailedForTest(ctx context.Context, ov *Overview) { c.checkFailedTasks(ctx, ov) }
+
+// SetUpgradingForTest pretends a system update of a Backup Server runs (BusyWork).
+func (c *Core) SetUpgradingForTest(id string, on bool) {
+	if on {
+		c.upgrades.following.Store(id, true)
+	} else {
+		c.upgrades.following.Delete(id)
+	}
+}
