@@ -250,7 +250,7 @@ func Setup(c *core.Core) (func(), error) {
 	}
 
 	offsite := NewPBS("pbs-buero", 64*gib)
-	offsite.AddStore("offsite", "/mnt/datastore/offsite", "", 8000*gib, 0)
+	offsite.AddStore("offsite", "/mnt/datastore/offsite", "", 3440*gib, 0) // ext4 on the 3500 GiB disk sdb
 	// The office PBS runs as VM 130 on pve2 (system and datastore disk on the ZFS pool there).
 	offsite.AddDisk("sda", "QEMU", "QEMU HARDDISK", "hdd", 32*gib, "filesystem", "")
 	offsite.AddDisk("sdb", "QEMU", "QEMU HARDDISK", "hdd", 3500*gib, "filesystem", "")
@@ -411,6 +411,13 @@ func Setup(c *core.Core) (func(), error) {
 	// SSH to the office server: root works, any other account is not root.
 	office := NewRunner()
 	office.OnUpgrade = offsite.Upgrade
+	// "offsite" lies on the virtual disk scsi1 of VM 130 (ext4 on sdb1) and can be enlarged.
+	office.Grow = map[string]*GrowDisk{"/mnt/datastore/offsite": {Dev: "/dev/sdb1", Disk: "sdb", Part: "1", FS: "ext4", Serial: "drive-scsi1", FSSize: 3440 * gib,
+		DiskSize: func() int64 { return pve.DriveSize(130, "scsi1") },
+		OnGrow: func(n int64) {
+			offsite.SetStoreTotal("offsite", n)
+			offsite.SetDiskSize("sdb", pve.DriveSize(130, "scsi1"))
+		}}}
 	notRoot := &Runner{mounted: map[string]bool{}, files: map[string]string{}, scans: map[string]string{}, UID: "1000"}
 	c.SSHRunner = func(s core.PBSServer) hostexec.Runner {
 		if s.SSHUser != "" && s.SSHUser != "root" {
@@ -502,6 +509,16 @@ type Runner struct {
 	// umount -l of the path removes them.
 	StaleMounts []string
 	unmounted   []string
+	// Grow are datastores on virtual disks that can be enlarged (by path).
+	Grow map[string]*GrowDisk
+}
+
+// GrowDisk is a datastore on a partition of a virtual disk (the pk95-grow scripts).
+type GrowDisk struct {
+	Dev, Disk, Part, FS, Serial string
+	FSSize                      int64
+	DiskSize                    func() int64     // size of the virtual disk in Proxmox VE
+	OnGrow                      func(size int64) // the filesystem grew to size
 }
 
 // Unmounted lists the paths unmounted with umount -l.
@@ -611,6 +628,29 @@ func (r *Runner) Run(_ context.Context, name string, args ...string) (string, er
 		}
 		return "", nil
 	case "sh":
+		if len(args) >= 4 && strings.Contains(args[1], "# pk95-grow-info") {
+			g := r.Grow[args[3]]
+			if g == nil { // a datastore on the system disk (LVM)
+				return "src=/dev/mapper/pve-root\nfs=ext4\ndisk=dm-0\npart=\nserial=\nfssize=0\n", nil
+			}
+			return fmt.Sprintf("src=%s\nfs=%s\ndisk=%s\npart=%s\nserial=%s\nfssize=%d\n", g.Dev, g.FS, g.Disk, g.Part, g.Serial, g.FSSize), nil
+		}
+		if len(args) >= 9 && strings.Contains(args[1], "# pk95-grow\n") {
+			g := r.Grow[args[7]]
+			want, _ := strconv.ParseInt(args[8], 10, 64)
+			if g == nil {
+				return "", fmt.Errorf("sh: exit status 1")
+			}
+			size := g.DiskSize()
+			if size < want {
+				return "Der Backup-Server sieht die größere Platte nicht.\n", fmt.Errorf("sh: exit status 3")
+			}
+			g.FSSize = size - size/60 // ext4 keeps some for itself
+			if g.OnGrow != nil {
+				g.OnGrow(g.FSSize)
+			}
+			return fmt.Sprintf("CHANGED: partition=%s\nresize2fs 1.47.2\nfssize=%d\n", g.Part, g.FSSize), nil
+		}
 		if len(args) >= 3 && strings.Contains(args[1], "/sys/block") {
 			var out strings.Builder
 			for _, d := range args[3:] {

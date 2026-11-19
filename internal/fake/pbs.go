@@ -189,6 +189,27 @@ func (p *PBS) AddStore(name, path, uuid string, total int64, _ int64) {
 	p.stores[name] = &store{cfg: prox.DatastoreConfig{Name: name, Path: path, BackingDevice: uuid}, total: total, mounted: uuid == ""}
 }
 
+// SetStoreTotal sets the size of a datastore (after it grew).
+func (p *PBS) SetStoreTotal(name string, total int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stores[name].total = total
+}
+
+// SetDiskSize sets the size of a disk and its first partition.
+func (p *PBS) SetDiskSize(name string, size int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, d := range p.disks {
+		if d.Name == name {
+			p.disks[i].Size = size
+			if len(d.Partitions) > 0 {
+				p.disks[i].Partitions[0].Size = size
+			}
+		}
+	}
+}
+
 // SetMounted sets the mount state of a removable store.
 func (p *PBS) SetMounted(name string, m bool) { p.stores[name].mounted = m }
 

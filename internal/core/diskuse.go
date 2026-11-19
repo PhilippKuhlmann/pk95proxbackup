@@ -128,6 +128,7 @@ type vdisk struct {
 
 // backupVM is a VM that holds backups: this appliance or a backup server running as VM.
 type backupVM struct {
+	server  string // id of the Backup Server running in it
 	label   string // "der Appliance-VM", "von PBS01"
 	cluster PVECluster
 	node    string
@@ -165,7 +166,15 @@ func (c *Core) backupVMs(ctx context.Context, trace *[]string) []backupVM {
 	self, selfErr := c.FindSelfVM(ctx)
 	if self != nil {
 		if cl, err := c.Cluster(self.Cluster); err == nil {
-			out = append(out, backupVM{label: "der Appliance-VM", cluster: cl, node: self.Node, vmid: self.VMID, name: self.Name, cfg: self.Config})
+			local := ""
+			if servers, err := c.Servers(); err == nil {
+				for _, s := range servers {
+					if s.Local {
+						local = s.ID
+					}
+				}
+			}
+			out = append(out, backupVM{server: local, label: "der Appliance-VM", cluster: cl, node: self.Node, vmid: self.VMID, name: self.Name, cfg: self.Config})
 			*trace = append(*trace, fmt.Sprintf("Diese Appliance läuft als VM %d „%s“ auf %s.", self.VMID, self.Name, self.Node))
 		}
 	} else if selfErr != nil {
@@ -260,7 +269,7 @@ func (c *Core) backupVMs(ctx context.Context, trace *[]string) []backupVM {
 		}
 		h := hits[0]
 		*trace = append(*trace, fmt.Sprintf("%s läuft als VM %d „%s“ auf %s (Platten %s).", w.srv.Name, h.g.VMID, h.g.Name, h.g.Node, strings.Join(desc, ", ")))
-		out = append(out, backupVM{label: "von " + w.srv.Name, cluster: h.cl, node: h.g.Node, vmid: h.g.VMID, name: h.g.Name, cfg: h.cfg})
+		out = append(out, backupVM{server: w.srv.ID, label: "von " + w.srv.Name, cluster: h.cl, node: h.g.Node, vmid: h.g.VMID, name: h.g.Name, cfg: h.cfg})
 	}
 	return out
 }

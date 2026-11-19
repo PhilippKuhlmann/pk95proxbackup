@@ -48,6 +48,10 @@ func (p *PVE) guestOp(w http.ResponseWriter, m string, seg []string, f url.Value
 	id := atoi(seg[3])
 	g := p.guest(id)
 	op := strings.Join(seg[4:], "/")
+	if op == "resize" && seg[2] == "qemu" && m == "PUT" {
+		p.resizeDisk(w, seg[1], id, f)
+		return
+	}
 	if op == "config" && seg[2] == "qemu" && p.cfg[id] == nil {
 		// guests that were never restored: the USB passthrough helper only needs smbios/usb
 		p.legacyConfig(w, m, id, f)

@@ -8,6 +8,7 @@ const ICONS = {
 "rocket": "M15.59 14.37a6 6 0 01-5.84 7.38v-4.8m5.84-2.58a14.98 14.98 0 006.16-12.12A14.98 14.98 0 009.631 8.41m5.96 5.96a14.926 14.926 0 01-5.841 2.58m-.119-8.54a6 6 0 00-7.381 5.84h4.8m2.581-5.84a14.927 14.927 0 00-2.58 5.84m2.699 2.7c-.103.021-.207.041-.311.06a15.09 15.09 0 01-2.448-2.448 14.9 14.9 0 01.06-.312m-2.24 2.39a4.493 4.493 0 00-1.757 4.306 4.493 4.493 0 004.306-1.758M16.5 9a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z",
 "cog": "M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
 "plus": "M12 4.5v15m7.5-7.5h-15",
+"expand": "M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15",
 "pencil": "M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10",
 "trash": "M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0",
 "play": "M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z",
@@ -1217,6 +1218,7 @@ PAGES["/datastores"] = async (el, token) => {
           <button class="btn gray sm" type="button" data-snaps="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("archive")} Sicherungen</button>
           <button class="ib" type="button" title="Speicher jetzt freigeben (Garbage Collection)" aria-label="Speicher freigeben" data-act="gc" data-store="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("sparkles")}</button>
           <button class="ib" type="button" title="Jetzt prüfen (Verify)" aria-label="Prüfen" data-act="verify" data-store="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("shield")}</button>
+          ${!d.removable && !s3Of(d) && can("admin") ? `<button class="ib" type="button" title="Datastore vergrößern" aria-label="Vergrößern" data-grow="${esc(d.name)}">${icon("expand")}</button>` : ""}
           <button class="ib" type="button" title="Aufbewahrung und Zeitpläne" aria-label="Einstellungen" data-edit="${esc(d.name)}">${icon("cog")}</button>
           <button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del="${esc(d.name)}">${icon("trash")}</button></div></td></tr>`; }).join("")}
       </tbody></table></div></div>` : empty("Noch kein Datastore", "Ein Datastore kann auf einer freien Platte der VM, auf einer NFS/SMB-Freigabe oder in einem Verzeichnis liegen. USB-Wechselplatten richtest du unter „Wechselplatten“ ein.", `<button class="btn" type="button" data-add2>${icon("plus")} Datastore anlegen</button>`, "database")) +
@@ -1255,6 +1257,7 @@ PAGES["/datastores"] = async (el, token) => {
     qsa("[data-snaps]", el).forEach((b) => b.onclick = () => snapshotsDialog(srv, b.dataset.snaps));
     qsa("[data-fc]", el).forEach((b) => b.onclick = () => forecastDialog(srv, list.find((d) => d.name === b.dataset.fc)));
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => datastoreSettings(srv, list.find((d) => d.name === b.dataset.edit), draw));
+    qsa("[data-grow]", el).forEach((b) => b.onclick = () => growDialog(srv, b.dataset.grow, draw, b));
     qsa("[data-del]", el).forEach((b) => b.onclick = () => datastoreDelete(srv, b.dataset.del, draw));
   };
   el.innerHTML = pageHead("Datastores", "Lade …");
@@ -1523,6 +1526,46 @@ function datastoreCreate(srv, done) {
       done();
     },
   });
+}
+
+// growDialog enlarges a datastore on the virtual disk of a Backup Server VM.
+async function growDialog(srv, store, done, btn) {
+  const p = await run(btn, () => GET(`/api/pbs/${srv.id}/datastores/${enc(store)}/grow`));
+  if (!p) return;
+  if (p.problem) {
+    const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("expand")}</span><div class="grow"><div class="dlg-title">${esc(store)} vergrößern</div>
+        <p class="dlg-text">${esc(p.problem)}</p></div></div>
+      <div class="dlg-foot"><span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`);
+    qs("[data-close]", dlg).onclick = () => dlg.close();
+    return;
+  }
+  const GiB = 2 ** 30;
+  const cur = Math.round(p.size / GiB), max = cur + Math.floor(p.free / GiB);
+  const step = (f) => Math.min(max, Math.ceil(cur * f / 64) * 64);
+  // Quick choices: +25 %, +50 %, double – capped by the free space, each size once.
+  const quick = [];
+  for (const [l, f] of [["+25 %", 1.25], ["+50 %", 1.5], ["doppelt", 2]]) {
+    const n = step(f);
+    if (n > cur && !quick.some((q) => q[1] === n)) quick.push([n === max && Math.ceil(cur * f / 64) * 64 > max ? "alles Freie" : l, n]);
+  }
+  const kv = [["Virtuelle Platte", `${esc(p.drive)} der VM ${p.vmid} „${esc(p.vm_name)}“ · ${esc(p.cluster_name)} / ${esc(p.node)}`],
+    ["Größe jetzt", `${cur} GiB${p.fs_size ? ` · Datastore ${fmtBytes(p.fs_size)} (${esc(p.fs)} auf ${esc(p.device)})` : ""}`],
+    ["Frei auf " + esc(p.storage), fmtBytes(p.free)]];
+  formDialog({ title: `${store} vergrößern`, ic: "expand", button: p.pending ? "Nachziehen" : "Vergrößern",
+    text: `Die Appliance vergrößert die virtuelle Platte in Proxmox VE und danach Partition und Dateisystem auf ${esc(srv.name)} – im laufenden Betrieb, Sicherungen laufen weiter. Verkleinern geht nicht.`,
+    fields: [
+      { type: "html", wide: true, html: `<table class="kv">${kv.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>` +
+        (p.pending ? `<div class="mt">${callout("yellow", "Die Platte ist schon größer als der Datastore", `Die Platte hat ${cur} GiB, der Datastore erst ${fmtBytes(p.fs_size)} – mit ${cur} GiB holt die Appliance Partition und Dateisystem nach.`)}</div>` : "") },
+      { name: "size_gib", label: "Neue Größe der Platte (GiB)", type: "number", min: p.pending ? cur : cur + 1, max, value: p.pending ? cur : step(1.25), required: true,
+        hint: `Bisher ${cur} GiB, höchstens ${max} GiB.` },
+      { type: "html", name: "quick", wide: true, html: `<span class="fl">Schnellwahl</span><div class="flex" style="flex-wrap:wrap">${quick.map(([l, n]) => `<button class="btn gray sm" type="button" data-q="${n}">${l} · ${n} GiB</button>`).join("")}</div>` },
+    ],
+    onMount: (d) => qsa("[data-q]", d).forEach((b) => b.onclick = () => { qs('[name="size_gib"]', d).value = b.dataset.q; }),
+    submit: async (v) => {
+      const r = await POST(`/api/pbs/${srv.id}/datastores/${enc(store)}/grow`, { size_gib: Number(v.size_gib) });
+      toast(`${store} hat jetzt ${fmtBytes(r.fs_size)}.`);
+      done();
+    } });
 }
 
 // damageCallouts lists the backups the last verification could not read back.

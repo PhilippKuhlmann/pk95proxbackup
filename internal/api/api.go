@@ -153,6 +153,8 @@ func (s *Server) routes() {
 	a("POST /api/pbs/{id}/datastores", s.createDatastore)
 	a("PUT /api/pbs/{id}/datastores/{store}", s.updateDatastore)
 	a("DELETE /api/pbs/{id}/datastores/{store}", s.deleteDatastore)
+	a("GET /api/pbs/{id}/datastores/{store}/grow", s.planGrow)
+	a("POST /api/pbs/{id}/datastores/{store}/grow", s.growDatastore)
 	a("POST /api/pbs/{id}/datastores/{store}/{action}", s.datastoreAction)
 	a("GET /api/pbs/{id}/datastores/{store}/snapshots", s.snapshots)
 	a("DELETE /api/pbs/{id}/datastores/{store}/snapshots", s.deleteSnapshot)

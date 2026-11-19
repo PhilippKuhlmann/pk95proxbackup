@@ -47,6 +47,10 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 - **Restore-Tests nach Zeitplan:** wöchentlich (auch alle 2–4 Wochen) oder monatlich – am ersten bis vierten oder
   letzten Wochentag bzw. an einem Datum (auch Monatsletzter), jeden Monat oder alle 2, 3, 4, 6 oder 12 Monate ab einem
   Startmonat. Der Dialog zeigt den Plan in Klartext und die nächsten Termine.
+- **Datastore vergrößern:** Läuft ein Backup-Server als VM in einem verbundenen Proxmox VE (oder die Appliance
+  selbst), vergrößert ein Klick beim Datastore die virtuelle Platte in Proxmox VE und danach Partition und Dateisystem
+  (ext4, xfs) auf dem Backup-Server – im laufenden Betrieb. Braucht den SSH-Zugang zum Backup-Server und das Recht
+  VM.Config.Disk; Wechsel-, Archiv- und Cloud-Datastores sowie Datastores auf LVM oder ZFS bleiben außen vor.
 - **Platzprognose:** Die Appliance merkt sich täglich die Belegung jedes Datastores (beim ersten Start ein Jahr
   rückwirkend aus dem Verlauf des Backup-Servers, Wechselplatten an den Tagen, an denen sie stecken) und rechnet das
   Wachstum der letzten Wochen weiter. Datastores zeigt „voll ca. …“, ein Klick öffnet Verlauf, Prognose und was hilft

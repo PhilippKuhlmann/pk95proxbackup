@@ -343,6 +343,15 @@ func (p *PVE) SetVMConfig(ctx context.Context, node string, vmid int, params Par
 	return p.Do(ctx, http.MethodPut, "/nodes/"+url.PathEscape(node)+"/qemu/"+strconv.Itoa(vmid)+"/config", params, nil)
 }
 
+// ResizeDisk enlarges a disk of a VM to size ("2048G"). Newer Proxmox VE versions answer
+// with a task, older ones finish right away (empty UPID).
+func (p *PVE) ResizeDisk(ctx context.Context, node string, vmid int, disk, size string) (string, error) {
+	var upid any
+	err := p.Do(ctx, http.MethodPut, "/nodes/"+url.PathEscape(node)+"/qemu/"+strconv.Itoa(vmid)+"/resize", Params{"disk": disk, "size": size}, &upid)
+	s, _ := upid.(string)
+	return s, err
+}
+
 // Permissions returns the effective privileges of the token per ACL path (GET /access/permissions).
 func (p *PVE) Permissions(ctx context.Context) (map[string]map[string]int, error) {
 	var out map[string]map[string]int

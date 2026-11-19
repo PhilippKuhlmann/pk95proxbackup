@@ -53,14 +53,15 @@ var routeRole = map[string]string{
 	"POST /api/pbs/{id}/datastores/{store}/{action}": "operator",
 	"POST /api/rotations/{id}/disks/{key}/{action}":  "operator",
 	// reading backup contents and secrets
-	"GET /api/restore/files":       "files",
-	"GET /api/restore/download":    "files",
-	"GET /api/enckeys/{key}":       "admin",
-	"GET /api/enckeys/{key}/paper": "admin",
-	"GET /api/selfbackup/download": "admin",
-	"GET /api/settings":            "admin",
-	"GET /api/users":               "admin",
-	"GET /api/audit":               "admin",
+	"GET /api/restore/files":                    "files",
+	"GET /api/restore/download":                 "files",
+	"GET /api/enckeys/{key}":                    "admin",
+	"GET /api/enckeys/{key}/paper":              "admin",
+	"GET /api/selfbackup/download":              "admin",
+	"GET /api/settings":                         "admin",
+	"GET /api/users":                            "admin",
+	"GET /api/audit":                            "admin",
+	"GET /api/pbs/{id}/datastores/{store}/grow": "admin", // runs commands on the Backup Server
 }
 
 // auditedReads are GET routes worth a line in the audit log.
@@ -171,7 +172,7 @@ var actionNames = map[string]string{
 	"PUT /api/settings": "Benachrichtigungen geändert", "POST /api/settings/test": "Testnachricht", "PUT /api/settings/access": "Zugriff geändert",
 	"POST /api/account/password": "Eigenes Passwort geändert", "POST /api/account/totp/enable": "Zwei-Faktor eingeschaltet",
 	"POST /api/account/totp/disable": "Zwei-Faktor ausgeschaltet", "POST /api/account/totp/recovery": "Neue Wiederherstellungscodes",
-	"PUT /api/update": "Aktualisierung eingestellt", "POST /api/update/install": "Aktualisierung installiert", "PUT /api/update/auto": "Automatische Aktualisierung eingestellt",
+	"PUT /api/update": "Aktualisierung eingestellt", "POST /api/update/install": "Aktualisierung installiert", "PUT /api/update/auto": "Automatische Aktualisierung eingestellt", "POST /api/pbs/{id}/datastores/{store}/grow": "Datastore vergrößert",
 	"POST /api/pbs/{id}/packages": "Paketlisten aktualisiert", "POST /api/pbs/{id}/upgrade": "Systemupdates gestartet", "POST /api/pbs/{id}/reboot": "Backup-Server neu gestartet", "POST /api/anomalies/{id}/ack": "Auffällige Sicherung als geprüft markiert",
 	"PUT /api/pbs/{id}/autoupdate": "Automatische Updates eingestellt", "POST /api/pbs/{id}/ssh": "SSH-Zugang eingerichtet",
 	"PUT /api/selfbackup": "Sicherung der Appliance eingestellt", "POST /api/selfbackup/run": "Sicherung der Appliance gestartet",

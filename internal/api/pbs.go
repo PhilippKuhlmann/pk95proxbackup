@@ -990,3 +990,35 @@ func (s *Server) checkSyncSource(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	writeJSON(w, http.StatusOK, s.C.CheckRemote(ctx, r.PathValue("id"), req.SourceServer, req.SourceStore, strings.TrimSpace(req.SourceHost)))
 }
+
+// planGrow says how a datastore can be enlarged (or why not).
+func (s *Server) planGrow(w http.ResponseWriter, r *http.Request) {
+	p, err := s.C.PlanGrow(r.Context(), r.PathValue("id"), r.PathValue("store"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// growDatastore enlarges the virtual disk under a datastore and its filesystem.
+func (s *Server) growDatastore(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SizeGiB int64 `json:"size_gib"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.SizeGiB <= 0 {
+		writeErr(w, http.StatusUnprocessableEntity, "Neue Größe in GiB angeben.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Minute)
+	defer cancel()
+	p, err := s.C.GrowDatastore(ctx, r.PathValue("id"), r.PathValue("store"), req.SizeGiB, currentUser(r).Username)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}

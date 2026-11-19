@@ -3,6 +3,7 @@ package fake
 import (
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +71,49 @@ func (p *PVE) SetVMDisks(id int, drives map[string]string) {
 	for k, v := range drives {
 		p.usbCfg[id][k] = v
 	}
+}
+
+// DriveSize is the size of a drive of a VM ("size=3500G").
+func (p *PVE) DriveSize(id int, drive string) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return driveBytes(p.usbCfg[id][drive])
+}
+
+var driveSizeRe = regexp.MustCompile(`size=(\d+)([KMGT]?)`)
+
+func driveBytes(val string) int64 {
+	m := driveSizeRe.FindStringSubmatch(val)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(m[1], 10, 64)
+	return n << map[string]int{"": 0, "K": 10, "M": 20, "G": 30, "T": 40}[m[2]]
+}
+
+// resizeDisk answers PUT …/qemu/{vmid}/resize: size "2048G" or "+500G".
+func (p *PVE) resizeDisk(w http.ResponseWriter, node string, id int, f url.Values) {
+	cfg := p.cfg[id]
+	if cfg == nil || cfg[f.Get("disk")] == "" {
+		cfg = p.usbCfg[id]
+	}
+	val := cfg[f.Get("disk")]
+	if val == "" {
+		apiErr(w, 500, "disk '"+f.Get("disk")+"' does not exist")
+		return
+	}
+	old := driveBytes(val)
+	size := f.Get("size")
+	n := driveBytes("size=" + strings.TrimPrefix(size, "+"))
+	if strings.HasPrefix(size, "+") {
+		n += old
+	}
+	if n < old {
+		apiErr(w, 500, "shrinking disks is not supported")
+		return
+	}
+	cfg[f.Get("disk")] = driveSizeRe.ReplaceAllString(val, "size="+strconv.FormatInt(n>>30, 10)+"G")
+	data(w, p.tasks.start(node, "resize", strconv.Itoa(id), time.Second, nil, nil))
 }
 
 // NewPVE creates a cluster with the given nodes.
@@ -196,6 +240,7 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for _, pr := range prox.PVERequiredPrivs {
 				root[pr] = 1
 			}
+			root["VM.Config.Disk"] = 1 // like a root token: also enlarging VM disks
 		}
 		data(w, map[string]map[string]int{"/": root})
 	case path == "/nodes":
