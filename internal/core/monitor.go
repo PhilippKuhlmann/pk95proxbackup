@@ -272,6 +272,7 @@ func (c *Core) Run(ctx context.Context) {
 		c.scheduleDiskHealth(time.Now())
 		c.scheduleServerHealth(time.Now())
 		c.scheduleAutoUpdates(time.Now())
+		c.scheduleAnomalies(time.Now())
 		c.scheduleMonthly(time.Now())
 		c.enforcePVEMail(time.Now())
 		c.scheduleUpdateCheck(time.Now())

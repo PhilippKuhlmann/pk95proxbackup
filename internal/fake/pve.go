@@ -406,7 +406,7 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		taskStatus(w, p.tasks.get(upid))
 	case len(seg) == 5 && seg[2] == "tasks" && seg[4] == "log":
 		upid, _ := url.PathUnescape(seg[3])
-		taskLog(w, p.tasks.get(upid))
+		taskLog(w, p.tasks.get(upid), f)
 	case len(seg) == 4 && seg[2] == "hardware" && seg[3] == "usb":
 		data(w, p.usb[seg[1]])
 	case len(seg) == 4 && seg[0] == "nodes" && seg[2] == "disks" && seg[3] == "list":

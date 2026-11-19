@@ -113,6 +113,16 @@ func (t *tasks) recent(limit int) []*task {
 	return out
 }
 
+// seedLog adds a finished task with its log.
+func (t *tasks) seedLog(node, typ, id, status string, start time.Time, dur time.Duration, log []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.n++
+	upid := fmt.Sprintf("UPID:%s:%08X:%08X:%08X:%s:%s:root@pam:", node, 1000+t.n, t.n, start.Unix(), typ, strings.ReplaceAll(id, "/", "-"))
+	t.list = append(t.list, &task{UPID: upid, Node: node, Type: typ, ID: id, User: "root@pam", Start: start.Unix(),
+		End: start.Add(dur).Unix(), Status: status, Log: append(log, "TASK "+status)})
+}
+
 func (t *tasks) seed(node, typ, id, status string, start time.Time, dur time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -135,7 +145,8 @@ func taskStatus(w http.ResponseWriter, tk *task) {
 	data(w, st)
 }
 
-func taskLog(w http.ResponseWriter, tk *task) {
+// taskLog answers GET …/tasks/{upid}/log; start and limit page through it like PBS/PVE.
+func taskLog(w http.ResponseWriter, tk *task, f url.Values) {
 	if tk == nil {
 		apiErr(w, 404, "no such task")
 		return
@@ -158,12 +169,18 @@ func taskLog(w http.ResponseWriter, tk *task) {
 			log = append(log, fmt.Sprintf("progress %d%% (read %.1f GiB of 32.0 GiB, zeroes = 3%%)", int(pct), pct*0.32))
 		}
 	}
+	start, limit := atoi(f.Get("start")), atoi(f.Get("limit"))
+	if limit <= 0 {
+		limit = len(log) // lenient: callers that do not page get everything
+	}
 	lines := []map[string]any{}
 	for i, l := range log {
-		lines = append(lines, map[string]any{"n": i + 1, "t": l})
+		if i >= start && i < start+limit {
+			lines = append(lines, map[string]any{"n": i + 1, "t": l})
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": lines, "total": len(lines)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": lines, "total": len(log)})
 }
 
 func data(w http.ResponseWriter, v any) {
@@ -265,7 +282,14 @@ func Setup(c *core.Core) (func(), error) {
 			typ string
 			gb  int64
 		}{{100, "vm", 60}, {101, "vm", 420}, {102, "vm", 180}, {110, "ct", 4}, {111, "vm", 32}} {
-			local.AddSnapshot("backup", g.typ, strconv.Itoa(g.id), t.Add(time.Duration(g.id%10)*time.Minute).Unix(), g.gb*gib)
+			bt := t.Add(time.Duration(g.id%10) * time.Minute)
+			local.AddSnapshot("backup", g.typ, strconv.Itoa(g.id), bt.Unix(), g.gb*gib)
+			// New data per backup: about 2 % of the guest, varying a little from day to day.
+			upload := g.gb*gib/50 + int64(d%4)*g.gb*gib/400
+			if g.id == 102 && now.Sub(bt) < 30*time.Hour {
+				upload = 74 * gib // the newest backup of VM 102 is unusual (ransomware-like)
+			}
+			local.AddBackupTask("backup", g.typ, strconv.Itoa(g.id), bt, g.gb*gib, upload)
 		}
 	}
 	for _, sn := range local.snapshotsOf("backup") {

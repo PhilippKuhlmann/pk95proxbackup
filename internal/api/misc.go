@@ -52,6 +52,8 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	out["coverage"] = s.C.CoverageSummaryInfo()
 	// Datastores that will be full within 30 days.
 	out["space"] = s.C.SpaceIssues(ov)
+	// Unusual backups nobody has looked at yet.
+	out["anomalies"] = anomalyViews(s.C.OpenAnomalies())
 	// Encryption keys without a copy outside the appliance.
 	unsaved := []string{}
 	for _, k := range s.C.EncKeys() {

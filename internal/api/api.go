@@ -146,6 +146,8 @@ func (s *Server) routes() {
 	a("GET /api/pbs/{id}/upgrade", s.upgradeStatus)
 	a("POST /api/pbs/{id}/reboot", s.rebootServer)
 	a("PUT /api/pbs/{id}/autoupdate", s.setAutoUpdate)
+	a("GET /api/anomalies", s.listAnomalies)
+	a("POST /api/anomalies/{id}/ack", s.ackAnomaly)
 	a("GET /api/pbs/{id}/datastores", s.listDatastores)
 	a("POST /api/pbs/{id}/datastores", s.createDatastore)
 	a("PUT /api/pbs/{id}/datastores/{store}", s.updateDatastore)

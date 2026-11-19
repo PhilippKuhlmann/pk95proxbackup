@@ -1,6 +1,7 @@
 package fake
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -206,6 +207,26 @@ func (p *PBS) AddDisk(name, vendor, model, typ string, size int64, used, uuid st
 }
 
 // AddSnapshot adds a backup snapshot.
+// AddBackupTask adds the finished backup task of a snapshot, with the upload statistics
+// PBS writes at the end of its log.
+func (p *PBS) AddBackupTask(store, typ, id string, t time.Time, size, upload int64) {
+	snap := fmt.Sprintf("%s/%s/%s", typ, id, t.UTC().Format("2006-01-02T15:04:05Z"))
+	archive := "root.pxar.didx"
+	kind := "dynamic"
+	if typ == "vm" {
+		archive, kind = "drive-scsi0.img.fidx", "fixed"
+	}
+	log := []string{fmt.Sprintf("starting new backup on datastore '%s' from ::ffff:192.168.10.5: %q", store, snap),
+		"protocol upgrade done", fmt.Sprintf("created new %s index 1 (%q)", kind, snap+"/"+archive)}
+	for i := 0; i < 20; i++ {
+		log = append(log, fmt.Sprintf("upload_chunk done: 4194304 bytes, %064x", i))
+	}
+	log = append(log, "Upload statistics for '"+archive+"'", fmt.Sprintf("Size: %d", size), "Chunk count: 4096",
+		fmt.Sprintf("Upload size: %d (%d%%)", upload, upload*100/max(size, 1)), "Duplicates: 0+0 (0%)", "Compression: 40%",
+		"successfully closed "+kind+" index 1", "successfully finished backup", "backup finished successfully")
+	p.tasks.seedLog(p.node, "backup", store+":"+typ+"/"+id, "OK", t, 4*time.Minute, log)
+}
+
 func (p *PBS) AddSnapshot(st, typ, id string, t, size int64) {
 	s := p.stores[st]
 	s.snaps = append(s.snaps, prox.Snapshot{Type: typ, ID: id, Time: t, Size: size, Owner: "pk95-pve@pbs!pve-cluster", Verification: &struct {
@@ -889,8 +910,18 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data(w, p.tasks.start(p.node, "dircreate", name, 3*time.Second, []string{"create datastore '" + name + "' on disk " + disk}, nil))
 	case path == "/nodes/localhost/tasks":
 		out := []map[string]any{}
-		for _, t := range p.tasks.recent(max(atoi(f.Get("limit")), 50)) {
+		limit := max(atoi(f.Get("limit")), 50)
+		for _, t := range p.tasks.recent(1 << 30) {
+			if len(out) >= limit {
+				break
+			}
 			if boolv(f.Get("running")) && t.End != 0 {
+				continue
+			}
+			if tf := f.Get("typefilter"); tf != "" && !strings.Contains(t.Type, tf) {
+				continue
+			}
+			if since := atoi(f.Get("since")); since > 0 && t.Start < int64(since) {
 				continue
 			}
 			o := map[string]any{"upid": t.UPID, "node": t.Node, "worker_type": t.Type, "worker_id": t.ID, "user": t.User, "starttime": t.Start}
@@ -968,7 +999,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		taskStatus(w, p.tasks.get(upid))
 	case len(seg) == 5 && seg[2] == "tasks" && seg[4] == "log":
 		upid, _ := url.PathUnescape(seg[3])
-		taskLog(w, p.tasks.get(upid))
+		taskLog(w, p.tasks.get(upid), f)
 	case path == "/access/users" && m == "POST":
 		if p.users[f.Get("userid")] {
 			apiErr(w, 400, "user already exists")

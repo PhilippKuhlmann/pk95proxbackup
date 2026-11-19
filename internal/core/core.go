@@ -116,6 +116,7 @@ type Core struct {
 	usageAt     map[string]time.Time // last usage value written per datastore
 	diskSeen    map[string]string    // rotation disk → "present/mounted" at the last look
 	foreign     foreignRuntime
+	anomaly     anomalyRuntime
 }
 
 // New creates the core.

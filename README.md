@@ -94,6 +94,11 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   jemand Proxmox VE (Erpressersoftware), bleiben die Sicherungen auf dem Backup-Server. Die letzte Sicherung jedes
   Monats und Jahres lässt sich automatisch schützen (wird weder aufgeräumt noch gelöscht), einzelne Stände per Klick.
   Verschwinden alle Sicherungen eines Servers oder mehr als ein Fünftel eines Datastores auf einmal, kommt Alarm.
+- **Auffällige Sicherungen:** Die Appliance liest aus jeder Sicherung auf den Backup-Servern, wie viele neue Daten
+  hinzukamen. Sind es mindestens 1 GiB und mehr als das Fünffache des Üblichen (Median der letzten 14 Sicherungen) –
+  typisch für einen Verschlüsselungstrojaner – oder ist eine Sicherung nur noch halb so groß wie sonst, kommt eine
+  Warnung (Übersicht, VMs & Container, Mail/Telegram/Push). Die letzte unauffällige Sicherung des Servers wird
+  geschützt, bis jemand die Meldung als geprüft markiert; beim Wiederherstellen sind beide Stände markiert.
 - **Mails zu Sicherungsjobs im eigenen Design:** je Proxmox VE umschaltbar („Appliance übernimmt“ unter
   Sicherungsjobs). Die Jobs in Proxmox VE schicken dann keine eigene Mail mehr, die Appliance meldet jeden Lauf mit
   allen Servern, Ergebnis, Dauer und Datenmenge; andere Proxmox-Meldungen bleiben unverändert, zurückstellen geht jederzeit.

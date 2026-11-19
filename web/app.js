@@ -823,6 +823,7 @@ PAGES["/"] = async (el, token) => {
     for (const x of r.space || []) issue(x.state === "critical" ? "error" : "warning", `Datastore ${x.store} auf ${x.server}: ${x.days_left <= 0 ? "voll" : `voraussichtlich in ${x.days_left} ${x.days_left === 1 ? "Tag" : "Tagen"} voll`}`, `/datastores?server=${x.server_id}`);
     const cov = r.coverage || {};
     if (cov.bad) issue("warning", `${cov.bad} ${cov.bad === 1 ? "VM bzw. Container hat" : "VMs und Container haben"} eine Lücke in der Sicherungskette${cov.names?.length ? " (" + cov.names.join(", ") + (cov.bad > cov.names.length ? ", …" : "") + ")" : ""}`, "/sicherungen?luecken=1");
+    for (const a of r.anomalies || []) issue("warning", `Auffällige Sicherung: ${a.type === "ct" ? "CT" : "VM"} ${a.guest_id}${a.name ? " " + a.name : ""} – ${a.text}`, "/sicherungen?auffaellig=1");
     for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
     const sb = r.selfbackup || {};
     if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen/sicherung");
@@ -2497,8 +2498,31 @@ function chainCell(l, label) {
 
 PAGES["/sicherungen"] = async (el, token) => {
   await loadConn();
-  let filter = "", onlyIssues = new URLSearchParams(location.search).get("luecken") === "1";
-  let data = null;
+  const q0 = new URLSearchParams(location.search);
+  let filter = "", onlyIssues = q0.get("luecken") === "1";
+  const showChecked = q0.get("auffaellig") === "1";
+  let data = null, anomalies = [];
+  // restoreHref opens the guest on the restore page (or the datastore when no Proxmox VE knows it).
+  const restoreHref = (a) => {
+    const g = data.guests.find((x) => String(x.vmid) === a.guest_id && (x.type === "lxc") === (a.type === "ct"));
+    return g ? `/wiederherstellen?cluster=${enc(g.cluster)}&vmid=${g.vmid}` : `/wiederherstellen?src=${enc(a.server_id + "|" + a.store)}&vmid=${enc(a.guest_id)}`;
+  };
+  const anomalyPanel = () => {
+    const now = Date.now() / 1000;
+    const list = anomalies.filter((a) => !a.ack_at || (showChecked && now - a.ack_at < 30 * 86400));
+    if (!list.length) return "";
+    return `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">Auffällige Sicherungen</div>
+        <div class="muted small">Ungewöhnlich viele neue Daten – etwa ein Verschlüsselungstrojaner oder ein Dienst, der viel schreibt – oder eine viel kleinere Sicherung als sonst. Die letzte unauffällige Sicherung bleibt geschützt, bis die Meldung als geprüft markiert ist.</div></div></div>
+      <div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Befund</th><th>Geschützt</th><th></th></tr></thead><tbody>
+      ${list.map((a) => `<tr class="${a.ack_at ? "dim" : ""}">
+        <td data-l="Gast"><div class="t-main"><span class="tag mono">${a.type === "ct" ? "CT" : "VM"}</span> ${esc(a.guest_id)} ${esc(a.name || "")}</div><div class="t-sub">${esc(a.server_name)} / ${esc(a.store)}${a.ns ? " / " + esc(a.ns) : ""}</div></td>
+        <td data-l="Sicherung">${fmtTime(a.time, true)}<div class="t-sub">${fmtAgo(a.time)}</div></td>
+        <td data-l="Befund">${pill(a.kind === "shrink" ? "viel kleiner" : "viele neue Daten", "amber")}<div class="t-sub">${esc(a.text)}</div></td>
+        <td data-l="Geschützt" class="small">${!a.kept ? '<span class="muted">—</span>' : a.ack_at && a.kept_own ? `<span class="muted">Schutz aufgehoben</span>` : `Stand vom ${fmtTime(a.kept, true)}`}${a.ack_at ? `<div class="t-sub">geprüft ${fmtAgo(a.ack_at)}${a.ack_by ? " von " + esc(a.ack_by) : ""}</div>` : ""}</td>
+        <td class="act"><div class="row-actions"><a class="btn gray sm" href="${restoreHref(a)}" data-go>${icon("restore")} Stände ansehen</a>
+          ${!a.ack_at && can("operator") ? `<button class="btn sm" type="button" data-ack="${esc(a.id)}">${icon("check")} Geprüft</button>` : ""}</div></td></tr>`).join("")}
+      </tbody></table></div></div>`;
+  };
   const draw = () => {
     if (token !== pageToken || !data) return;
     const list = data.guests.filter((g) => {
@@ -2509,7 +2533,7 @@ PAGES["/sicherungen"] = async (el, token) => {
     const cnt = (st) => data.guests.filter((g) => g.chain.state === st).length;
     const summary = data.guests.length ? `<div class="chain-summary"><span><span class="chain-dot green"></span> ${cnt("ok")} vollständig</span><span><span class="chain-dot amber"></span> ${cnt("warn")} bald fällig</span><span><span class="chain-dot rose"></span> ${cnt("bad")} mit Lücke</span>
       <span class="muted small">Kette: Sicherung → Kopie außer Haus (zweiter Server oder Cloud) → USB-Platte → Restore-Test. Grau = für diesen Gast nicht vorgesehen.</span></div>` : "";
-    qs("[data-list]", el).innerHTML = (data.errors || []).map((e) => {
+    qs("[data-list]", el).innerHTML = anomalyPanel() + (data.errors || []).map((e) => {
       const c = state.clusters.find((x) => e.startsWith(x.name + ": "));
       return c && e.includes("fehlen Rechte") ? `<div style="margin:12px">${permCallout(c, (e.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean))}</div>` : callout("red", "Nicht alles erreichbar", esc(e));
     }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Außer Haus</th><th>USB-Platte</th><th>Restore-Test</th><th></th></tr></thead><tbody>
@@ -2526,12 +2550,24 @@ PAGES["/sicherungen"] = async (el, token) => {
     const find = (v) => { const [c, id] = v.split("|"); return data.guests.find((g) => g.cluster === c && String(g.vmid) === id); };
     qsa("[data-backup]", el).forEach((b) => b.onclick = () => backupNow(find(b.dataset.backup)));
     qsa("[data-restore]", el).forEach((b) => b.onclick = () => { const g = find(b.dataset.restore); go(`/wiederherstellen?cluster=${enc(g.cluster)}&vmid=${g.vmid}`); });
+    qsa("[data-ack]", el).forEach((b) => b.onclick = async () => {
+      const a = anomalies.find((x) => x.id === b.dataset.ack);
+      const ok = await confirmDialog({ title: "Als geprüft markieren?", tone: "", ic: "check", button: "Geprüft",
+        text: `${a.type === "ct" ? "CT" : "VM"} ${esc(a.guest_id)} ${esc(a.name || "")}: ${esc(a.text)}.${a.kept_own ? ` Der Schutz der Sicherung vom ${fmtTime(a.kept, true)} wird aufgehoben – danach räumt der Backup-Server sie nach den normalen Regeln auf.` : ""}` });
+      if (!ok) return;
+      run(b, async () => { await POST(`/api/anomalies/${enc(a.id)}/ack`); toast("Als geprüft markiert."); await load(); });
+    });
   };
   el.innerHTML = pageHead("VMs & Container", "Alle Gäste der verbundenen Proxmox-VE-Systeme mit ihren Sicherungen auf den Backup-Servern.",
     `<input type="search" data-q placeholder="Suchen: Name, ID, Knoten …" style="width:240px"><label class="check"><input type="checkbox" data-issues ${onlyIssues ? "checked" : ""}><span>nur Lücken</span></label>`) + `<div data-list><div class="panel flex"><span class="spinner"></span> Lade …</div></div>`;
   qs("[data-q]", el).oninput = (e) => { filter = e.target.value.trim().toLowerCase(); draw(); };
   qs("[data-issues]", el).onchange = (e) => { onlyIssues = e.target.checked; draw(); };
-  const load = async () => { data = await GET("/api/guests"); draw(); };
+  const load = async () => {
+    const [g, an] = await Promise.all([GET("/api/guests"), GET("/api/anomalies").catch(() => ({ anomalies: [] }))]);
+    data = g;
+    anomalies = an.anomalies || [];
+    draw();
+  };
   await load();
   every(60000, token, load);
 };
@@ -2680,7 +2716,7 @@ async function restoreGuest(el, token, g, source) {
   const typ = g.type === "lxc" ? "ct" : "vm";
   const kind = typ === "ct" ? "Container" : "VM";
   // browse is the open folder path of the file browser; it survives switching to another backup.
-  let src = 0, snaps = [], sel = null, browse = null;
+  let src = 0, snaps = [], sel = null, browse = null, odd = new Set();
   const where = g.node ? `${kind} auf ${esc(g.node)} (${esc(g.cluster_name)})` : `${kind}, in keinem verbundenen Proxmox VE – wird in ${esc(g.cluster_name)} wiederhergestellt`;
   el.innerHTML = pageHead(`${g.vmid} ${esc(g.name || "")} wiederherstellen`, where + (source ? ` · Quelle: ${esc(source.label)}` : ""), "",
     source ? [srcHref(source), "Zurück zu „" + source.label + "“"] : ["/wiederherstellen", "Anderen Server wählen"]) +
@@ -2726,6 +2762,9 @@ async function restoreGuest(el, token, g, source) {
     box.innerHTML = `<div class="row flex"><span class="spinner"></span> Lade …</div>`;
     try {
       snaps = (await GET(`/api/guests/snapshots?pbs=${enc(b.server)}&store=${enc(b.store)}&type=${typ}&bid=${g.vmid}`)).snapshots;
+      // Unusual backups of this guest on this datastore (see VMs & Container).
+      const an = (await GET("/api/anomalies").catch(() => ({ anomalies: [] }))).anomalies || [];
+      odd = new Set(an.filter((a) => a.server_id === b.server && a.store === b.store && a.type === typ && a.guest_id === String(g.vmid)).map((a) => a.time));
     } catch (e) { box.innerHTML = `<div class="row"><div class="form-error grow">${esc(e.message)}</div></div>`; return; }
     if (token !== pageToken) return;
     sel = snaps[0]?.["backup-time"] || null;
@@ -2733,6 +2772,7 @@ async function restoreGuest(el, token, g, source) {
       <label class="row" style="cursor:pointer;align-items:center"><input type="radio" name="snap" value="${sn["backup-time"]}" ${i === 0 ? "checked" : ""} style="accent-color:var(--c600)">
         <div class="grow"><div class="title"><b>${fmtTime(sn["backup-time"], true)}</b> ${i === 0 ? pill("neueste", "blue") : ""}</div>
         <div class="t-sub">${fmtAgo(sn["backup-time"])} · ${fmtBytes(sn.size)}${sn.comment ? " · " + esc(sn.comment) : ""}</div></div>
+        ${odd.has(sn["backup-time"]) ? `<span title="Ungewöhnlich viele neue Daten oder viel kleiner als sonst – siehe VMs &amp; Container">${pill("auffällig", "amber")}</span>` : ""} ${sn.protected ? pill("geschützt", "blue") : ""}
         ${keyPill(sn.fingerprint)} ${sn.verification ? (sn.verification.state === "ok" ? pill("geprüft", "green") : pill("defekt", "rose")) : ""}</label>`).join("") || `<div class="row muted">Keine Stände.</div>`}</div>`;
     qsa('[name="snap"]', box).forEach((r) => r.onchange = () => { sel = +r.value; drawRight(); });
     drawRight();
