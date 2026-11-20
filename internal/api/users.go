@@ -59,6 +59,8 @@ var routeRole = map[string]string{
 	"GET /api/enckeys/{key}":                    "admin",
 	"GET /api/enckeys/{key}/paper":              "admin",
 	"GET /api/selfbackup/download":              "admin",
+	"GET /api/handbook":                         "admin",
+	"GET /api/handbook/document":                "admin",
 	"GET /api/settings":                         "admin",
 	"GET /api/users":                            "admin",
 	"GET /api/audit":                            "admin",
@@ -68,6 +70,7 @@ var routeRole = map[string]string{
 // auditedReads are GET routes worth a line in the audit log.
 var auditedReads = map[string]bool{
 	"GET /api/restore/download": true, "GET /api/enckeys/{key}": true, "GET /api/enckeys/{key}/paper": true, "GET /api/selfbackup/download": true,
+	"GET /api/handbook/document": true,
 }
 
 // totpFree are the routes an account that must set up two-factor sign-in may still use.
@@ -180,6 +183,7 @@ var actionNames = map[string]string{
 	"PUT /api/update": "Aktualisierung eingestellt", "POST /api/update/install": "Aktualisierung installiert", "PUT /api/update/auto": "Automatische Aktualisierung eingestellt", "PUT /api/settings/channels": "Benachrichtigungen je Kanal eingestellt", "POST /api/pbs/{id}/datastores/{store}/grow": "Datastore vergrößert",
 	"POST /api/pbs/{id}/packages": "Paketlisten aktualisiert", "POST /api/pbs/{id}/upgrade": "Systemupdates gestartet", "POST /api/pbs/{id}/reboot": "Backup-Server neu gestartet", "POST /api/anomalies/{id}/ack": "Auffällige Sicherung als geprüft markiert",
 	"PUT /api/pbs/{id}/autoupdate": "Automatische Updates eingestellt", "POST /api/pbs/{id}/ssh": "SSH-Zugang eingerichtet",
+	"GET /api/handbook/document": "Notfallhandbuch angesehen", "PUT /api/handbook": "Notfallhandbuch bearbeitet", "POST /api/handbook/printed": "Notfallhandbuch als ausgedruckt vermerkt",
 	"PUT /api/hostbackup/{cluster}": "Host-Sicherung eingestellt", "POST /api/hostbackup/{cluster}/run": "Host-Sicherung gestartet",
 	"POST /api/hostbackup/{cluster}/check": "SSH-Zugang zu Proxmox VE geprüft",
 	"PUT /api/selfbackup":                  "Sicherung der Appliance eingestellt", "POST /api/selfbackup/run": "Sicherung der Appliance gestartet",

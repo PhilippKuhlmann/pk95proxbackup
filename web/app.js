@@ -446,6 +446,7 @@ const NAV = [
   { path: "/verbindungen", label: "Verbindungen", icon: "link" },
   { path: "/benachrichtigungen", label: "Benachrichtigungen", icon: "bell", admin: true },
   { path: "/ereignisse", label: "Ereignisse", icon: "clock" },
+  { path: "/notfallhandbuch", label: "Notfallhandbuch", icon: "info", admin: true },
   { path: "/einstellungen", label: "Einstellungen", icon: "cog" },
 ];
 
@@ -828,6 +829,10 @@ PAGES["/"] = async (el, token) => {
     if (cov.bad) issue("warning", `${cov.bad} ${cov.bad === 1 ? "VM bzw. Container hat" : "VMs und Container haben"} eine Lücke in der Sicherungskette${cov.names?.length ? " (" + cov.names.join(", ") + (cov.bad > cov.names.length ? ", …" : "") + ")" : ""}`, "/sicherungen?luecken=1");
     for (const x of r.damaged || []) issue("error", `${x.damaged.length} ${x.damaged.length === 1 ? "beschädigte Sicherung" : "beschädigte Sicherungen"} auf ${x.server_name} / ${x.store} – betroffene Server neu sichern`, `/datastores?server=${x.server_id}`);
     for (const a of r.anomalies || []) issue("warning", `Auffällige Sicherung: ${a.type === "ct" ? "CT" : "VM"} ${a.guest_id}${a.name ? " " + a.name : ""} – ${a.text}`, "/sicherungen?auffaellig=1");
+    const hb = r.handbook || {};
+    if (servers.length && hb.state === "never" && can("admin")) issue("warning", "Das Notfallhandbuch ist noch nicht ausgedruckt", "/notfallhandbuch");
+    else if (hb.state === "changed") issue("warning", `Notfallhandbuch veraltet – geändert: ${hb.changed.join(", ")}`, "/notfallhandbuch");
+    else if (hb.state === "old") issue("warning", "Notfallhandbuch seit über einem halben Jahr nicht neu ausgedruckt", "/notfallhandbuch");
     for (const h of r.host_issues || []) issue("warning", h.error ? `Host-Sicherung von ${h.node} fehlgeschlagen: ${h.error}` : `Host-Sicherung von ${h.node} zuletzt ${fmtAgo(h.last_ok)}`, `/hosts?cluster=${enc(h.cluster)}&node=${enc(h.node)}`);
     for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
     const sb = r.selfbackup || {};
@@ -3571,6 +3576,58 @@ async function hostDetail(el, token, clusterID, node) {
   };
   drawRight();
 }
+
+// ---------- Notfallhandbuch ----------
+// One printable document for the day everything is gone. The appliance compares what was
+// printed with the current set-up and asks for a new print when they differ.
+function handbookCallout(st) {
+  if (st.state === "never") return callout("yellow", "Noch nicht ausgedruckt", "Ansehen, ausdrucken (oder als PDF speichern) und außer Haus aufbewahren – danach „Als ausgedruckt vermerken“. Dann meldet sich die Appliance, sobald der Ausdruck nicht mehr stimmt.");
+  if (st.state === "changed") return callout("yellow", `Seit dem Ausdruck vom ${fmtTime(st.printed_at, true).slice(0, 10)} geändert`, `Neu ist: ${esc(st.changed.join(", "))}. Bitte neu ausdrucken und den alten Ausdruck vernichten.`);
+  if (st.state === "old") return callout("yellow", "Ausdruck älter als ein halbes Jahr", `Zuletzt ausgedruckt am ${fmtTime(st.printed_at, true).slice(0, 10)}. Einmal durchsehen, Ansprechpartner prüfen und neu ausdrucken.`);
+  return callout("green", `Ausdruck vom ${fmtTime(st.printed_at, true).slice(0, 10)} ist aktuell`, `Vermerkt von ${esc(st.printed_by || "–")}. Die Appliance prüft alle sechs Stunden, ob sich etwas geändert hat.`);
+}
+
+PAGES["/notfallhandbuch"] = async (el, token) => {
+  const head = (r) => pageHead("Notfallhandbuch", "Alles für den Ernstfall auf Papier: wo welcher Server liegt, Adressen, Platten und Wechselplan, Schlüssel-Fingerabdrücke und was bei welchem Ausfall zu tun ist. Ohne Passwörter und ohne Schlüssel.",
+    `<a class="btn gray" href="/api/handbook/document" target="_blank" rel="noopener">${icon("external")} Ansehen und drucken</a>
+     <button class="btn" type="button" data-printed>${icon("check")} Als ausgedruckt vermerken</button>`);
+  el.innerHTML = head() + `<div class="panel"><div class="row flex"><span class="spinner"></span> Lade …</div></div>`;
+  const draw = (r) => {
+    const n = r.counts;
+    el.innerHTML = head(r) + handbookCallout(r.status) +
+      (r.problems.length ? `<div class="mt">${callout("red", "Nicht alles erreichbar", "Diese Angaben fehlen im Handbuch: " + esc(r.problems.join("; ")))}</div>` : "") +
+      `<div class="grid">
+        <div class="panel"><div class="panel-head"><div class="panel-title">Eigene Angaben</div></div>
+          <p class="panel-intro">Stehen ganz vorn im Handbuch. Was hier fehlt, sucht im Ernstfall niemand mehr in Ruhe heraus.</p>
+          <form data-hb class="form-grid">
+            ${field({ name: "contacts", label: "Ansprechpartner", type: "textarea", rows: 4, value: r.contacts, wide: true, placeholder: "IT-Dienstleister Muster GmbH, 0123 456789 (24 h)\nGeschäftsführung: …" })}
+            ${field({ name: "order", label: "Reihenfolge beim Wiederherstellen", type: "textarea", rows: 4, value: r.order, wide: true, placeholder: "1. 100 dc01 (Anmeldung)\n2. 101 sql01 (Warenwirtschaft)\n3. Dateiserver" })}
+            ${field({ name: "notes", label: "Wo liegt was", type: "textarea", rows: 4, value: r.notes, wide: true, placeholder: "Wechselplatten: Tresor Büro, Platte B bei Frau …\nUmschlag mit Wiederherstellungs-Passwort und Papierschlüssel: Bankschließfach" })}
+            <div class="wide flex" style="justify-content:flex-end"><button class="btn" type="submit">Speichern</button></div>
+          </form></div>
+        <div class="panel"><div class="panel-head"><div class="panel-title">Inhalt</div></div>
+          <div class="rows">
+            ${[["1. Im Notfall", "Ansprechpartner, Reihenfolge, Aufbewahrung"], ["2. Was tun, wenn …", "VM kaputt, Knoten weg, Appliance weg, alles weg"], ["3.–4. Appliance und Backup-Server", `${n.servers} Server mit Adresse, Fingerabdruck und Datastores`],
+              ["5. Proxmox VE", `${n.clusters} ${n.clusters === 1 ? "Verbindung" : "Verbindungen"}: Knoten, Host-Sicherung, Speicher, Löschschutz`], ["6. Wo liegt welcher Server", `${n.guests} VMs und Container`],
+              ["7. Platten", `${n.rotations} ${n.rotations === 1 ? "Wechselsatz" : "Wechselsätze"} mit Wechselplan, ${n.archives ? n.archives + " Archiv-" + (n.archives === 1 ? "Platte" : "Platten") : "keine Archiv-Platten"}`], ["8. Schlüssel", n.keys ? `${n.keys} Fingerabdrücke zum Vergleichen` : "keine – unverschlüsselt"], ["Konten", "Benutzer und Rollen, ohne Passwörter"]]
+              .map(([t, d]) => `<div class="row"><div class="grow"><div class="title"><b>${esc(t)}</b></div><div class="t-sub">${esc(d)}</div></div></div>`).join("")}
+          </div></div></div>`;
+    const f = qs("[data-hb]", el);
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = qs('[type="submit"]', f);
+      run(btn, async () => draw(await PUT("/api/handbook", formValues(f))), "Gespeichert – bitte neu ausdrucken.");
+    };
+    const pb = qs("[data-printed]", el);
+    pb.onclick = async () => {
+      if (await confirmDialog({ title: "Als ausgedruckt vermerken?", text: "Erst bestätigen, wenn der aktuelle Stand ausgedruckt (oder als PDF abgelegt) und außer Haus ist. Ab jetzt meldet sich die Appliance, sobald sich etwas Wichtiges ändert.", button: "Vermerken", tone: "", ic: "check" }))
+        run(pb, async () => { await POST("/api/handbook/printed"); draw(await GET("/api/handbook")); }, "Vermerkt.");
+    };
+  };
+  const r = await GET("/api/handbook");
+  if (token !== pageToken) return;
+  draw(r);
+};
 
 // ---------- Aufgaben ----------
 PAGES["/aufgaben"] = async (el, token) => {

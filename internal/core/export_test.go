@@ -54,3 +54,6 @@ var HostBackupScriptForTest = hostBackupScript
 
 // HostCheckScriptForTest exposes hostCheckScript.
 var HostCheckScriptForTest = hostCheckScript
+
+// ScheduleHandbookForTest exposes scheduleHandbook.
+func (c *Core) ScheduleHandbookForTest(now time.Time) { c.scheduleHandbook(now) }

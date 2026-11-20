@@ -58,6 +58,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	// Damaged backups found by verifications of the last week.
 	out["damaged"] = s.C.RecentDamage(7 * 24 * time.Hour)
 	out["host_issues"] = s.C.HostBackupIssues()
+	out["handbook"] = s.C.HandbookStatusInfo()
 	// Encryption keys without a copy outside the appliance.
 	unsaved := []string{}
 	for _, k := range s.C.EncKeys() {

@@ -489,6 +489,15 @@ func Setup(c *core.Core) (func(), error) {
 			"pve2": {HostKey: "ssh-ed25519 AAAAdemo2", LastRun: last + 38, LastOK: last + 38, Duration: 4}}})
 		_ = c.St.SetSetting("hostbackup-sched", map[string]int64{"cluster": now.Unix()})
 	}
+	{
+		var hb core.HandbookSettings
+		if c.St.GetSetting("handbook", &hb) != nil || hb.Contacts == "" {
+			_ = c.St.SetSetting("handbook", core.HandbookSettings{
+				Contacts: "IT-Service Beispiel GmbH – Hotline 0123 456789 (rund um die Uhr)\nAnsprechpartnerin im Haus: Anna Beispiel, 0170 1234567",
+				Order:    "1. 100 dc01 – Anmeldung und DNS\n2. 101 sql01 – Warenwirtschaft\n3. 102 nextcloud – Dateien\n4. alles Übrige",
+				Notes:    "Wechselplatten: Platte A im Tresor Büro, Platte B nimmt Frau Beispiel mit nach Hause.\nUmschlag mit Wiederherstellungs-Passwort und Papierschlüssel: Bankschließfach Sparkasse."})
+		}
+	}
 	pve.AddJob(prox.BackupJob{ID: "backup-nightly", Schedule: "21:00", Storage: "pbs-appliance", Mode: "snapshot", All: 1, Exclude: "112,120,130", Comment: "Jede Nacht alles", NotesTemplate: "{{guestname}}", NotificationMode: "notification-system"})
 
 	var x struct{}

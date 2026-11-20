@@ -98,6 +98,13 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Proxmox-VE-Hosts: Stände je Knoten, Dateien durchsuchen und laden (nur Administratoren), Befehle zum Zurückholen
   und eine Anleitung zum Neuaufbau. Schlägt eine Sicherung fehl, versucht es die Appliance stündlich bis zu dreimal
   und meldet sich dann.
+- **Notfallhandbuch** (Verwaltung → Notfallhandbuch): ein druckbares Dokument für den Tag, an dem alles weg ist –
+  Ansprechpartner, Reihenfolge beim Wiederherstellen und wo was liegt (eigene Angaben), was bei welchem Ausfall zu tun
+  ist (Gast kaputt, Knoten weg, Appliance weg, alles weg), Adressen und Fingerabdrücke der Backup-Server, Datastores,
+  Proxmox-VE-Knoten mit Host-Sicherung, Speicher mit Verschlüsselung und Löschschutz, wo welcher Server gesichert ist,
+  Wechselplatten mit Wechselplan, Archiv-Platten, Schlüssel-Fingerabdrücke und Konten – ohne Passwörter und ohne
+  Schlüssel. Nach „Als ausgedruckt vermerken“ prüft die Appliance alle sechs Stunden, ob der Ausdruck noch stimmt,
+  und meldet, welche Abschnitte sich geändert haben; nach einem halben Jahr erinnert sie ans Durchsehen.
 - **Sicherung der Appliance selbst:** Datenbank, SSH-Schlüssel, Zertifikat und die Konfiguration des lokalen PBS
   (`/etc/proxmox-backup`, Mount-Units) werden täglich mit einem Wiederherstellungs-Passwort verschlüsselt (AES-256-GCM,
   scrypt) als Gruppe `host/pk95proxbackup` in den Datastore geschrieben und wandern so auf die Wechselplatten. Eine
