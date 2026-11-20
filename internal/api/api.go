@@ -162,6 +162,8 @@ func (s *Server) routes() {
 	a("POST /api/pbs/{id}/datastores", s.createDatastore)
 	a("PUT /api/pbs/{id}/datastores/{store}", s.updateDatastore)
 	a("DELETE /api/pbs/{id}/datastores/{store}", s.deleteDatastore)
+	a("GET /api/pbs/{id}/datastores/{store}/space", s.getSpace)
+	a("POST /api/pbs/{id}/datastores/{store}/space", s.startSpace)
 	a("GET /api/pbs/{id}/datastores/{store}/grow", s.planGrow)
 	a("POST /api/pbs/{id}/datastores/{store}/grow", s.growDatastore)
 	a("POST /api/pbs/{id}/datastores/{store}/{action}", s.datastoreAction)

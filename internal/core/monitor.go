@@ -285,6 +285,7 @@ func (c *Core) Run(ctx context.Context) {
 		c.scheduleSelfBackup(time.Now())
 		c.scheduleHostBackups(time.Now())
 		c.scheduleHandbook(time.Now())
+		c.scheduleSpace(ctx, time.Now())
 		c.scheduleAutoProtect(time.Now())
 		c.scheduleDeletionWatch(time.Now())
 		c.scheduleContentScan(time.Now())

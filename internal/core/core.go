@@ -115,6 +115,7 @@ type Core struct {
 	selfBackup  selfBackupRuntime
 	hostBackup  hostBackupRuntime
 	diskRestore diskRestoreRuntime
+	space       spaceRuntime
 	plan        planRuntime
 	unplug      unplugRuntime
 	usageAt     map[string]time.Time // last usage value written per datastore

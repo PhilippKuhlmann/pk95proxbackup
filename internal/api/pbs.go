@@ -1022,3 +1022,18 @@ func (s *Server) growDatastore(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, p)
 }
+
+// getSpace shows the last measurement of the space per guest.
+func (s *Server) getSpace(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.C.Space(r.PathValue("id"), r.PathValue("store")))
+}
+
+// startSpace measures the space per guest now.
+func (s *Server) startSpace(w http.ResponseWriter, r *http.Request) {
+	if err := s.C.StartSpace(r.PathValue("id"), r.PathValue("store")); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	time.Sleep(300 * time.Millisecond) // a small datastore is done at once
+	writeJSON(w, http.StatusOK, s.C.Space(r.PathValue("id"), r.PathValue("store")))
+}

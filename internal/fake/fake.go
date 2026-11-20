@@ -321,6 +321,11 @@ func Setup(c *core.Core) (func(), error) {
 	// Guests that no connected Proxmox VE knows any more (deleted or another cluster).
 	local.AddSnapshot("backup", "vm", "250", now.AddDate(0, 0, -40).Unix(), 120*gib)
 	local.AddSnapshot("backup", "ct", "251", now.AddDate(0, 0, -35).Unix(), 6*gib)
+	for i, sn := range local.stores["backup"].snaps {
+		if name := map[string]string{"250": "alt-fileserver", "251": "alter-mailserver"}[sn.ID]; name != "" {
+			local.stores["backup"].snaps[i].Comment = name
+		}
+	}
 	for i := 1; i <= 6; i++ {
 		t := time.Date(now.Year(), now.Month(), now.Day()-i, 21, 0, 0, 0, now.Location())
 		pve.tasks.seed("pve1", "vzdump", "", "OK", t, 42*time.Minute)
@@ -407,10 +412,12 @@ func Setup(c *core.Core) (func(), error) {
 	runner.scans["/dev/sde1"] = "STORE\tusb-montag\t2\t1\n"
 	runner.OnUpgrade = local.Upgrade
 	runner.USB = map[string]bool{"sdc": true, "sdd": true, "sde": true}
+	runner.Space = local.spaceOutput
 	c.LocalRunner = runner
 	// SSH to the office server: root works, any other account is not root.
 	office := NewRunner()
 	office.OnUpgrade = offsite.Upgrade
+	office.Space = offsite.spaceOutput
 	// "offsite" lies on the virtual disk scsi1 of VM 130 (ext4 on sdb1) and can be enlarged.
 	office.Grow = map[string]*GrowDisk{"/mnt/datastore/offsite": {Dev: "/dev/sdb1", Disk: "sdb", Part: "1", FS: "ext4", Serial: "drive-scsi1", FSSize: 3440 * gib,
 		DiskSize: func() int64 { return pve.DriveSize(130, "scsi1") },
@@ -503,6 +510,8 @@ func Setup(c *core.Core) (func(), error) {
 				Notes:    "Wechselplatten: Platte A im Tresor Büro, Platte B nimmt Frau Beispiel mit nach Hause.\nUmschlag mit Wiederherstellungs-Passwort und Papierschlüssel: Bankschließfach Sparkasse."})
 		}
 	}
+	seedSpaceHistory(c, local, "local", "backup", now)
+	_ = c.St.SetSetting("space", map[string]core.StoreSpace{})
 	pve.AddJob(prox.BackupJob{ID: "backup-nightly", Schedule: "21:00", Storage: "pbs-appliance", Mode: "snapshot", All: 1, Exclude: "112,120,130", Comment: "Jede Nacht alles", NotesTemplate: "{{guestname}}", NotificationMode: "notification-system"})
 
 	var x struct{}
@@ -556,6 +565,8 @@ type Runner struct {
 	unmounted   []string
 	// Grow are datastores on virtual disks that can be enlarged (by path).
 	Grow map[string]*GrowDisk
+	// Space answers the space script (by datastore path).
+	Space func(path string) string
 }
 
 // GrowDisk is a datastore on a partition of a virtual disk (the pk95-grow scripts).
@@ -624,6 +635,10 @@ func (r *Runner) Run(_ context.Context, name string, args ...string) (string, er
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch name {
+	case "perl":
+		if r.Space != nil && len(args) == 3 && strings.HasPrefix(args[1], "# pk95-space") {
+			return r.Space(args[2]), nil
+		}
 	case "findmnt":
 		mp := args[len(args)-1]
 		if r.mounted[mp] {

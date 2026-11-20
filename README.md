@@ -57,6 +57,14 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   selbst), vergrößert ein Klick beim Datastore die virtuelle Platte in Proxmox VE und danach Partition und Dateisystem
   (ext4, xfs) auf dem Backup-Server – im laufenden Betrieb. Braucht den SSH-Zugang zum Backup-Server und das Recht
   VM.Config.Disk; Wechsel-, Archiv- und Cloud-Datastores sowie Datastores auf LVM oder ZFS bleiben außen vor.
+- **Wer belegt den Platz?** (Datastores → Diagramm-Symbol, auch aus der Platzprognose): PBS dedupliziert über alle
+  Sicherungen eines Datastores, die Größe einer Sicherung sagt deshalb wenig. Einmal am Tag zählt ein Skript auf dem
+  Backup-Server (Perl, ist auf jedem Debian dabei) aus den Indexdateien aller Stände, welche Datenblöcke welcher Gast
+  nutzt: **Anteil** (gemeinsame Blöcke zählen anteilig, alles zusammen ergibt den belegten Platz), **frei beim
+  Löschen** (nur dieser Gast nutzt die Blöcke), Größe der neuesten Sicherung, Zahl der Stände und **Wachstum über 30
+  Tage** aus dem täglichen Verlauf. Gäste, die es in Proxmox VE nicht mehr gibt, sind markiert – ihre alten Stände
+  sind oft der schnellste Weg zu Platz. Braucht beim externen PBS den SSH-Zugang; Wechsel-, Archiv- und
+  Cloud-Datastores bleiben außen vor.
 - **Platzprognose:** Die Appliance merkt sich täglich die Belegung jedes Datastores (beim ersten Start ein Jahr
   rückwirkend aus dem Verlauf des Backup-Servers, Wechselplatten an den Tagen, an denen sie stecken) und rechnet das
   Wachstum der letzten Wochen weiter. Datastores zeigt „voll ca. …“, ein Klick öffnet Verlauf, Prognose und was hilft

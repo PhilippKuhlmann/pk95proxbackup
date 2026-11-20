@@ -35,11 +35,17 @@ type Runner interface {
 }
 
 // Local runs on this machine.
-type Local struct{}
+type Local struct {
+	Timeout time.Duration // per command; 0 = two minutes
+}
 
 // Run implements Runner.
-func (Local) Run(ctx context.Context, name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+func (l Local) Run(ctx context.Context, name string, args ...string) (string, error) {
+	limit := l.Timeout
+	if limit <= 0 {
+		limit = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C")

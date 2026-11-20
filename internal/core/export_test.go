@@ -60,3 +60,19 @@ func (c *Core) ScheduleHandbookForTest(now time.Time) { c.scheduleHandbook(now) 
 
 // FreeDiskForTest exposes freeDisk.
 var FreeDiskForTest = freeDisk
+
+// SpaceScriptForTest and ParseSpaceForTest expose the space measurement.
+var (
+	SpaceScriptForTest = spaceScript
+	ParseSpaceForTest  = parseSpace
+	Growth30ForTest    = func(days []string, shares []int64) (int64, int) {
+		var pts []spacePoint
+		for i := range days {
+			pts = append(pts, spacePoint{Day: days[i], Share: shares[i]})
+		}
+		return growth30(pts)
+	}
+)
+
+// ScheduleSpaceForTest exposes scheduleSpace.
+func (c *Core) ScheduleSpaceForTest(ctx context.Context, now time.Time) { c.scheduleSpace(ctx, now) }

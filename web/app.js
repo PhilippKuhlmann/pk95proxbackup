@@ -1225,6 +1225,7 @@ PAGES["/datastores"] = async (el, token) => {
           <button class="btn gray sm" type="button" data-snaps="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("archive")} Sicherungen</button>
           <button class="ib" type="button" title="Speicher jetzt freigeben (Garbage Collection)" aria-label="Speicher freigeben" data-act="gc" data-store="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("sparkles")}</button>
           <button class="ib" type="button" title="Jetzt prüfen (Verify)" aria-label="Prüfen" data-act="verify" data-store="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("shield")}</button>
+          ${!d.removable && !s3Of(d) ? `<button class="ib" type="button" title="Wer belegt den Platz? (Platz je Gast)" aria-label="Platz je Gast in ${esc(d.name)}" data-space="${esc(d.name)}" ${mounted ? "" : "disabled"}>${icon("chart")}</button>` : ""}
           ${!d.removable && !s3Of(d) && can("admin") ? `<button class="ib" type="button" title="Datastore vergrößern" aria-label="Vergrößern" data-grow="${esc(d.name)}">${icon("expand")}</button>` : ""}
           <button class="ib" type="button" title="Aufbewahrung und Zeitpläne" aria-label="Einstellungen" data-edit="${esc(d.name)}">${icon("cog")}</button>
           <button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del="${esc(d.name)}">${icon("trash")}</button></div></td></tr>`; }).join("")}
@@ -1265,6 +1266,7 @@ PAGES["/datastores"] = async (el, token) => {
     qsa("[data-fc]", el).forEach((b) => b.onclick = () => forecastDialog(srv, list.find((d) => d.name === b.dataset.fc)));
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => datastoreSettings(srv, list.find((d) => d.name === b.dataset.edit), draw));
     qsa("[data-grow]", el).forEach((b) => b.onclick = () => growDialog(srv, b.dataset.grow, draw, b));
+    qsa("[data-space]", el).forEach((b) => b.onclick = () => spaceDialog(srv, b.dataset.space));
     qsa("[data-del]", el).forEach((b) => b.onclick = () => datastoreDelete(srv, b.dataset.del, draw));
   };
   el.innerHTML = pageHead("Datastores", "Lade …");
@@ -1344,6 +1346,58 @@ function bindFcChart(box, f) {
   svg.addEventListener("pointerleave", hide);
 }
 
+// spaceDialog shows which guests take the space of a datastore (after deduplication).
+function spaceDialog(srv, store) {
+  let timer = null;
+  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("chart")}</span><div class="grow"><div class="dlg-title">Wer belegt den Platz? ${esc(store)}</div><p class="dlg-text" data-sub>${esc(srv.name)}</p></div></div>
+    <div class="dlg-body" data-body><div class="row flex"><span class="spinner"></span> Lade …</div></div>
+    <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-measure hidden>${icon("refresh")} Jetzt messen</button><button class="btn" type="button" data-close>Schließen</button></div>`, "xwide");
+  dlg.addEventListener("close", () => clearTimeout(timer));
+  qs("[data-close]", dlg).onclick = () => dlg.close();
+  const url = `/api/pbs/${enc(srv.id)}/datastores/${enc(store)}/space`;
+  const kind = { vm: "VM", ct: "CT", host: "Host" };
+  const growth = (g) => {
+    if (!g.basis) return '<span class="muted">noch kein Verlauf</span>';
+    if (Math.abs(g.growth30) < 64 * 1024 * 1024) return '<span class="muted">gleichbleibend</span>';
+    const strong = g.share && g.growth30 > g.share * 0.1;
+    return `<span class="${strong ? "bad" : ""}">${g.growth30 > 0 ? "+" : "−"}${fmtBytes(Math.abs(g.growth30))}</span>${g.basis < 30 ? `<div class="t-sub">aus ${g.basis} Tagen hochgerechnet</div>` : ""}`;
+  };
+  const draw = (s) => {
+    const btn = qs("[data-measure]", dlg);
+    btn.hidden = !s.shell || !can("operator");
+    btn.disabled = s.running;
+    qs("[data-sub]", dlg).innerHTML = `${esc(srv.name)}${s.measured ? ` · gemessen ${esc(fmtAgo(s.measured))}${s.duration ? ` in ${s.duration < 90 ? s.duration + " s" : Math.round(s.duration / 60) + " min"}` : ""}` : ""}`;
+    const body = qs("[data-body]", dlg);
+    const running = s.running ? `<div class="row flex"><span class="spinner"></span> Zählt die Daten aller Sicherungen – bei großen Datastores einige Minuten.</div>` : "";
+    if (!s.shell) { body.innerHTML = callout("yellow", "Braucht den SSH-Zugang", `Die Appliance zählt dafür auf dem Backup-Server nach, welche Daten zu welchem Gast gehören. Unter <a href="/verbindungen" data-go>Verbindungen</a> SSH für ${esc(srv.name)} einrichten.`); return; }
+    if (!s.guests.length) {
+      body.innerHTML = running || (s.error ? callout("red", "Messung fehlgeschlagen", esc(s.error)) : empty("Noch nicht gemessen", "Die Appliance misst einmal am Tag. „Jetzt messen“ zählt sofort nach.", "", "chart"));
+      return;
+    }
+    const top = s.guests[0].share || 1;
+    body.innerHTML = running + (s.error ? callout("yellow", "Letzte Messung fehlgeschlagen – angezeigt wird die davor", esc(s.error)) : "") +
+      `<div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th style="min-width:200px">Anteil am Datastore</th><th class="num">Frei beim Löschen</th><th class="num">Neueste Sicherung</th><th class="num">Stände</th><th>Wachstum 30 Tage</th></tr></thead><tbody>
+      ${s.guests.map((g) => `<tr><td data-l="Gast"><div class="t-main">${pill(kind[g.type] || g.type)} <b>${esc(g.id)}</b> ${esc(g.type === "host" ? "" : g.name || "")}</div>${g.gone ? `<div class="t-sub">nicht mehr in Proxmox VE – alte Stände</div>` : ""}${g.ns ? `<div class="t-sub">Namespace ${esc(g.ns)}</div>` : ""}</td>
+        <td data-l="Anteil"><div class="usage"><span class="track"><span class="fill" style="width:${Math.max(1, Math.round((g.share * 100) / top))}%"></span></span></div><div class="t-sub">${fmtBytes(g.share)} · ${pct(g.share, s.total)} %</div></td>
+        <td data-l="Frei beim Löschen" class="num">${fmtBytes(g.exclusive)}</td>
+        <td data-l="Neueste Sicherung" class="num">${g.logical ? fmtBytes(g.logical) : "—"}</td>
+        <td data-l="Stände" class="num">${g.snapshots || "—"}</td>
+        <td data-l="Wachstum">${growth(g)}</td></tr>`).join("")}
+      <tr><td><b>Zusammen</b></td><td><b>${fmtBytes(s.total)}</b><div class="t-sub">${s.chunks.toLocaleString("de-DE")} Datenblöcke</div></td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+      <p class="hint mt"><b>Anteil:</b> Daten, die mehrere Gäste gemeinsam haben (z. B. dasselbe Betriebssystem), zählen anteilig – alle Anteile zusammen ergeben den belegten Platz. <b>Frei beim Löschen:</b> Daten, die nur dieser Gast nutzt; frei werden sie, wenn alle seine Stände gelöscht sind und die Speicherfreigabe gelaufen ist. <b>Neueste Sicherung:</b> Größe vor Deduplizierung und Kompression.</p>`;
+  };
+  const load = async () => {
+    try {
+      const s = await GET(url);
+      if (!dlg.open) return;
+      draw(s);
+      if (s.running) timer = setTimeout(load, 3000);
+    } catch (e) { qs("[data-body]", dlg).innerHTML = callout("red", "Nicht geladen", esc(e.message)); }
+  };
+  qs("[data-measure]", dlg).onclick = (e) => run(e.currentTarget, async () => { draw(await POST(url)); clearTimeout(timer); timer = setTimeout(load, 1500); });
+  load();
+}
+
 function forecastDialog(srv, d) {
   const f = d.forecast;
   const state = { critical: ["Wird sehr bald voll", "rose"], urgent: ["Wird in wenigen Wochen voll", "amber"], soon: ["Wird in den nächsten Monaten voll", "amber"], ok: ["Reicht noch lange", "green"], stable: ["Wächst nicht", "green"], unknown: ["Noch keine Prognose", ""] }[f.state] || ["", ""];
@@ -1358,8 +1412,10 @@ function forecastDialog(srv, d) {
       <table class="kv mt">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>
       ${advice.length ? `<div class="section-title mt">Was hilft</div><ul class="fc-advice">${advice.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
       <p class="hint mt">Die Prognose verlängert das Wachstum der letzten ${f.removable ? "sechs Monate" : "zwei Monate"} gerade weiter. Neue Server, eine geänderte Aufbewahrung oder eine Speicherfreigabe ändern sie; sie wird täglich neu berechnet.</p></div>
-    <div class="dlg-foot"><span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`, "wide");
+    <div class="dlg-foot">${!f.removable && !s3Of(d) ? `<button class="btn gray" type="button" data-who>${icon("chart")} Wer belegt den Platz?</button>` : ""}<span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`, "wide");
   qs("[data-close]", dlg).onclick = () => dlg.close();
+  const who = qs("[data-who]", dlg);
+  if (who) who.onclick = () => { dlg.close(); spaceDialog(srv, d.name); };
   bindFcChart(dlg, f);
 }
 
