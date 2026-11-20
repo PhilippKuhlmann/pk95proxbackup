@@ -24,7 +24,9 @@ import (
 // Client is a connection to one PBS or PVE API.
 type Client struct {
 	base   string // https://host:port/api2/json
-	auth   string // value of the Authorization header
+	auth   string // value of the Authorization header ("" = ticket or none)
+	cookie string // PVEAuthCookie=… of a password login
+	csrf   string // CSRFPreventionToken that goes with the ticket
 	http   *http.Client
 	slow   *http.Client // no overall timeout: downloads and slow calls, bounded by the context
 	Host   string
@@ -109,6 +111,19 @@ func pinnedTransport(fingerprint string) *http.Transport {
 	}
 }
 
+// authorize signs a request with the API token or the ticket of a password login.
+func (c *Client) authorize(req *http.Request) {
+	if c.auth != "" {
+		req.Header.Set("Authorization", c.auth)
+	}
+	if c.cookie != "" {
+		req.Header.Set("Cookie", c.cookie)
+		if req.Method != http.MethodGet {
+			req.Header.Set("CSRFPreventionToken", c.csrf)
+		}
+	}
+}
+
 func newClient(host string, port int, fingerprint, auth string) *Client {
 	tr := pinnedTransport(fingerprint)
 	return &Client{
@@ -175,7 +190,7 @@ func (c *Client) Stream(ctx context.Context, path string, params Params) (*http.
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", c.auth)
+	c.authorize(req)
 	resp, err := c.slow.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s nicht erreichbar: %w", c.Host, err)
@@ -203,7 +218,7 @@ func (c *Client) do(ctx context.Context, client *http.Client, method, path strin
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", c.auth)
+	c.authorize(req)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}

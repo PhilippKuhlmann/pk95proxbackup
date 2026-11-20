@@ -79,6 +79,9 @@ func (p *PVE) guestOp(w http.ResponseWriter, m string, seg []string, f url.Value
 		}
 		data(w, out)
 	case op == "config" && m == "PUT":
+		if p.realUSB(w, f) {
+			return
+		}
 		for _, d := range strings.Split(f.Get("delete"), ",") {
 			delete(cfg, d)
 		}
@@ -138,6 +141,9 @@ func (p *PVE) legacyConfig(w http.ResponseWriter, m string, id int, f url.Values
 		p.usbCfg[id] = cfg
 	}
 	if m == "PUT" {
+		if p.realUSB(w, f) {
+			return
+		}
 		for _, d := range strings.Split(f.Get("delete"), ",") {
 			delete(cfg, d)
 		}

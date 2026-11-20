@@ -2546,8 +2546,49 @@ async function passthroughDialog() {
       ${(r.devices || []).filter((x) => x.class !== 9).map((x) => { const port = `${x.busnum}-${x.usbpath}`; return `<tr><td data-l="Gerät"><div class="t-main">${esc(x.manufacturer || "")} ${esc(x.product || "")}</div><div class="t-sub mono">${esc(x.vendid)}:${esc(x.prodid)}</div></td>
         <td data-l="Anschluss" class="mono">${esc(port)}</td><td data-l="Tempo" class="small">${x.speed >= 5000 ? "USB 3" : x.speed >= 480 ? "USB 2" : "langsam"}</td>
         <td class="act">${used[port] ? pill("durchgereicht", "green") : `<button class="btn sm" type="button" data-port="${esc(port)}">Anschluss durchreichen</button>`}</td></tr>`; }).join("")}</tbody></table></div>`}`;
-    qsa("[data-port]", body).forEach((b) => b.onclick = () => run(b, async () => { await POST("/api/passthrough", { port: b.dataset.port }); await draw(); }, "Durchgereicht."));
-    qsa("[data-rm]", body).forEach((b) => b.onclick = () => run(b, async () => { await POST("/api/passthrough", { remove: b.dataset.rm }); await draw(); }, "Entfernt."));
+    qsa("[data-port]", body).forEach((b) => b.onclick = () => change(b, { port: b.dataset.port }, "Durchgereicht."));
+    qsa("[data-rm]", body).forEach((b) => b.onclick = () => change(b, { remove: b.dataset.rm }, "Entfernt."));
+  };
+  // change asks Proxmox VE; when it keeps USB ports to root@pam, it offers the command for the
+  // host shell or a one-time login with the root password.
+  const change = async (b, payload, okText) => {
+    try {
+      await run(b, async () => {
+        try { await POST("/api/passthrough", payload); toast(okText); await draw(); }
+        catch (e) { if (e.data?.need_root) rootBox(payload, e.data, okText); else throw e; }
+      });
+    } catch (e) { /* run reported it */ }
+  };
+  const rootBox = (payload, info, okText) => {
+    qs("[data-root]", body)?.remove();
+    const box = document.createElement("div");
+    box.dataset.root = "1";
+    box.className = "mt";
+    box.innerHTML = `${callout("yellow", "Nur root@pam darf USB-Anschlüsse durchreichen", esc(info.error))}
+      <div class="section-title mt">Entweder: in der Shell von ${esc(info.node)} als root</div>
+      <p class="hint">Proxmox-Oberfläche → Knoten ${esc(info.node)} → Shell, dann:</p>${codeBlock(info.command)}
+      <div class="flex mt"><button class="btn gray sm" type="button" data-reload>${icon("refresh")} Erledigt – neu laden</button></div>
+      <div class="section-title mt">Oder: mit dem root-Passwort von Proxmox VE</div>
+      <p class="hint">Die Appliance meldet sich damit einmal als root@pam an und trägt den Anschluss ein. Das Passwort wird nicht gespeichert.</p>
+      <div class="flex"><input type="password" data-pw autocomplete="off" placeholder="root-Passwort" aria-label="root-Passwort von Proxmox VE" style="max-width:260px">
+        <button class="btn sm" type="button" data-asroot>Als root eintragen</button></div>
+      <div class="form-error mt" data-rerr hidden></div>`;
+    body.appendChild(box);
+    bindCopy(box);
+    box.scrollIntoView({ block: "nearest" });
+    qs("[data-reload]", box).onclick = (e) => run(e.currentTarget, draw);
+    const go1 = qs("[data-asroot]", box), pw = qs("[data-pw]", box), err = qs("[data-rerr]", box);
+    const submit = () => {
+      if (!pw.value) { pw.focus(); return; }
+      err.hidden = true;
+      run(go1, async () => {
+        try { await POST("/api/passthrough", { ...payload, password: pw.value }); pw.value = ""; toast(okText); await draw(); }
+        catch (e) { pw.value = ""; err.textContent = e.message; err.hidden = false; }
+      });
+    };
+    go1.onclick = submit;
+    pw.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } };
+    pw.focus();
   };
   try { await draw(); } catch (e) { body.innerHTML = `<div class="form-error">${esc(e.message)}</div>`; }
 }

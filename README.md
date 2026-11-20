@@ -231,6 +231,9 @@ Quell-Datastore (auch von einem anderen PBS). Ablauf:
 **USB an dieser VM:** Unter Wechselplatten → „USB an diese VM durchreichen“ wird der **Anschluss** des Proxmox-Hosts
 durchgereicht (nicht das Gerät). Jede Platte, die später in diesem Anschluss steckt, erscheint in der VM – so lässt
 sich wechseln, ohne die VM-Konfiguration anzufassen. Die Appliance findet ihre eigene VM über die SMBIOS-UUID.
+Proxmox VE lässt einen USB-Anschluss nur `root@pam` selbst durchreichen – ein API-Token genügt nicht, auch nicht das
+von root. Der Dialog zeigt dann den fertigen Befehl für die Shell des Hosts (`qm set <VMID> -usb0 host=<Anschluss>,usb3=1`)
+oder trägt den Anschluss mit dem root-Passwort ein (einmalige Anmeldung, das Passwort wird nicht gespeichert).
 
 Eine neue Platte wird beim Hinzufügen **gelöscht** und formatiert (Bestätigung durch Eintippen des Plattennamens).
 Platten, auf denen schon ein Wechsel-Datastore liegt, werden nie gelöscht.

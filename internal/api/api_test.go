@@ -537,3 +537,28 @@ func TestNotifyChannels(t *testing.T) {
 		t.Fatalf("categories: %v", out["categories"])
 	}
 }
+
+// Proxmox VE keeps host USB ports to root@pam: with the API token the answer carries the
+// command for the shell; with the root password the appliance signs in once and sets it.
+func TestUSBPassthroughNeedsRoot(t *testing.T) {
+	cl := login(t)
+	_, out := cl.do("GET", "/api/passthrough", nil, false)
+	if self, _ := out["self"].(map[string]any); self == nil || self["vmid"] != float64(120) {
+		t.Fatalf("own VM: %v", out)
+	}
+	code, out := cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1"}, true)
+	if code != 409 || out["need_root"] != true || out["command"] != "qm set 120 -usb0 host=2-1,usb3=1" || out["node"] != "pve1" {
+		t.Fatalf("token: %d %v", code, out)
+	}
+	code, out = cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "password": "falsch"}, true)
+	if code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "stimmt nicht") {
+		t.Fatalf("wrong password: %d %v", code, out)
+	}
+	if code, out = cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "password": fake.RootPassword}, true); code != 200 {
+		t.Fatalf("as root: %d %v", code, out)
+	}
+	_, out = cl.do("GET", "/api/passthrough", nil, false)
+	if usb := fmt.Sprint(out["self"].(map[string]any)["usb"]); !strings.Contains(usb, "usb0=host=2-1,usb3=1") {
+		t.Fatalf("not passed through: %s", usb)
+	}
+}

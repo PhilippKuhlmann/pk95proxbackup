@@ -2,9 +2,11 @@ package prox
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,6 +16,39 @@ type PVE struct{ *Client }
 // NewPVE connects with an API token (tokenID = user@realm!token).
 func NewPVE(host string, port int, fingerprint, tokenID, secret string) *PVE {
 	return &PVE{newClient(host, port, fingerprint, "PVEAPIToken="+tokenID+"="+secret)}
+}
+
+// LoginRoot signs in to the same Proxmox VE as root@pam with its password and returns a
+// client with that ticket. Some settings are reserved to root@pam itself – passing a host
+// USB port through to a VM is one; an API token never qualifies, not even root's. The
+// password is used for this login only.
+func (p *PVE) LoginRoot(ctx context.Context, password string) (*PVE, error) {
+	anon := &Client{base: p.base, http: p.http, slow: p.slow, Host: p.Host, Port: p.Port, Finger: p.Finger}
+	var t struct {
+		Ticket  string `json:"ticket"`
+		CSRF    string `json:"CSRFPreventionToken"`
+		NeedTFA int    `json:"NeedTFA"`
+	}
+	if err := anon.Do(ctx, http.MethodPost, "/access/ticket", Params{"username": "root@pam", "password": password}, &t); err != nil {
+		if IsStatus(err, 401) {
+			return nil, errors.New("Das root-Passwort von Proxmox VE stimmt nicht.")
+		}
+		return nil, err
+	}
+	if t.NeedTFA != 0 || strings.Contains(t.Ticket, "!tfa!") {
+		return nil, errors.New("Für root@pam ist die Zwei-Faktor-Anmeldung eingeschaltet – bitte den Befehl in der Shell des Proxmox-Hosts ausführen.")
+	}
+	if t.Ticket == "" {
+		return nil, errors.New("Proxmox VE hat keine Anmeldung zurückgegeben.")
+	}
+	c := *anon
+	c.cookie, c.csrf = "PVEAuthCookie="+t.Ticket, t.CSRF
+	return &PVE{&c}, nil
+}
+
+// RootOnly reports a refusal Proxmox VE gives to anyone but root@pam.
+func RootOnly(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "only root can")
 }
 
 // PVEVersion is GET /version.

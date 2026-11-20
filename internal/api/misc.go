@@ -938,6 +938,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Port   string `json:"port"`   // "2-1.3" (bus-port) for port passthrough
 		Remove string `json:"remove"` // "usb1"
+		// Password of root@pam: Proxmox VE lets only root@pam itself pass a host USB port
+		// through (an API token never qualifies). Used for one login, never stored.
+		Password string `json:"password"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -957,11 +960,10 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "Ungültig.")
 			return
 		}
-		if err := pve.SetVMConfig(r.Context(), self.Node, self.VMID, prox.Params{"delete": req.Remove}); err != nil {
-			fail(w, err)
-			return
+		params := prox.Params{"delete": req.Remove}
+		if s.setAsRoot(w, r, pve, self, params, req.Password, fmt.Sprintf("qm set %d -delete %s", self.VMID, req.Remove)) {
+			ok(w)
 		}
-		ok(w)
 		return
 	}
 	if !regexp.MustCompile(`^\d+-[\d.]+$`).MatchString(req.Port) {
@@ -988,12 +990,42 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "Alle USB-Plätze der VM sind belegt.")
 		return
 	}
-	if err := pve.SetVMConfig(r.Context(), self.Node, self.VMID, prox.Params{slot: "host=" + req.Port + ",usb3=1"}); err != nil {
-		fail(w, err)
+	val := "host=" + req.Port + ",usb3=1"
+	if !s.setAsRoot(w, r, pve, self, prox.Params{slot: val}, req.Password, fmt.Sprintf("qm set %d -%s %s", self.VMID, slot, val)) {
 		return
 	}
 	s.C.Event("info", cl.Name, "USB-Anschluss "+req.Port+" an die Appliance durchgereicht", fmt.Sprintf("VM %d (%s), %s. Jede Platte an diesem Anschluss erscheint in der Appliance.", self.VMID, self.Name, slot))
 	ok(w)
+}
+
+// setAsRoot changes the configuration of the appliance VM: with the API token first; when
+// Proxmox VE keeps that to root@pam, with a one-time root login if a password came along,
+// otherwise the answer carries the command for the shell of the host. It reports success;
+// on failure it has answered already.
+func (s *Server) setAsRoot(w http.ResponseWriter, r *http.Request, pve *prox.PVE, self *selfVM, params prox.Params, password, command string) bool {
+	err := pve.SetVMConfig(r.Context(), self.Node, self.VMID, params)
+	if err == nil {
+		return true
+	}
+	if !prox.RootOnly(err) {
+		fail(w, err)
+		return false
+	}
+	if password == "" {
+		writeJSON(w, http.StatusConflict, map[string]any{"need_root": true, "node": self.Node, "command": command,
+			"error": "Proxmox VE lässt USB-Anschlüsse nur root@pam selbst durchreichen – das API-Token der Appliance genügt dafür nicht."})
+		return false
+	}
+	root, err := pve.LoginRoot(r.Context(), password)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"need_root": true, "node": self.Node, "command": command, "error": err.Error()})
+		return false
+	}
+	if err := root.SetVMConfig(r.Context(), self.Node, self.VMID, params); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"need_root": true, "node": self.Node, "command": command, "error": err.Error()})
+		return false
+	}
+	return true
 }
 
 var _ = store.ErrNotFound

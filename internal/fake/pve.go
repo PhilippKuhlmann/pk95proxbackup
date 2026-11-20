@@ -39,6 +39,7 @@ type PVE struct {
 	jobN                int
 	// NoPrivs simulates a token without rights (privilege separation, no ACL).
 	NoPrivs bool
+	asRoot  bool // the request being served came from root@pam (password login)
 	disks   map[string][]NodeDisk
 	layout  map[string]NodeLayout
 }
@@ -114,6 +115,29 @@ func (p *PVE) resizeDisk(w http.ResponseWriter, node string, id int, f url.Value
 	}
 	cfg[f.Get("disk")] = driveSizeRe.ReplaceAllString(val, "size="+strconv.FormatInt(n>>30, 10)+"G")
 	data(w, p.tasks.start(node, "resize", strconv.Itoa(id), time.Second, nil, nil))
+}
+
+// RootPassword is the password of root@pam in the demo (password login for USB passthrough).
+var RootPassword = "demo-root"
+
+const (
+	rootTicket = "PVE:root@pam:6AF0C3B2::fake"
+	rootCSRF   = "6AF0C3B2:fake"
+)
+
+// realUSB rejects a host USB device set by anyone but root@pam, like Proxmox VE does
+// (an API token is not root@pam, even the one of root).
+func (p *PVE) realUSB(w http.ResponseWriter, f url.Values) bool {
+	if p.asRoot {
+		return false
+	}
+	for k := range f {
+		if strings.HasPrefix(k, "usb") && strings.HasPrefix(f.Get(k), "host=") && !strings.HasPrefix(f.Get(k), "host=spice") {
+			apiErr(w, 500, "only root can set '"+k+"' config for real devices")
+			return true
+		}
+	}
+	return false
 }
 
 // NewPVE creates a cluster with the given nodes.
@@ -202,7 +226,24 @@ func (p *PVE) jobParams(j *prox.BackupJob, f url.Values) {
 
 func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api2/json")
-	if !strings.HasPrefix(r.Header.Get("Authorization"), "PVEAPIToken=") {
+	// Password login of root@pam (ticket and CSRF token, like the web UI).
+	if path == "/access/ticket" && r.Method == "POST" {
+		f := form(r)
+		if f.Get("username") != "root@pam" || f.Get("password") != RootPassword {
+			apiErr(w, 401, "authentication failure")
+			return
+		}
+		data(w, map[string]string{"ticket": rootTicket, "CSRFPreventionToken": rootCSRF, "username": "root@pam"})
+		return
+	}
+	root := false
+	if c, err := r.Cookie("PVEAuthCookie"); err == nil && c.Value == rootTicket {
+		if r.Method != "GET" && r.Header.Get("CSRFPreventionToken") != rootCSRF {
+			apiErr(w, 401, "invalid csrf token")
+			return
+		}
+		root = true
+	} else if !strings.HasPrefix(r.Header.Get("Authorization"), "PVEAPIToken=") {
 		apiErr(w, 401, "authentication failure")
 		return
 	}
@@ -220,6 +261,7 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.asRoot = root
 	if p.NoPrivs {
 		// Like Proxmox VE: lists come back empty, the job list needs Sys.Audit.
 		switch path {
