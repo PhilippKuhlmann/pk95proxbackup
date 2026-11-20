@@ -57,3 +57,6 @@ var HostCheckScriptForTest = hostCheckScript
 
 // ScheduleHandbookForTest exposes scheduleHandbook.
 func (c *Core) ScheduleHandbookForTest(now time.Time) { c.scheduleHandbook(now) }
+
+// FreeDiskForTest exposes freeDisk.
+var FreeDiskForTest = freeDisk

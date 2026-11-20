@@ -455,6 +455,11 @@ func Setup(c *core.Core) (func(), error) {
 	// The appliance (VM 120 on pve1): system on local-lvm (NVMe), datastore disk on the ZFS pool (WD Red).
 	pve.SetVMDisks(120, map[string]string{"scsi0": "local-lvm:vm-120-disk-0,size=32G", "scsi1": "tank:vm-120-disk-1,size=2T", "ide2": "none,media=cdrom"})
 	pve.SetNodeLayout("pve1", NodeLayout{LVM: map[string][]string{"pve": {"/dev/nvme0n1p3"}}, ZFS: map[string][]string{"tank": {"ata-WDC_WD40EFRX-68N32N0_WD-WCC7K1234567-part1"}}})
+	// Disks of the demo VMs (101 has a data disk next to the system disk).
+	for id, d := range map[int]map[string]string{100: {"scsi0": "local-lvm:vm-100-disk-0,size=64G"}, 101: {"scsi0": "local-lvm:vm-101-disk-0,size=64G", "scsi1": "tank:vm-101-disk-1,size=500G"},
+		102: {"scsi0": "tank:vm-102-disk-0,size=64G"}, 111: {"scsi0": "local-lvm:vm-111-disk-0,size=32G"}, 112: {"sata0": "local-lvm:vm-112-disk-0,size=80G", "efidisk0": "local-lvm:vm-112-disk-1,size=4M"}} {
+		pve.SetVMDisks(id, d)
+	}
 	pve.AddGuest(130, "pbs-buero", "pve2", "qemu", "running")
 	pve.SetVMDisks(130, map[string]string{"scsi0": "tank:vm-130-disk-0,size=32G", "scsi1": "tank:vm-130-disk-1,size=3500G"})
 	pve.SetNodeLayout("pve2", NodeLayout{LVM: map[string][]string{"pve": {"/dev/sda3"}}, ZFS: map[string][]string{"tank": {"sdb"}}})

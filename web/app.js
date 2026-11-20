@@ -2867,11 +2867,14 @@ async function restoreGuest(el, token, g, source) {
         ${can("files") ? `<div class="radio-cards">
           <button type="button" class="radio-card" data-files style="text-align:left;font:inherit;color:inherit">${icon("folder")}<span><b>Dateien und Ordner</b><small>Einzelne Dateien aus der Sicherung herunterladen. Der ${kind} läuft dabei normal weiter.</small></span></button>
           ${can("operator") ? `<button type="button" class="radio-card" data-whole style="text-align:left;font:inherit;color:inherit">${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>` : ""}
+          ${can("operator") && typ === "vm" ? `<button type="button" class="radio-card" data-disk style="text-align:left;font:inherit;color:inherit">${icon("disk")}<span><b>Einzelne Disk</b><small>Eine Platte aus der Sicherung zusätzlich an eine VM hängen – die VM bleibt, wie sie ist.</small></span></button>` : ""}
         </div>` : `<p class="muted small" style="margin:0">Mit der Rolle „${esc(ROLE_NAMES[state.role] || "")}“ lassen sich Sicherungen nur ansehen.</p>`}</div><div data-browser></div>`;
     const fb = qs("[data-files]", right), wb = qs("[data-whole]", right);
     if (fb) fb.onclick = () => { browse = fileBrowser(qs("[data-browser]", right), query(), g, typ, null, sel, ver); };
     if (fb && browse) fileBrowser(qs("[data-browser]", right), query(), g, typ, browse, sel, ver);
     if (wb) wb.onclick = () => restoreWhole(g, typ, g.backups[src], sel);
+    const db = qs("[data-disk]", right);
+    if (db) db.onclick = () => restoreDisk(g, g.backups[src], sel, (snaps.find((sn) => sn["backup-time"] === sel) || {}).files || []);
   };
 
   const loadSnaps = async () => {
@@ -3024,6 +3027,86 @@ function versionsDialog(file, dir, typ, ver, current) {
   };
   draw();
   for (let i = 0; i < (typ === "vm" ? 1 : 3); i++) worker();
+}
+
+// restoreDisk brings one disk of a VM backup back and attaches it to a VM (see core/diskrestore.go).
+async function restoreDisk(g, b, time, files) {
+  const disks = files.map((f) => ({ drive: f.filename.replace(/^drive-|\.img\.fidx$/g, ""), size: f.size, file: f.filename }))
+    .filter((d) => d.file.endsWith(".img.fidx") && /^(scsi|virtio|sata|ide)\d+$/.test(d.drive));
+  if (!disks.length) { toast("In dieser Sicherung ist keine Disk zu finden.", "error"); return; }
+  const all = disks.reduce((a, d) => a + d.size, 0);
+  let vms = [];
+  try {
+    const gs = await GET("/api/guests");
+    vms = gs.guests.filter((x) => x.cluster === g.cluster && x.type === "qemu" && !x.template && x.node).sort((a, b2) => a.vmid - b2.vmid);
+  } catch (e) { toastErr(e); return; }
+  if (!vms.length) { toast("In diesem Proxmox VE gibt es keine VM, an die die Disk kommen kann.", "error"); return; }
+  const nodeOf = (id) => (vms.find((v) => String(v.vmid) === String(id)) || {}).node;
+  formDialog({
+    title: `Disk aus ${g.vmid} ${g.name} zurückholen`, ic: "disk", button: "Disk zurückholen", grid: "cols-2",
+    text: `Stand vom <b>${fmtTime(time, true)}</b> aus ${esc(b.server_name)} / ${esc(b.store)}.`,
+    fields: [
+      { name: "drive", label: "Disk aus der Sicherung", type: "select", value: disks.length > 1 ? disks[1].drive : disks[0].drive, options: disks.map((d) => [d.drive, `${d.drive} – ${fmtBytes(d.size)}`]) },
+      { name: "target", label: "An VM hängen", type: "select", value: vms.some((v) => v.vmid === g.vmid) ? g.vmid : vms[0].vmid,
+        options: vms.map((v) => [v.vmid, `${v.vmid} ${v.name} (${v.node}${v.status === "running" ? ", läuft" : ""})`]) },
+      { name: "storage", label: "Speicher für die Disk", type: "select", wide: true, options: [["", "Lade …"]] },
+      { type: "html", name: "how", wide: true, html: `<div class="hint">Proxmox VE holt aus einer Sicherung nur ganze VMs. Die Appliance spielt die Sicherung darum kurz unter einer freien ID auf dem Knoten der Ziel-VM zurück (alle ${disks.length} ${disks.length === 1 ? "Disk" : "Disks"}, ${fmtBytes(all)}), hängt die gewählte Disk an die Ziel-VM und löscht den Rest wieder. Die Disk kommt <b>zusätzlich</b> an den nächsten freien Anschluss – an der VM wird nichts überschrieben, eine laufende VM sieht sie sofort.</div>` },
+    ],
+    onMount: async (d) => {
+      const loadSt = async () => {
+        const node = nodeOf(qs('[name="target"]', d).value);
+        try {
+          const r = await GET(`/api/pve/${g.cluster}/nodes/${enc(node)}/storages?content=images`);
+          qs('[name="storage"]', d).innerHTML = r.storages.map((s2) => `<option value="${esc(s2.storage)}" ${s2.avail && s2.avail < all ? "disabled" : ""}>${esc(s2.storage)} auf ${esc(node)} (${fmtBytes(s2.avail)} frei${s2.avail && s2.avail < all ? " – zu wenig" : ""})</option>`).join("");
+        } catch (e) { showErrors(d, e); }
+      };
+      qs('[name="target"]', d).onchange = loadSt;
+      await loadSt();
+    },
+    submit: async (v) => {
+      const job = await POST("/api/restore/disk", { cluster: g.cluster, pbs: b.server, store: b.store, bid: g.vmid, time, drive: v.drive, target: Number(v.target), storage: v.storage });
+      diskJobDialog(job);
+    },
+  });
+}
+
+function diskJobDialog(job) {
+  let timer = null;
+  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("disk")}</span><div class="grow"><div class="dlg-title">Disk ${esc(job.drive)} wird zurückgeholt</div>
+      <p class="dlg-text">Aus der Sicherung von ${job.source} vom ${fmtTime(job.time, true)} an VM ${job.target} ${esc(job.target_name)} (${esc(job.node)}).</p></div></div>
+    <div class="dlg-body" data-body></div>
+    <div class="dlg-foot"><span class="muted small" style="flex:1" data-bg>Läuft im Hintergrund weiter, wenn du das Fenster schließt.</span><button class="btn" type="button" data-close>Schließen</button></div>`, "wide");
+  dlg.addEventListener("close", () => clearTimeout(timer));
+  qs("[data-close]", dlg).onclick = () => dlg.close();
+  const order = ["restore", "attach", "cleanup", "done"];
+  const draw = (j) => {
+    const at = j.phase === "error" ? -1 : order.indexOf(j.phase);
+    const step = (i, text, sub) => {
+      const st = j.phase === "error" ? "" : at > i ? "done" : at === i ? "run" : "";
+      return `<div class="row" style="align-items:center">${st === "done" ? `<span class="good">${icon("check")}</span>` : st === "run" ? '<span class="spinner"></span>' : `<span class="muted">${icon("clock")}</span>`}
+        <div class="grow"><div class="title">${text}</div>${sub ? `<div class="t-sub">${sub}</div>` : ""}</div></div>`;
+    };
+    qs("[data-bg]", dlg).hidden = j.phase === "done" || j.phase === "error";
+    const pct = j.phase === "restore" && j.percent >= 0 ? `${Math.round(j.percent)} %${j.detail ? " · " + esc(j.detail) : ""}` : "";
+    qs("[data-body]", dlg).innerHTML = `<div class="rows">
+        ${step(0, `Sicherung als Hilfs-VM ${j.temp_id} zurückspielen`, pct || `auf ${esc(j.storage)}`)}
+        ${step(1, `Disk an VM ${j.target} hängen`, j.new_disk ? `als ${esc(j.new_disk)}` : "am nächsten freien Anschluss")}
+        ${step(2, `Hilfs-VM ${j.temp_id} löschen`, "mit den übrigen Disks")}</div>
+      ${j.phase === "done" ? `<div class="mt">${callout("green", `${j.drive} hängt jetzt als ${j.new_disk} an VM ${j.target} ${j.target_name}`, "In der VM einbinden: unter Linux mit <span class=\"mono\">lsblk</span> suchen und einhängen, unter Windows in der Datenträgerverwaltung „Online“ schalten. Nicht mehr gebraucht? In Proxmox die Disk trennen und löschen.")}</div>` : ""}
+      ${j.note ? `<div class="mt">${callout("yellow", "Hinweis", esc(j.note))}</div>` : ""}
+      ${j.phase === "error" ? `<div class="mt">${callout("red", "Nicht geklappt", esc(j.error))}</div>` : ""}`;
+  };
+  const poll = async () => {
+    try {
+      const j = await GET(`/api/restore/disk/${enc(job.id)}`);
+      if (!dlg.open) return;
+      draw(j);
+      if (j.phase === "done" || j.phase === "error") return;
+    } catch (e) { /* try again */ }
+    timer = setTimeout(poll, 2000);
+  };
+  draw(job);
+  timer = setTimeout(poll, 1000);
 }
 
 async function restoreWhole(g, typ, b, time) {

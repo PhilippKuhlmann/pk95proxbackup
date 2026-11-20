@@ -271,3 +271,32 @@ func (s *Server) nameFromBackups(ctx context.Context, pbs *prox.PBS, store strin
 	}
 	wg.Wait()
 }
+
+// restoreDisk brings one disk of a VM backup back and attaches it to a VM.
+func (s *Server) restoreDisk(w http.ResponseWriter, r *http.Request) {
+	var req core.DiskRestoreRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	req.By = currentUser(r).Username
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	job, errs, err := s.C.StartDiskRestore(ctx, req)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if fieldErrs(w, errs) {
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) restoreDiskJob(w http.ResponseWriter, r *http.Request) {
+	job, ok := s.C.DiskRestore(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "Unbekannter Vorgang.")
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}

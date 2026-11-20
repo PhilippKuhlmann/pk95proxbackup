@@ -10,6 +10,12 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   jeder Kopie – auch abgezogene Platten zählen. Reißt die Kette (z. B. gesichert, aber seit drei Wochen auf keiner
   Platte), erscheint ein Hinweis in der Übersicht.
 - **Wiederherstellen** aus jeder Sicherung als neuer Gast (das Original bleibt unberührt).
+- **Einzelne Disk zurückholen:** aus einer VM-Sicherung nur eine Platte zurückholen und zusätzlich an eine VM hängen
+  (die eigene oder eine andere auf demselben Proxmox VE) – an der VM wird nichts überschrieben, eine laufende VM sieht
+  die Disk sofort. Proxmox VE stellt nur ganze VMs wieder her; die Appliance spielt die Sicherung darum unter einer
+  freien ID auf dem Knoten der Ziel-VM zurück, hängt die Disk um (`move_disk` an eine andere VM) und löscht die
+  Hilfs-VM mit den übrigen Disks wieder. Der Dialog zeigt den nötigen Platz und den Fortschritt; braucht das Recht
+  VM.Config.Disk und einen Speicher, der Disks umhängen kann (LVM, LVM-Thin, ZFS, Verzeichnis, Ceph …).
 - **Dateien aus Sicherungen:** Ordner durchklicken, Dateien einzeln oder Ordner als ZIP laden. Der geöffnete Ordner
   bleibt beim Wechsel des Stands offen (fehlt er dort, zeigt die Appliance den Ordner darüber). **Versionen** einer Datei:
   in welchen Ständen es sie gibt, wann sie sich geändert hat oder verschwunden ist – jede Fassung direkt ladbar.

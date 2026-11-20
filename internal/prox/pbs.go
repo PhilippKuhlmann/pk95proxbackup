@@ -187,17 +187,25 @@ func (p *PBS) Verify(ctx context.Context, store string) (string, error) {
 
 // Snapshot is an entry of /admin/datastore/{store}/snapshots.
 type Snapshot struct {
-	Type         string `json:"backup-type"`
-	ID           string `json:"backup-id"`
-	Time         int64  `json:"backup-time"`
-	Size         int64  `json:"size"`
-	Owner        string `json:"owner"`
-	Protected    bool   `json:"protected"`
-	Comment      string `json:"comment"`
-	Fingerprint  string `json:"fingerprint,omitempty"` // key of an encrypted backup
+	Type         string         `json:"backup-type"`
+	ID           string         `json:"backup-id"`
+	Time         int64          `json:"backup-time"`
+	Size         int64          `json:"size"`
+	Owner        string         `json:"owner"`
+	Protected    bool           `json:"protected"`
+	Comment      string         `json:"comment"`
+	Fingerprint  string         `json:"fingerprint,omitempty"` // key of an encrypted backup
+	Files        []SnapshotFile `json:"files,omitempty"`
 	Verification *struct {
 		State string `json:"state"`
 	} `json:"verification,omitempty"`
+}
+
+// SnapshotFile is an archive of a snapshot (drive-scsi0.img.fidx, root.pxar.didx, …).
+type SnapshotFile struct {
+	Filename  string `json:"filename"`
+	Size      int64  `json:"size"`
+	CryptMode string `json:"crypt-mode,omitempty"`
 }
 
 // Snapshots lists all snapshots of a datastore (root namespace or ns).

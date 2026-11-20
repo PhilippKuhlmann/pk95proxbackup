@@ -36,6 +36,7 @@ func backupConfig(archive, kind string, id int) map[string]string {
 		c["agent"] = "1"
 	}
 	if orig == 101 {
+		c["scsi1"] = "local-lvm:vm-" + strconv.Itoa(id) + "-disk-1,size=500G"
 		c["hostpci0"] = "0000:03:00.0,pcie=1"
 		c["ide2"] = "local:iso/debian-13.iso,media=cdrom"
 		c["usb0"] = "host=2-1"
@@ -50,6 +51,10 @@ func (p *PVE) guestOp(w http.ResponseWriter, m string, seg []string, f url.Value
 	op := strings.Join(seg[4:], "/")
 	if op == "resize" && seg[2] == "qemu" && m == "PUT" {
 		p.resizeDisk(w, seg[1], id, f)
+		return
+	}
+	if op == "move_disk" && seg[2] == "qemu" && m == "POST" {
+		p.reassignDisk(w, seg[1], id, f)
 		return
 	}
 	if op == "config" && seg[2] == "qemu" && p.cfg[id] == nil {
@@ -164,3 +169,51 @@ func (p *PVE) legacyConfig(w http.ResponseWriter, m string, id int, f url.Values
 	}
 	data(w, out)
 }
+
+// reassignDisk answers POST …/qemu/{vmid}/move_disk with target-vmid: the disk of a stopped VM
+// moves to another VM on the same node (as Proxmox VE 7.2+ does).
+func (p *PVE) reassignDisk(w http.ResponseWriter, node string, id int, f url.Values) {
+	g, t := p.guest(id), p.guest(atoi(f.Get("target-vmid")))
+	disk, key := f.Get("disk"), f.Get("target-disk")
+	cfg := p.cfg[id]
+	if g == nil || cfg == nil {
+		apiErr(w, 500, "Configuration file 'qemu-server/"+strconv.Itoa(id)+".conf' does not exist")
+		return
+	}
+	val, ok := cfg[disk]
+	switch {
+	case !ok:
+		apiErr(w, 500, "disk '"+disk+"' does not exist")
+		return
+	case g.Status == "running":
+		apiErr(w, 500, "Cannot move disk to another VM while the source VM is running - detach first")
+		return
+	case t == nil || t.Node != node:
+		apiErr(w, 500, "target VM is not on node "+node)
+		return
+	}
+	tcfg := p.cfg[t.VMID]
+	if tcfg == nil {
+		if p.usbCfg[t.VMID] == nil {
+			p.usbCfg[t.VMID] = map[string]string{}
+		}
+		tcfg = p.usbCfg[t.VMID]
+	}
+	if _, used := tcfg[key]; used {
+		apiErr(w, 500, "target disk key '"+key+"' is already in use")
+		return
+	}
+	storage, rest, _ := strings.Cut(val, ":")
+	_, opts, _ := strings.Cut(rest, ",")
+	n := 0
+	for k, v := range tcfg {
+		if driveKeyRe.MatchString(k) && strings.Contains(v, ":vm-") {
+			n++
+		}
+	}
+	tcfg[key] = storage + ":vm-" + strconv.Itoa(t.VMID) + "-disk-" + strconv.Itoa(n) + "," + opts
+	delete(cfg, disk)
+	data(w, p.tasks.start(node, "qmmove", strconv.Itoa(id), time.Second, []string{"reassign " + disk + " to VM " + strconv.Itoa(t.VMID) + " as " + key}, nil))
+}
+
+var driveKeyRe = regexp.MustCompile(`^(scsi|virtio|sata|ide)\d+$`)

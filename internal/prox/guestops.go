@@ -62,6 +62,15 @@ func (p *PVE) DestroyGuest(ctx context.Context, node, typ string, vmid int) (str
 	return upid, err
 }
 
+// ReassignDisk moves a disk of a stopped VM to another VM on the same node (Proxmox VE 7.2+:
+// move_disk with target-vmid) and attaches it there as targetDisk. It returns the task.
+func (p *PVE) ReassignDisk(ctx context.Context, node string, vmid int, disk string, target int, targetDisk string) (string, error) {
+	var upid string
+	err := p.Do(ctx, http.MethodPost, guestPath(node, "qemu", vmid)+"/move_disk",
+		Params{"disk": disk, "target-vmid": target, "target-disk": targetDisk}, &upid)
+	return upid, err
+}
+
 // AgentPing asks the QEMU guest agent of a VM whether it answers.
 func (p *PVE) AgentPing(ctx context.Context, node string, vmid int) error {
 	return p.Do(ctx, http.MethodPost, guestPath(node, "qemu", vmid)+"/agent/ping", nil, nil)

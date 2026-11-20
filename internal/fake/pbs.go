@@ -708,7 +708,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				apiErr(w, 400, "datastore is not mounted")
 				return
 			}
-			data(w, s.snaps)
+			data(w, withFiles(s.snaps))
 		case "download-decoded":
 			if b, ok := p.blob(seg[2], f.Get("backup-type"), f.Get("backup-id"), f.Get("backup-time"), f.Get("file-name")); ok {
 				w.Header().Set("Content-Type", "application/octet-stream")
@@ -1069,4 +1069,27 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		apiErr(w, 404, "Path '"+path+"' not found (demo)")
 	}
+}
+
+// withFiles adds the archives Proxmox VE writes: VMs one image per disk (VM 101 has a data
+// disk), containers one pxar archive.
+func withFiles(snaps []prox.Snapshot) []prox.Snapshot {
+	out := make([]prox.Snapshot, len(snaps))
+	for i, sn := range snaps {
+		out[i] = sn
+		if sn.Files != nil {
+			continue
+		}
+		blobs := []prox.SnapshotFile{{Filename: "index.json.blob", Size: 812}}
+		switch sn.Type {
+		case "vm":
+			out[i].Files = append(blobs, prox.SnapshotFile{Filename: "qemu-server.conf.blob", Size: 590}, prox.SnapshotFile{Filename: "drive-scsi0.img.fidx", Size: 64 * gib})
+			if sn.ID == "101" {
+				out[i].Files = append(out[i].Files, prox.SnapshotFile{Filename: "drive-scsi1.img.fidx", Size: 500 * gib})
+			}
+		case "ct":
+			out[i].Files = append(blobs, prox.SnapshotFile{Filename: "pct.conf.blob", Size: 340}, prox.SnapshotFile{Filename: "root.pxar.didx", Size: sn.Size})
+		}
+	}
+	return out
 }
