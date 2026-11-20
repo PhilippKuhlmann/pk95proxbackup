@@ -3587,6 +3587,33 @@ NOTIFY_PAGES[""] = async (box) => {
   qs("[data-test]", box).onclick = (e) => run(e.currentTarget, async () => { showErrors(nf, null); try { await POST("/api/settings/test?status=" + qs("[data-test-status]", box).value, nv()); toast("Testnachricht verschickt."); } catch (err) { showErrors(nf, err); } });
 };
 
+// Which kind of message goes to which channel, and from which severity on.
+NOTIFY_PAGES.auswahl = async (box) => {
+  const set = await GET("/api/settings");
+  const n = set.notify, cats = set.categories || [];
+  const chans = [["mail", "E-Mail", n.mail_enabled], ["telegram", "Telegram", n.telegram_enabled], ["hook", "Push", n.hook_enabled]];
+  const prefs = n.channels || {};
+  const sevName = { info: "Alles", warning: "Ab Warnung", critical: "Nur Fehler" };
+  const on = (ch, cat) => !((prefs[ch] || {}).off || []).includes(cat);
+  box.innerHTML = `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">Was wohin</div>
+      <div class="muted small">Je Kanal, welche Meldungen er bekommt. Ohne Haken kommt diese Art dort gar nicht an – auch keine Fehler. Die Ereignisse der Appliance zeichnen weiter alles auf.</div></div></div>
+    <div class="table-wrap"><table class="resp notify-matrix"><thead><tr><th>Meldungen</th>${chans.map(([k, l, en]) => `<th class="c">${esc(l)}${en ? "" : `<div class="t-sub">aus</div>`}</th>`).join("")}</tr></thead><tbody>
+      <tr><td data-l="Stufe"><b>Melden ab</b><div class="t-sub">Standard = wie unter Kanäle („${esc(sevName[n.min_severity] || "")}“)</div></td>${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c"><select data-sev="${k}" aria-label="${esc(l)}: melden ab">
+        <option value="">Standard</option>${Object.entries(sevName).map(([v, t]) => `<option value="${v}" ${(prefs[k] || {}).min_severity === v ? "selected" : ""}>${t}</option>`).join("")}</select></td>`).join("")}</tr>
+      ${cats.map((c) => `<tr><td data-l="Meldungen"><b>${esc(c.label)}</b><div class="t-sub">${esc(c.hint)}</div></td>
+        ${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c"><input type="checkbox" data-ch="${k}" data-cat="${esc(c.key)}" ${on(k, c.key) ? "checked" : ""} aria-label="${esc(c.label)} per ${esc(l)}"></td>`).join("")}</tr>`).join("")}
+    </tbody></table></div>
+    <div class="flex" style="padding:12px 16px"><button class="btn" type="button" data-save>Speichern</button><span class="small muted">Testnachrichten gehen immer über alle eingeschalteten Kanäle.</span></div></div>`;
+  qs("[data-save]", box).onclick = (e) => run(e.currentTarget, async () => {
+    const out = {};
+    for (const [k] of chans) {
+      out[k] = { min_severity: qs(`[data-sev="${k}"]`, box).value, off: qsa(`[data-ch="${k}"]`, box).filter((x) => !x.checked).map((x) => x.dataset.cat) };
+    }
+    await PUT("/api/settings/channels", { channels: out });
+    toast("Gespeichert.");
+  });
+};
+
 NOTIFY_PAGES.monatsbericht = async (box) => {
   box.innerHTML = `<div class="settings-narrow"><div class="panel" data-monthly></div></div>`;
   await monthlyPanel(qs("[data-monthly]", box));
@@ -3608,7 +3635,7 @@ NOTIFY_PAGES.sicherungsjobs = async (box) => {
   await draw();
 };
 
-const NOTIFY_TABS = [["", "Kanäle", "bell"], ["monatsbericht", "Monatsbericht", "calendar"], ["sicherungsjobs", "Mails zu Sicherungsjobs", "archive"]];
+const NOTIFY_TABS = [["", "Kanäle", "bell"], ["auswahl", "Was wohin", "list"], ["monatsbericht", "Monatsbericht", "calendar"], ["sicherungsjobs", "Mails zu Sicherungsjobs", "archive"]];
 
 PAGES["/benachrichtigungen"] = async (el) => {
   const tab = location.pathname.replace(/^\/benachrichtigungen\/?/, "").split("/")[0];

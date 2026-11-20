@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,7 +137,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	ns := s.C.NotifySettings()
 	hasPass, hasToken, hasTG := ns.SMTPPass != "", ns.HookToken != "", ns.TelegramToken != ""
 	ns.SMTPPass, ns.HookToken, ns.TelegramToken = "", "", ""
-	writeJSON(w, http.StatusOK, map[string]any{"notify": ns, "has_smtp_password": hasPass, "has_hook_token": hasToken, "has_telegram_token": hasTG,
+	writeJSON(w, http.StatusOK, map[string]any{"notify": ns, "categories": notify.Categories, "has_smtp_password": hasPass, "has_hook_token": hasToken, "has_telegram_token": hasTG,
 		"access": s.C.Access(), "seen_proxy": s.C.SeenProxy(), "public_url": s.C.PublicURL(), "client_ip": s.clientIP(r), "remote_ip": remoteIP(r)})
 }
 
@@ -177,6 +178,44 @@ func (s *Server) putAccess(w http.ResponseWriter, r *http.Request) {
 	ok(w)
 }
 
+// putChannels stores which messages each channel gets.
+func (s *Server) putChannels(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Channels map[string]notify.ChannelPrefs `json:"channels"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	known := map[string]bool{}
+	for _, c := range notify.Categories {
+		known[c.Key] = true
+	}
+	out := map[string]notify.ChannelPrefs{}
+	for ch, p := range req.Channels {
+		if ch != notify.ChannelMail && ch != notify.ChannelTelegram && ch != notify.ChannelHook {
+			continue
+		}
+		if p.MinSeverity != "" && p.MinSeverity != "info" && p.MinSeverity != "warning" && p.MinSeverity != "critical" {
+			p.MinSeverity = ""
+		}
+		var off []string
+		for _, k := range p.Off {
+			if known[k] && !slices.Contains(off, k) {
+				off = append(off, k)
+			}
+		}
+		p.Off = off
+		out[ch] = p
+	}
+	n := s.C.NotifySettings()
+	n.Channels = out
+	if err := s.C.St.SetSetting("notify", n); err != nil {
+		fail(w, err)
+		return
+	}
+	ok(w)
+}
+
 func (s *Server) readNotify(w http.ResponseWriter, r *http.Request) (notify.Settings, bool) {
 	var req struct {
 		Notify notify.Settings `json:"notify"`
@@ -195,6 +234,9 @@ func (s *Server) readNotify(w http.ResponseWriter, r *http.Request) (notify.Sett
 	n.TelegramToken, n.TelegramChat = strings.TrimSpace(n.TelegramToken), strings.TrimSpace(n.TelegramChat)
 	if n.TelegramToken == "" {
 		n.TelegramToken = cur.TelegramToken
+	}
+	if n.Channels == nil { // the choice per channel is saved on its own (putChannels)
+		n.Channels = cur.Channels
 	}
 	errs := map[string]string{}
 	if n.MinSeverity != "info" && n.MinSeverity != "warning" && n.MinSeverity != "critical" {

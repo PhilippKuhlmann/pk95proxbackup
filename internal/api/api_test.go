@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -510,4 +511,29 @@ func TestDatastoreSchedules(t *testing.T) {
 		return
 	}
 	t.Fatal("datastore backup missing")
+}
+
+// The choice per channel is saved on its own; saving the channels page keeps it.
+func TestNotifyChannels(t *testing.T) {
+	cl := login(t)
+	body := map[string]any{"channels": map[string]any{
+		"telegram": map[string]any{"min_severity": "critical", "off": []string{"changes", "gibtsnicht", "changes"}},
+		"fax":      map[string]any{"off": []string{"backups"}},
+	}}
+	if code, out := cl.do("PUT", "/api/settings/channels", body, true); code != 200 {
+		t.Fatalf("channels: %d %v", code, out)
+	}
+	if code, out := cl.do("PUT", "/api/settings", map[string]any{"notify": map[string]any{"min_severity": "warning"}}, true); code != 200 {
+		t.Fatalf("settings: %d %v", code, out)
+	}
+	_, out := cl.do("GET", "/api/settings", nil, false)
+	n := out["notify"].(map[string]any)
+	ch, _ := n["channels"].(map[string]any)
+	tg, _ := ch["telegram"].(map[string]any)
+	if tg == nil || tg["min_severity"] != "critical" || fmt.Sprint(tg["off"]) != "[changes]" || ch["fax"] != nil {
+		t.Fatalf("channels after saving the settings: %v", ch)
+	}
+	if cats, _ := out["categories"].([]any); len(cats) < 10 {
+		t.Fatalf("categories: %v", out["categories"])
+	}
 }

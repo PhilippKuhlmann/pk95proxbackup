@@ -43,6 +43,9 @@ type Settings struct {
 	TelegramToken   string `json:"telegram_token,omitempty"`
 	TelegramChat    string `json:"telegram_chat"`
 	TelegramFiles   bool   `json:"telegram_files"` // screenshots and reports as photos/files
+
+	// Channels: per channel the lowest severity and the categories switched off.
+	Channels map[string]ChannelPrefs `json:"channels,omitempty"`
 }
 
 // Defaults are the settings on first start.
@@ -53,6 +56,7 @@ func Defaults() Settings {
 // Message is one notification.
 type Message struct {
 	Severity string
+	Category string // see Categories; "" = always (test messages)
 	Source   string
 	Title    string
 	Body     string
@@ -73,7 +77,7 @@ type Attachment struct {
 	ContentID   string // set for inline images: <img src="cid:ContentID">
 }
 
-var rank = map[string]int{"info": 0, "warning": 1, "critical": 2}
+var rank = map[string]int{"info": 0, "warning": 1, "error": 2, "critical": 2}
 
 // Wants reports whether a message of that severity should be sent.
 func (s Settings) Wants(sev string) bool { return rank[sev] >= rank[s.MinSeverity] }
@@ -81,17 +85,17 @@ func (s Settings) Wants(sev string) bool { return rank[sev] >= rank[s.MinSeverit
 // Send delivers the message to all enabled channels and joins their errors.
 func Send(ctx context.Context, s Settings, m Message) error {
 	var errs []error
-	if s.MailEnabled {
+	if s.MailEnabled && s.ChannelWants(ChannelMail, m) {
 		if err := sendMail(s, m); err != nil {
 			errs = append(errs, fmt.Errorf("E-Mail: %w", err))
 		}
 	}
-	if s.HookEnabled {
+	if s.HookEnabled && s.ChannelWants(ChannelHook, m) {
 		if err := sendHook(ctx, s, m); err != nil {
 			errs = append(errs, fmt.Errorf("Webhook: %w", err))
 		}
 	}
-	if s.TelegramEnabled {
+	if s.TelegramEnabled && s.ChannelWants(ChannelTelegram, m) {
 		if err := sendTelegram(ctx, s, m); err != nil {
 			errs = append(errs, fmt.Errorf("Telegram: %w", err))
 		}

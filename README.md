@@ -118,6 +118,9 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig. Telegram: Bot bei @BotFather anlegen,
   ihm schreiben (oder in die Gruppe aufnehmen), „Chat-ID ermitteln“ liest die Chat-ID aus; Screenshots und Berichte
   der Restore-Tests kommen als Bilder und Datei mit.
+- **Was wohin** (Benachrichtigungen → Was wohin): je Kanal (E-Mail, Telegram, Push) an- und abhaken, welche Arten von
+  Meldungen er bekommt – Sicherungen, Kopierjobs, USB- und Archiv-Platten, Prüfungen, Auffällige Sicherungen, Speicherplatz,
+  Festplatten, Erreichbarkeit, Updates, Konten, Änderungen an der Einrichtung, Monatsbericht – und ab welcher Stufe.
 
 ```
 Proxmox-VE-Host

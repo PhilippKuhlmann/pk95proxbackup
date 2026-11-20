@@ -340,8 +340,9 @@ func (c *Core) EventWithFiles(severity, source, title, body string, d *notify.De
 	}
 	log.Printf("[%s] %s: %s %s", severity, source, title, strings.ReplaceAll(body, "\n", " "))
 	ns := c.NotifySettings()
-	if (ns.MailEnabled || ns.HookEnabled) && ns.Wants(severity) {
-		msg := c.Message(severity, source, title, body, d)
+	msg := c.Message(severity, source, title, body, d)
+	msg.Category = EventCategory(source, title)
+	if ns.WantsAny(msg) {
 		msg.Attachments = files
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

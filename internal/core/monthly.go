@@ -431,6 +431,7 @@ func (c *Core) SendMonthlyReport(ctx context.Context, month string) error {
 	d.Note = "Der vollständige Bericht mit USB-Platten, Restore-Tests, Festplatten und Hinweisen liegt als Datei bei."
 	sev := map[string]string{"ok": "info", "warning": "warning", "error": "critical"}[rep.Status]
 	msg := c.Message(sev, "Monatsbericht", "Monatsbericht "+rep.Title, rep.Headline, d)
+	msg.Category = "report"
 	msg.Attachments = []notify.Attachment{{Name: "Monatsbericht-" + month + ".html", ContentType: "text/html; charset=utf-8", Data: c.MonthlyHTML(rep)}}
 	if err := notify.Send(ctx, ns, msg); err != nil {
 		return err

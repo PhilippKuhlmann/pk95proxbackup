@@ -102,6 +102,7 @@ func (s *Server) routes() {
 	a("GET /api/settings", s.getSettings)
 	a("PUT /api/settings", s.putSettings)
 	a("POST /api/settings/test", s.testNotify)
+	a("PUT /api/settings/channels", s.putChannels)
 	a("POST /api/settings/telegram/chats", s.telegramChats)
 	a("GET /api/settings/preview", s.previewMail)
 	a("PUT /api/settings/access", s.putAccess)
