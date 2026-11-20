@@ -82,6 +82,22 @@ func (p *PVE) Nodes(ctx context.Context) ([]Node, error) {
 	return out, err
 }
 
+// ClusterMember is a node entry of /cluster/status (with its cluster address).
+type ClusterMember struct {
+	Type   string `json:"type"` // node, cluster
+	Name   string `json:"name"`
+	IP     string `json:"ip,omitempty"`
+	Online int    `json:"online"`
+	Local  int    `json:"local"`
+}
+
+// ClusterStatus lists the nodes with their addresses (and the cluster entry, if any).
+func (p *PVE) ClusterStatus(ctx context.Context) ([]ClusterMember, error) {
+	var out []ClusterMember
+	err := p.Do(ctx, http.MethodGet, "/cluster/status", nil, &out)
+	return out, err
+}
+
 // Guest is a VM or container from /cluster/resources.
 type Guest struct {
 	VMID     int     `json:"vmid"`

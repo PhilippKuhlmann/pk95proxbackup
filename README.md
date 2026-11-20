@@ -88,6 +88,16 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   die neue dreimal nicht startet. Auf Wunsch installiert sie neue Versionen selbst nach Plan (Wochentage, Uhrzeit);
   kopiert sie gerade auf eine USB- oder Archiv-Platte, läuft ein Restore-Test oder ein Systemupdate, wartet sie bis zu
   drei Stunden, sonst folgt das Update zum nächsten Termin. Nach dem Update meldet sie, was neu ist.
+- **Proxmox-VE-Hosts sichern:** Proxmox VE sichert seine Knoten nicht selbst. Die Appliance meldet sich jede Nacht
+  per SSH als root an jedem Knoten an und ruft dort `proxmox-backup-client` auf – mit dem Zugang, den Proxmox VE für
+  den gewählten PBS-Speicher ohnehin hat (`/etc/pve/priv/storage/<id>.pw`, ein vorhandener Schlüssel verschlüsselt
+  auch diese Sicherung); kein Kennwort verlässt den Knoten. Gesichert werden `/etc` samt `/etc/pve`, `/root` (ohne
+  ISO- und Disk-Images) und ein Ordner „Systeminfo“ mit allem für den Neuaufbau: Versionen, Netzwerk, Platten,
+  ZFS/LVM, Pakete, Bootloader, Crontabs und eine konsistente Kopie von `config.db`. Die Sicherung liegt als
+  `host/<knoten>` neben den Gästen und wandert mit auf zweiten Server und Wechselplatten. Unter Sichern →
+  Proxmox-VE-Hosts: Stände je Knoten, Dateien durchsuchen und laden (nur Administratoren), Befehle zum Zurückholen
+  und eine Anleitung zum Neuaufbau. Schlägt eine Sicherung fehl, versucht es die Appliance stündlich bis zu dreimal
+  und meldet sich dann.
 - **Sicherung der Appliance selbst:** Datenbank, SSH-Schlüssel, Zertifikat und die Konfiguration des lokalen PBS
   (`/etc/proxmox-backup`, Mount-Units) werden täglich mit einem Wiederherstellungs-Passwort verschlüsselt (AES-256-GCM,
   scrypt) als Gruppe `host/pk95proxbackup` in den Datastore geschrieben und wandern so auf die Wechselplatten. Eine

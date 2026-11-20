@@ -458,6 +458,37 @@ func Setup(c *core.Core) (func(), error) {
 	pve.AddGuest(130, "pbs-buero", "pve2", "qemu", "running")
 	pve.SetVMDisks(130, map[string]string{"scsi0": "tank:vm-130-disk-0,size=32G", "scsi1": "tank:vm-130-disk-1,size=3500G"})
 	pve.SetNodeLayout("pve2", NodeLayout{LVM: map[string][]string{"pve": {"/dev/sda3"}}, ZFS: map[string][]string{"tank": {"sdb"}}})
+	// Host backups: both nodes write their configuration at 02:30 into "backup".
+	shells := map[string]*NodeShell{}
+	for _, n := range []string{"pve1", "pve2"} {
+		shells[n] = &NodeShell{PBS: local, Store: "backup", Node: n}
+		for d := 11; d >= 0; d-- {
+			t := time.Date(now.Year(), now.Month(), now.Day()-d, 2, 30, 4, 0, now.Location())
+			if n == "pve2" {
+				t = t.Add(38 * time.Second)
+			}
+			if !t.After(now) {
+				local.AddSnapshot("backup", "host", n, t.Unix(), 41*mib+int64(t.Day())*mib/3)
+			}
+		}
+	}
+	c.NodeRunner = func(_ core.PVECluster, node string) hostexec.Runner {
+		if sh := shells[node]; sh != nil {
+			return sh
+		}
+		return &NodeShell{PBS: local, Store: "backup", Node: node, Fail: "SSH-Anmeldung abgelehnt"}
+	}
+	{
+		var have map[string]core.HostBackupConf
+		if c.St.GetSetting("hostbackup", &have) != nil || have == nil {
+			_ = c.St.SetSetting("hostbackup", map[string]core.HostBackupConf{"cluster": {Enabled: true, Storage: "pbs-appliance", Time: "02:30", Keep: 30, Port: 22, User: "root"}})
+		}
+		last := lastHostRun(now)
+		_ = c.St.SetSetting("hostbackup-state", map[string]map[string]core.HostNodeState{"cluster": {
+			"pve1": {HostKey: "ssh-ed25519 AAAAdemo1", LastRun: last, LastOK: last, Duration: 4},
+			"pve2": {HostKey: "ssh-ed25519 AAAAdemo2", LastRun: last + 38, LastOK: last + 38, Duration: 4}}})
+		_ = c.St.SetSetting("hostbackup-sched", map[string]int64{"cluster": now.Unix()})
+	}
 	pve.AddJob(prox.BackupJob{ID: "backup-nightly", Schedule: "21:00", Storage: "pbs-appliance", Mode: "snapshot", All: 1, Exclude: "112,120,130", Comment: "Jede Nacht alles", NotesTemplate: "{{guestname}}", NotificationMode: "notification-system"})
 
 	var x struct{}
@@ -710,3 +741,12 @@ func (r *Runner) RemoveFile(_ context.Context, path string) error {
 func (r *Runner) Describe() string { return "Demo" }
 
 var _ = sort.Strings
+
+// lastHostRun is the newest seeded host backup (today 02:30 or yesterday).
+func lastHostRun(now time.Time) int64 {
+	t := time.Date(now.Year(), now.Month(), now.Day(), 2, 30, 4, 0, now.Location())
+	if t.After(now) {
+		t = t.AddDate(0, 0, -1)
+	}
+	return t.Unix()
+}

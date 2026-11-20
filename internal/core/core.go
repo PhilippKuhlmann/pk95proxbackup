@@ -97,6 +97,8 @@ type Core struct {
 	// UploadSelfBackup stores the encrypted configuration in a datastore (nil = with
 	// proxmox-backup-client; the demo sets a simulation).
 	UploadSelfBackup func(ctx context.Context, srv PBSServer, store string, data []byte) error
+	// NodeRunner replaces the SSH connection to a Proxmox VE node (demo, tests; nil = SSH).
+	NodeRunner func(cl PVECluster, node string) hostexec.Runner
 
 	mu      sync.Mutex
 	rotBusy map[string]bool
@@ -111,6 +113,7 @@ type Core struct {
 	update      updateRuntime
 	upgrades    upgradeRuntime
 	selfBackup  selfBackupRuntime
+	hostBackup  hostBackupRuntime
 	plan        planRuntime
 	unplug      unplugRuntime
 	usageAt     map[string]time.Time // last usage value written per datastore

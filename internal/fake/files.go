@@ -76,7 +76,13 @@ func (p *PVE) fileList(w http.ResponseWriter, volume, b64 string) {
 	}
 	dir := strings.TrimSuffix(string(raw), "/")
 	isVM := strings.Contains(volume, ":backup/vm/")
+	isHost := strings.Contains(volume, ":backup/host/")
 	prefix := "/root.pxar.didx"
+	tree := treeFor(volume)
+	if isHost && dir != "" {
+		arch, _, _ := strings.Cut(strings.TrimPrefix(dir, "/"), "/")
+		prefix, tree = "/"+arch, hostTree[strings.TrimSuffix(arch, ".pxar.didx")]
+	}
 	if isVM {
 		prefix = "/drive-scsi0.img.fidx/part/2"
 		time.Sleep(1500 * time.Millisecond) // the helper VM boots
@@ -97,12 +103,16 @@ func (p *PVE) fileList(w http.ResponseWriter, volume, b64 string) {
 		out = append(out, entry(dir+"/1", "1", "d", 0), entry(dir+"/2", "2", "d", 0))
 	case dir == "/drive-scsi0.img.fidx/part/1":
 		out = append(out, entry(dir+"/EFI", "EFI", "d", 0))
+	case dir == "" && isHost:
+		for _, a := range []string{"etc", "info", "root"} {
+			out = append(out, entry("/"+a+".pxar.didx", a+".pxar.didx", "v", 0))
+		}
 	case dir == "" && !isVM:
 		out = append(out, entry("/root.pxar.didx", "root.pxar.didx", "v", 0))
-	case strings.HasPrefix(dir, prefix):
+	case strings.HasPrefix(dir, prefix) && tree != nil:
 		rel := strings.TrimPrefix(strings.TrimPrefix(dir, prefix), "/")
 		seen := map[string]bool{}
-		for _, f := range treeFor(volume) {
+		for _, f := range tree {
 			if rel != "" && !strings.HasPrefix(f, rel+"/") {
 				continue
 			}

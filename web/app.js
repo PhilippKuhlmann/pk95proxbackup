@@ -434,6 +434,7 @@ const NAV = [
   { path: "/wiederherstellen", label: "Wiederherstellen", icon: "restore" },
   { path: "/restoretests", label: "Restore-Tests", icon: "shield" },
   { path: "/jobs", label: "Sicherungsjobs", icon: "calendar" },
+  { path: "/hosts", label: "Proxmox-VE-Hosts", icon: "server" },
   { path: "/aufgaben", label: "Aufgaben", icon: "list" },
   { head: "Speicher" },
   { path: "/datastores", label: "Datastores", icon: "database" },
@@ -827,6 +828,7 @@ PAGES["/"] = async (el, token) => {
     if (cov.bad) issue("warning", `${cov.bad} ${cov.bad === 1 ? "VM bzw. Container hat" : "VMs und Container haben"} eine Lücke in der Sicherungskette${cov.names?.length ? " (" + cov.names.join(", ") + (cov.bad > cov.names.length ? ", …" : "") + ")" : ""}`, "/sicherungen?luecken=1");
     for (const x of r.damaged || []) issue("error", `${x.damaged.length} ${x.damaged.length === 1 ? "beschädigte Sicherung" : "beschädigte Sicherungen"} auf ${x.server_name} / ${x.store} – betroffene Server neu sichern`, `/datastores?server=${x.server_id}`);
     for (const a of r.anomalies || []) issue("warning", `Auffällige Sicherung: ${a.type === "ct" ? "CT" : "VM"} ${a.guest_id}${a.name ? " " + a.name : ""} – ${a.text}`, "/sicherungen?auffaellig=1");
+    for (const h of r.host_issues || []) issue("warning", h.error ? `Host-Sicherung von ${h.node} fehlgeschlagen: ${h.error}` : `Host-Sicherung von ${h.node} zuletzt ${fmtAgo(h.last_ok)}`, `/hosts?cluster=${enc(h.cluster)}&node=${enc(h.node)}`);
     for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
     const sb = r.selfbackup || {};
     if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen/sicherung");
@@ -2895,9 +2897,11 @@ async function restoreGuest(el, token, g, source) {
 // want holds the folder the user opened ({stack}); passing it back for another backup opens the
 // same folder there. A folder that backup lacks shows its nearest existing parent, while want keeps
 // the folder, so the next backup that has it shows it again. Returns want.
-function fileBrowser(box, query, g, typ, want, time, ver) {
+function fileBrowser(box, query, g, typ, want, time, ver, title = "3. Dateien auswählen") {
   const carried = !!want;
-  if (!want) want = { stack: [{ name: typ === "ct" ? "Container" : "VM", path: "" }] };
+  if (!want) want = { stack: [{ name: typ === "ct" ? "Container" : typ === "host" ? "Host" : "VM", path: "" }] };
+  // Archives of a host backup get readable names.
+  const arch = (text) => { const a = text.replace(/\.pxar\.didx$/, ""); return typ === "host" ? ({ etc: "/etc", root: "/root", info: "Systeminfo" }[a] || a) : a; };
   const stack = want.stack.slice();
   const typeIcon = { d: "folder", v: "disk", f: "copy", l: "link", h: "link" };
   let fresh = true;
@@ -2907,7 +2911,7 @@ function fileBrowser(box, query, g, typ, want, time, ver) {
     const cur = stack[stack.length - 1];
     const missing = want.stack.slice(stack.length).map((s2) => s2.name);
     const note = missing.length ? `<div style="padding:0 16px 12px">${callout("yellow", `„${esc(missing.join("/"))}“ gibt es in diesem Stand nicht`, "Angezeigt wird der Ordner darüber. Ein anderer Stand links zeigt den Ordner wieder, wenn es ihn dort gibt.")}</div>` : "";
-    box.innerHTML = `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">3. Dateien auswählen</div>${time ? `<div class="muted small">Stand vom ${fmtTime(time, true)}</div>` : ""}</div></div>
+    box.innerHTML = `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">${esc(title)}</div>${time ? `<div class="muted small">Stand vom ${fmtTime(time, true)}</div>` : ""}</div></div>
       ${note}<div style="padding:0 16px 12px" class="flex small">${stack.map((s2, i) => i < stack.length - 1 ? `<a href="#" data-crumb="${i}">${esc(s2.name)}</a> /` : `<b>${esc(s2.name)}</b>`).join(" ")}</div>
       <div class="rows" data-entries><div class="row flex"><span class="spinner"></span> Sicherung wird geöffnet …${typ === "vm" && fresh ? " Bei VMs startet Proxmox dafür kurz eine Hilfs-VM, das dauert bis zu einer Minute." : ""}</div></div></div>`;
     qsa("[data-crumb]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); stack.length = +a.dataset.crumb + 1; go(); });
@@ -2926,7 +2930,7 @@ function fileBrowser(box, query, g, typ, want, time, ver) {
     qs("[data-entries]", box).innerHTML = (stack.length > 1 ? `<div class="row" style="cursor:pointer" data-up>${icon("back")} <span class="grow">Eine Ebene zurück</span></div>` : "") +
       (list.map((e, i) => {
         const folder = e.type !== "f" && e.type !== "l" && e.type !== "h";
-        const label = e.type === "v" ? (e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.text.replace(/\.pxar\.didx$/, "")) : e.text;
+        const label = e.type === "v" ? (e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : arch(e.text)) : e.text;
         return `<div class="row" style="align-items:center">${icon(typeIcon[e.type] || "copy")}
           <div class="grow">${folder ? `<a href="#" data-open="${i}"><b>${esc(label)}</b></a>` : `<span>${esc(label)}</span>`}
             <div class="t-sub">${e.type === "f" ? fmtBytes(e.size) + " · " : ""}${e.mtime ? fmtTime(e.mtime, true) : ""}</div></div>
@@ -2936,7 +2940,7 @@ function fileBrowser(box, query, g, typ, want, time, ver) {
     const up = qs("[data-up]", box);
     if (up) up.onclick = () => { stack.pop(); go(); };
     qsa("[data-ver]", box).forEach((b) => b.onclick = () => versionsDialog(list[+b.dataset.ver], cur.path, typ, ver, time));
-    qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.text.replace(/\.pxar\.didx$/, ""), path: e.filepath }); go(); });
+    qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.type === "v" ? arch(e.text) : e.text, path: e.filepath }); go(); });
   };
   show();
   if (!carried) box.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -3398,6 +3402,174 @@ function jobForm(x, j, done) {
       toast("Gespeichert."); done();
     },
   });
+}
+
+// ---------- Proxmox-VE-Hosts ----------
+// Proxmox VE does not back up its own nodes: the appliance logs in over SSH and runs
+// proxmox-backup-client there with the login of the PVE storage (see core/hostbackup.go).
+const sshAddCmd = (key) => `mkdir -p /root/.ssh && grep -qxF '${key}' /root/.ssh/authorized_keys 2>/dev/null || echo '${key}' >> /root/.ssh/authorized_keys`;
+const hostTarget = (t) => t ? `${esc(t.storage)} <span class="muted">→ ${t.server_name ? esc(t.server_name) : esc(t.server)} / ${esc(t.datastore)}${t.ns ? " / " + esc(t.ns) : ""}</span>` : '<span class="muted">kein Ziel</span>';
+
+function hostState(n, enabled) {
+  if (n.running) return pill("läuft …", "blue", true, true);
+  if (!n.online) return pill("offline");
+  if (n.state.last_error) return pill("Fehler", "rose", true);
+  if (!n.state.last_ok) return enabled ? pill("noch nie", "amber") : pill("aus");
+  if (Date.now() / 1000 - n.state.last_ok > 2 * 86400 && enabled) return pill("veraltet", "amber", true);
+  return pill("OK", "green", true);
+}
+
+PAGES["/hosts"] = async (el, token) => {
+  await loadConn();
+  const p = new URLSearchParams(location.search);
+  if (p.get("node")) return hostDetail(el, token, p.get("cluster"), p.get("node"));
+  const head = pageHead("Proxmox-VE-Hosts", "Proxmox VE sichert seine Knoten nicht selbst. Die Appliance sichert jede Nacht /etc samt /etc/pve, /root und alles für den Neuaufbau (Netzwerk, Platten, Pools, Pakete) auf den Backup-Server – von dort wandert es mit auf die Wechselplatten.");
+  if (!state.clusters.length) { el.innerHTML = head + empty("Kein Proxmox VE verbunden", "Zuerst unter Verbindungen eintragen.", `<a class="btn" href="/verbindungen" data-go>Verbindungen</a>`, "server"); return; }
+  el.innerHTML = head + `<div class="panel"><div class="row flex"><span class="spinner"></span> Lade …</div></div>`;
+  let data = null;
+  const draw = async () => {
+    const r = await GET("/api/hostbackup");
+    if (token !== pageToken) return;
+    data = r;
+    el.innerHTML = head + r.clusters.map((v) => hostPanel(v, r.ssh_key)).join("");
+    bindCopy(el);
+    const cl = (id) => data.clusters.find((v) => v.cluster === id);
+    qsa("[data-hsetup]", el).forEach((b) => b.onclick = () => hostForm(cl(b.dataset.hsetup), data.ssh_key, draw));
+    qsa("[data-hrun]", el).forEach((b) => b.onclick = () => run(b, async () => {
+      const [c, node] = b.dataset.hrun.split("|");
+      await POST(`/api/hostbackup/${enc(c)}/run`, { node });
+      await draw();
+    }, "Gestartet."));
+    qsa("[data-hcheck]", el).forEach((b) => b.onclick = () => run(b, async () => {
+      const [c, node] = b.dataset.hcheck.split("|");
+      const r2 = await POST(`/api/hostbackup/${enc(c)}/check`, { node });
+      if (r2.problems.length) toast(`${node}: ${r2.problems.join("; ")}`, "error");
+      else toast(`${node}: SSH funktioniert – ${r2.version.split(" ")[0]}`);
+      await draw();
+    }));
+    qsa("[data-hopen]", el).forEach((row) => row.onclick = (e) => {
+      if (e.target.closest("button, a")) return;
+      go(`/hosts?cluster=${enc(row.dataset.hc)}&node=${enc(row.dataset.hopen)}`);
+    });
+  };
+  try { await draw(); } catch (e) { if (token === pageToken) el.innerHTML = head + callout("red", "Nicht geladen", esc(e.message)); return; }
+  // While a backup runs, look again every few seconds.
+  every(4000, token, async () => { if (data && data.clusters.some((v) => v.nodes.some((n) => n.running))) await draw(); });
+};
+
+function hostPanel(v, key) {
+  const c = v.conf, t = v.target;
+  const admin = can("admin"), op = can("operator");
+  const head = `<div class="panel-head"><div><div class="panel-title">${esc(v.cluster_name)}</div>
+      ${v.configured || c.enabled ? `<div class="muted small">${c.enabled ? `Täglich um ${esc(c.time)} · nächste ${fmtTime(v.next, true)}` : "Ausgeschaltet"} · ${hostTarget(t)} · ${c.keep} Stände je Knoten</div>` : ""}</div>
+    <div class="actions">${op && c.enabled && v.nodes.length ? `<button class="btn gray" type="button" data-hrun="${esc(v.cluster)}|">${icon("play")} Alle jetzt sichern</button>` : ""}
+      ${admin ? `<button class="btn ${v.configured ? "gray" : ""}" type="button" data-hsetup="${esc(v.cluster)}">${icon(v.configured ? "cog" : "plus")} ${v.configured ? "Einstellungen" : "Einrichten"}</button>` : ""}</div></div>`;
+  if (v.error) return `<div class="panel">${head}${callout("red", "Nicht erreichbar", esc(v.error))}</div>`;
+  if (!v.configured && !c.enabled) {
+    return `<div class="panel">${head}${empty("Host-Sicherung noch nicht eingerichtet", `Die Appliance meldet sich dafür per SSH als root an den Knoten an und schreibt mit dem Zugang des Speichers ${t ? `„${esc(t.storage)}“` : ""} von Proxmox VE – ein vorhandener Schlüssel verschlüsselt auch diese Sicherung. Kein Kennwort verlässt den Knoten.`,
+      admin ? `<button class="btn" type="button" data-hsetup="${esc(v.cluster)}">${icon("plus")} Einrichten</button>` : "", "server")}</div>`;
+  }
+  const notes = [];
+  if (t && !t.server_id) notes.push(callout("yellow", "Ziel unbekannt", `Der Speicher „${esc(t.storage)}“ zeigt auf ${esc(t.server)}, den die Appliance nicht kennt. Die Sicherung läuft trotzdem; Stände und Aufräumen gibt es hier erst, wenn der Backup-Server unter Verbindungen eingetragen ist.`));
+  if (t && !t.encrypted && c.enabled) notes.push(callout("yellow", "Unverschlüsselt", `/etc/pve/priv enthält Kennwörter und Schlüssel von Proxmox VE. Sie liegen damit lesbar auf dem Backup-Server und den Wechselplatten. Für „${esc(t.storage)}“ unter <a href="/einstellungen/verschluesselung" data-go>Verschlüsselung</a> einen Schlüssel einschalten – die nächste Host-Sicherung nutzt ihn.`));
+  const sshFail = v.nodes.filter((n) => /SSH|Hostschlüssel|authenticate/i.test(n.state.last_error || ""));
+  if (sshFail.length) notes.push(callout("red", `SSH-Zugang zu ${sshFail.map((n) => n.node).join(", ")} fehlt`, `Auf ${sshFail.length === 1 ? "dem Knoten" : "jedem dieser Knoten"} in der Shell ausführen, danach „SSH prüfen“:${codeBlock(sshAddCmd(key))}`));
+  const rows = v.nodes.map((n) => {
+    const last = n.snapshots[0];
+    return `<tr style="cursor:pointer" data-hopen="${esc(n.node)}" data-hc="${esc(v.cluster)}">
+      <td data-l="Knoten"><div class="t-main">${icon("server", "sm")} ${esc(n.node)}</div><div class="t-sub mono">${esc(n.addr || "keine Adresse")}${n.addr && n.addr !== n.detected && n.detected ? ` <span class="muted">(Cluster: ${esc(n.detected)})</span>` : ""}</div></td>
+      <td data-l="Letzte Sicherung">${n.state.last_ok ? `<div>${esc(fmtAgo(n.state.last_ok))}</div><div class="t-sub">${fmtTime(n.state.last_ok, true)}${n.state.duration ? " · " + n.state.duration + " s" : ""}</div>` : '<span class="muted">—</span>'}
+        ${n.state.last_error ? `<div class="t-sub bad">${esc(n.state.last_error)}</div>` : ""}</td>
+      <td data-l="Stände" class="small">${n.snapshots.length ? `${n.snapshots.length} ${n.snapshots.length === 1 ? "Stand" : "Stände"}<div class="t-sub">neuester ${fmtBytes(last.size)}${last.encrypted ? " · verschlüsselt" : ""}</div>` : '<span class="muted">keine</span>'}</td>
+      <td data-l="Status">${hostState(n, c.enabled)}</td>
+      <td class="act"><div class="row-actions">
+        ${admin ? `<button class="btn gray sm" type="button" data-hcheck="${esc(v.cluster)}|${esc(n.node)}" title="Anmeldung per SSH und alles Nötige auf dem Knoten prüfen">${icon("terminal")} SSH prüfen</button>` : ""}
+        ${op && n.online && !n.running ? `<button class="btn gray sm" type="button" data-hrun="${esc(v.cluster)}|${esc(n.node)}">${icon("play")} Jetzt</button>` : ""}
+        <a class="ib" href="/hosts?cluster=${enc(v.cluster)}&node=${enc(n.node)}" data-go title="Stände und Dateien" aria-label="Stände und Dateien von ${esc(n.node)}">${icon("arrow-right")}</a></div></td></tr>`;
+  }).join("");
+  return `<div class="panel flush">${head}${notes.length ? `<div style="padding:0 16px 12px;display:grid;gap:10px">${notes.join("")}</div>` : ""}
+    <div class="table-wrap"><table class="resp"><thead><tr><th>Knoten</th><th>Letzte Sicherung</th><th>Stände</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+function hostForm(v, key, done) {
+  const c = v.conf;
+  const storages = v.storages.filter((s) => !s.disabled || s.storage === c.storage);
+  formDialog({
+    title: `Host-Sicherung für ${v.cluster_name}`, ic: "server", grid: "cols-3",
+    text: "Jede Nacht meldet sich die Appliance per SSH als root an jedem Knoten an und ruft dort proxmox-backup-client auf – mit dem Zugang, den Proxmox VE für den gewählten Speicher hat.",
+    fields: [
+      { name: "enabled", label: "Host-Sicherung einschalten", type: "checkbox", value: v.configured ? c.enabled : true, wide: true },
+      { name: "storage", label: "Ziel (Speicher in Proxmox VE)", type: "select", value: c.storage, wide: true,
+        options: storages.length ? storages.map((s) => [s.storage, `${s.storage} – ${s.server_name || s.server} / ${s.datastore}${s.ns ? " / " + s.ns : ""}${s.encrypted ? " · verschlüsselt" : ""}`]) : [["", "kein Backup-Server-Speicher in Proxmox VE"]],
+        hint: "Am besten derselbe Speicher wie für die Gäste: dann gehen die Host-Sicherungen mit auf die Wechselplatten." },
+      { name: "time", label: "Täglich um", value: c.time, mono: true, placeholder: "02:30" },
+      { name: "keep", label: "Stände je Knoten", type: "number", min: 1, value: c.keep, hint: "Ältere löscht die Appliance." },
+      { name: "port", label: "SSH-Port", type: "number", min: 1, value: c.port || 22, hint: "Als root – nur root liest /etc/pve/priv." },
+      { type: "html", name: "sshsep", wide: true, html: `<div class="section-title" style="margin-top:6px">SSH-Zugang zu den Knoten</div>
+        <div class="hint">Auf jedem Knoten einmal in der Shell ausführen (Rechenzentrum → Knoten → Shell). Der Hostschlüssel wird beim ersten Kontakt gemerkt.</div>${codeBlock(sshAddCmd(key))}` },
+      ...v.nodes.map((n) => ({ name: "addr_" + n.node, label: `SSH-Adresse von ${n.node}`, value: (c.addrs || {})[n.node] || "", mono: true, wide: true, placeholder: n.detected || "Adresse oder Name", hint: n.detected ? `Leer = ${n.detected} (Adresse im Cluster)` : "" })),
+    ],
+    onMount: (d) => bindCopy(d),
+    submit: async (vals) => {
+      const addrs = {};
+      for (const n of v.nodes) if (vals["addr_" + n.node]) addrs[n.node] = vals["addr_" + n.node];
+      await PUT(`/api/hostbackup/${enc(v.cluster)}`, { enabled: !!vals.enabled, storage: vals.storage, time: vals.time, keep: Number(vals.keep) || 0, port: Number(vals.port) || 22, user: "root", addrs });
+      toast(vals.enabled && !c.enabled ? "Eingeschaltet – die erste Sicherung läuft gleich." : "Gespeichert.");
+      done();
+    },
+  });
+}
+
+async function hostDetail(el, token, clusterID, node) {
+  el.innerHTML = pageHead(`Host ${esc(node)}`, "Lade …", "", ["/hosts", "Alle Hosts"]);
+  const r = await GET("/api/hostbackup");
+  if (token !== pageToken) return;
+  const v = r.clusters.find((x) => x.cluster === clusterID);
+  const n = v && v.nodes.find((x) => x.node === node);
+  if (!n) { el.innerHTML = pageHead(`Host ${esc(node)}`, "", "", ["/hosts", "Alle Hosts"]) + empty("Knoten nicht gefunden", "", "", "server"); return; }
+  const t = v.target;
+  let sel = n.snapshots[0]?.time || null, browse = null;
+  const queryAt = (tm) => `cluster=${enc(v.cluster)}&pbs=${enc(t.server_id)}&store=${enc(t.datastore)}&storage=${enc(t.storage)}&type=host&bid=${enc(node)}&time=${tm}`;
+  const ver = {
+    times: () => n.snapshots.map((s) => s.time), queryAt,
+    pick: (tm) => { const x = qs(`[name="snap"][value="${tm}"]`, el); if (x) { x.checked = true; sel = tm; drawRight(); } },
+  };
+  el.innerHTML = pageHead(`Host ${esc(node)}`, `${esc(v.cluster_name)} · ${hostTarget(t)}`,
+    can("operator") && n.online ? `<button class="btn gray" type="button" data-hrun>${icon("play")} Jetzt sichern</button>` : "", ["/hosts", "Alle Hosts"]) +
+    (n.state.last_error ? callout("red", "Letzte Sicherung fehlgeschlagen", esc(n.state.last_error)) : "") +
+    `<div class="grid grid-restore">
+      <div class="panel flush"><div class="panel-head"><div class="panel-title">Stände</div></div>
+        ${!t || !t.server_id ? `<div style="padding:0 16px 16px">${empty("Stände hier nicht sichtbar", "Der Backup-Server des Ziels ist nicht unter Verbindungen eingetragen.", "", "database")}</div>` :
+        `<div class="rows" style="max-height:62vh;overflow:auto">${n.snapshots.map((s, i) => `
+          <label class="row" style="cursor:pointer;align-items:center"><input type="radio" name="snap" value="${s.time}" ${i === 0 ? "checked" : ""} style="accent-color:var(--c600)">
+            <div class="grow"><div class="title"><b>${fmtTime(s.time, true)}</b> ${i === 0 ? pill("neueste", "blue") : ""}</div><div class="t-sub">${fmtAgo(s.time)} · ${fmtBytes(s.size)}</div></div>
+            ${s.protected ? pill("geschützt", "blue") : ""} ${s.encrypted ? pill("verschlüsselt", "green") : ""}</label>`).join("") || `<div class="row muted">Noch keine Sicherung.</div>`}</div>`}</div>
+      <div data-right></div></div>`;
+  const runBtn = qs("[data-hrun]", el);
+  if (runBtn) runBtn.onclick = () => run(runBtn, async () => { await POST(`/api/hostbackup/${enc(v.cluster)}/run`, { node }); go("/hosts"); }, "Gestartet.");
+  qsa('[name="snap"]', el).forEach((x) => x.onchange = () => { sel = +x.value; drawRight(); });
+  const drawRight = () => {
+    const right = qs("[data-right]", el);
+    const stamp = sel ? new Date(sel * 1000).toISOString().replace(/\.\d+Z$/, "Z") : "<zeit>";
+    const repo = t ? `${t.user}@${t.server.includes(":") ? "[" + t.server + "]" : t.server}:${t.datastore}` : "";
+    const opts = `${t && t.ns ? ` --ns '${t.ns}'` : ""}${t && t.encrypted ? ` --keyfile /etc/pve/priv/storage/${t.storage}.enc` : ""}`;
+    const cmds = t ? [`export PBS_REPOSITORY='${repo}'`, `export PBS_PASSWORD="$(cat /etc/pve/priv/storage/${t.storage}.pw)"`,
+      ...["etc", "root", "info"].map((a) => `proxmox-backup-client restore host/${node}/${stamp} ${a}.pxar /root/wiederherstellung/${a}${opts}`)].join("\n") : "";
+    right.innerHTML = `<div data-browser></div>
+      <div class="panel"><div class="panel-head"><div class="panel-title">Knoten neu aufbauen</div></div>
+        <ol class="small" style="margin:0 0 12px;padding-left:20px;line-height:1.6">
+          <li>Proxmox VE in derselben Version (Systeminfo → pveversion.txt) mit gleichem Namen und gleicher IP installieren.</li>
+          <li>/etc/network/interfaces und /etc/hosts übernehmen, ZFS-Pools mit <span class="mono">zpool import -f</span> einbinden.</li>
+          <li>Einzelner Knoten: Gäste aus /etc/pve/qemu-server und /etc/pve/lxc zurückkopieren, storage.cfg übernehmen. Im Cluster: mit <span class="mono">pvecm add</span> wieder aufnehmen – /etc/pve kommt von den anderen Knoten.</li>
+          <li>Ganzer Cluster verloren: config.db aus Systeminfo nach /var/lib/pve-cluster/ (bei gestopptem pve-cluster).</li></ol>
+        ${t ? `<div class="hint" style="margin-bottom:6px">Alles auf einmal zurückholen – auf einem anderen Knoten des Clusters (er kennt Kennwort${t.encrypted ? " und Schlüssel" : ""}):</div>${codeBlock(cmds)}
+        ${t.encrypted ? `<p class="muted small">Auf einem neu installierten Knoten fehlt der Schlüssel: Datei oder Papierschlüssel unter <a href="/einstellungen/verschluesselung" data-go>Verschlüsselung</a>.</p>` : ""}` : ""}</div>`;
+    bindCopy(right);
+    // A wanted folder keeps the page from scrolling down to the browser.
+    if (sel && t && t.server_id && can("admin")) browse = fileBrowser(qs("[data-browser]", right), queryAt(sel), null, "host", browse || { stack: [{ name: "Host", path: "" }] }, sel, ver, "Dateien");
+    else qs("[data-browser]", right).innerHTML = can("admin") ? "" : `<div class="panel">${callout("", "Nur für Administratoren", "Host-Sicherungen enthalten Kennwörter von Proxmox VE.")}</div>`;
+  };
+  drawRight();
 }
 
 // ---------- Aufgaben ----------

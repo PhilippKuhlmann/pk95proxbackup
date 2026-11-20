@@ -45,3 +45,12 @@ func (c *Core) SetUpgradingForTest(id string, on bool) {
 		c.upgrades.following.Delete(id)
 	}
 }
+
+// ScheduleHostBackupsForTest exposes scheduleHostBackups.
+func (c *Core) ScheduleHostBackupsForTest(now time.Time) { c.scheduleHostBackups(now) }
+
+// HostBackupScriptForTest exposes hostBackupScript.
+var HostBackupScriptForTest = hostBackupScript
+
+// HostCheckScriptForTest exposes hostCheckScript.
+var HostCheckScriptForTest = hostCheckScript

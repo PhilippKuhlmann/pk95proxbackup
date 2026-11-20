@@ -1,6 +1,7 @@
 package fake
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -289,6 +290,12 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out := []prox.Node{}
 		for _, n := range p.nodes {
 			out = append(out, prox.Node{Node: n, Status: "online", CPU: 0.12, MaxCPU: 16, Mem: 22 * gib, MaxMem: 64 * gib, Uptime: 1200000})
+		}
+		data(w, out)
+	case path == "/cluster/status":
+		out := []prox.ClusterMember{{Type: "cluster", Name: "zuhause"}}
+		for i, n := range p.nodes {
+			out = append(out, prox.ClusterMember{Type: "node", Name: n, IP: fmt.Sprintf("192.168.10.%d", 11+i), Online: 1, Local: map[bool]int{true: 1}[i == 0]})
 		}
 		data(w, out)
 	case path == "/cluster/resources":

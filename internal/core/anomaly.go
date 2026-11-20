@@ -195,7 +195,7 @@ func (c *Core) scanServerAnomalies(ctx context.Context, srv PBSServer, now time.
 			continue // read again next time
 		}
 		st.Seen[t.UPID] = now.Unix()
-		if !ok {
+		if !ok || bs.Type != "vm" && bs.Type != "ct" { // host backups (configuration) are no guests
 			continue
 		}
 		store, _, _ := strings.Cut(t.WorkerID, ":")

@@ -25,7 +25,8 @@ var eventRules = []struct {
 	}},
 	{"copies", func(s, t string) bool { return strings.HasPrefix(t, "Kopierjob") }},
 	{"backups", func(s, t string) bool {
-		return strings.HasPrefix(t, "Datensicherung") || strings.HasPrefix(t, "Sicherung fehlgeschlagen") || strings.HasPrefix(t, "Konfiguration der Appliance")
+		return strings.HasPrefix(t, "Datensicherung") || strings.HasPrefix(t, "Sicherung fehlgeschlagen") || strings.HasPrefix(t, "Konfiguration der Appliance") ||
+			strings.HasPrefix(t, "Host-Sicherung")
 	}},
 	{"reach", func(s, t string) bool {
 		return strings.Contains(t, "nicht erreichbar") || strings.Contains(t, "wieder erreichbar") || strings.Contains(t, "eingehängt")

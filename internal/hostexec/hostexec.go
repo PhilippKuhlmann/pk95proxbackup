@@ -98,6 +98,7 @@ type SSH struct {
 	Signer  ssh.Signer
 	HostKey string // known host key (authorized_keys format); empty = learn on first use
 	OnLearn func(key string)
+	Timeout time.Duration // per command; 0 = two minutes
 	mu      sync.Mutex
 	learned string
 }
@@ -177,12 +178,17 @@ func (s *SSH) exec(ctx context.Context, command string, stdin []byte) (string, e
 	}
 	done := make(chan error, 1)
 	go func() { done <- sess.Run("LC_ALL=C " + command) }()
+	limit := s.Timeout
+	if limit <= 0 {
+		limit = 2 * time.Minute
+	}
 	select {
 	case err = <-done:
 	case <-ctx.Done():
 		_ = sess.Signal(ssh.SIGKILL)
 		return out.String(), ctx.Err()
-	case <-time.After(2 * time.Minute):
+	case <-time.After(limit):
+		_ = sess.Signal(ssh.SIGKILL)
 		return out.String(), errors.New("Zeitüberschreitung")
 	}
 	if err != nil {

@@ -782,11 +782,17 @@ func (s *Server) resolveVolume(w http.ResponseWriter, r *http.Request) (*backupV
 	}
 	t, _ := strconv.ParseInt(q.Get("time"), 10, 64)
 	typ, id := q.Get("type"), q.Get("bid")
-	if (typ != "vm" && typ != "ct") || id == "" || t == 0 {
+	if (typ != "vm" && typ != "ct" && typ != "host") || id == "" || t == 0 {
 		writeErr(w, http.StatusBadRequest, "Sicherung nicht angegeben.")
 		return nil, false
 	}
-	storage, err := s.ensurePVEStorage(r.Context(), pve, cl, srv, q.Get("store"), s.snapshotKey(r.Context(), srv, q.Get("store"), typ, id, t))
+	var storage string
+	if typ == "host" {
+		// A host backup is read through the storage that wrote it (its namespace and key).
+		storage, err = s.hostStorage(r.Context(), pve, srv, q.Get("store"), q.Get("storage"))
+	} else {
+		storage, err = s.ensurePVEStorage(r.Context(), pve, cl, srv, q.Get("store"), s.snapshotKey(r.Context(), srv, q.Get("store"), typ, id, t))
+	}
 	if err != nil {
 		fail(w, storageErr(err, q.Get("store"), cl.Name))
 		return nil, false
@@ -811,6 +817,22 @@ func (s *Server) resolveVolume(w http.ResponseWriter, r *http.Request) (*backupV
 	}
 	return &backupVolume{pve: pve, cluster: cl, node: node, storage: storage, typ: typ, id: id, time: t,
 		volume: fmt.Sprintf("%s:backup/%s/%s/%s", storage, typ, id, time.Unix(t, 0).UTC().Format("2006-01-02T15:04:05Z"))}, true
+}
+
+// hostStorage checks that a PBS storage of the cluster points to the datastore.
+func (s *Server) hostStorage(ctx context.Context, pve *prox.PVE, srv core.PBSServer, store, name string) (string, error) {
+	storages, err := pve.Storages(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, st := range storages {
+		if st.Storage == name && st.Type == "pbs" && st.Datastore == store {
+			if m, ok := s.matchServer(st); ok && m.ID == srv.ID {
+				return st.Storage, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("Speicher „%s“ zeigt nicht auf %s", name, store)
 }
 
 var b64PathRe = regexp.MustCompile(`^[A-Za-z0-9+/=_-]*$`)

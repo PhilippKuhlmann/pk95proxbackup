@@ -37,18 +37,19 @@ var routeRole = map[string]string{
 	"POST /api/account/totp/recovery": "viewer",
 	"POST /api/restoretests/schedule": "viewer", // only computes dates
 	// day-to-day work
-	"POST /api/health/check":            "operator",
-	"POST /api/pbs/{id}/health":         "operator",
-	"POST /api/guests/backup":           "operator",
-	"POST /api/restore":                 "operator",
-	"POST /api/pve/{id}/jobs/{job}/run": "operator",
-	"POST /api/pbs/{id}/sync/{job}/run": "operator",
-	"POST /api/restoretests/{id}/run":   "operator",
-	"POST /api/restoretests/cancel":     "operator",
-	"POST /api/anomalies/{id}/ack":      "operator",
-	"POST /api/archives/{id}/check":     "operator",
-	"POST /api/archives/{id}/eject":     "operator",
-	"POST /api/shares/{id}/{action}":    "operator",
+	"POST /api/health/check":             "operator",
+	"POST /api/pbs/{id}/health":          "operator",
+	"POST /api/guests/backup":            "operator",
+	"POST /api/restore":                  "operator",
+	"POST /api/pve/{id}/jobs/{job}/run":  "operator",
+	"POST /api/pbs/{id}/sync/{job}/run":  "operator",
+	"POST /api/restoretests/{id}/run":    "operator",
+	"POST /api/restoretests/cancel":      "operator",
+	"POST /api/anomalies/{id}/ack":       "operator",
+	"POST /api/hostbackup/{cluster}/run": "operator",
+	"POST /api/archives/{id}/check":      "operator",
+	"POST /api/archives/{id}/eject":      "operator",
+	"POST /api/shares/{id}/{action}":     "operator",
 	// gc, verify, mount, unmount; rotation: run, eject (rebuild formats: admin, see auth)
 	"POST /api/pbs/{id}/datastores/{store}/{action}": "operator",
 	"POST /api/rotations/{id}/disks/{key}/{action}":  "operator",
@@ -147,6 +148,10 @@ func (s *Server) auth(pattern string, next http.HandlerFunc) http.Handler {
 		if pattern == "POST /api/rotations/{id}/disks/{key}/{action}" && (r.PathValue("action") == "rebuild" || r.PathValue("action") == "adopt") {
 			need = "admin"
 		}
+		// Host backups hold the passwords of Proxmox VE (/etc/pve/priv): administrators only.
+		if (pattern == "GET /api/restore/files" || pattern == "GET /api/restore/download") && r.URL.Query().Get("type") == "host" {
+			need = "admin"
+		}
 		if roleRank[role] < roleRank[need] {
 			s.audit(r, u.Username, pattern, http.StatusForbidden)
 			writeErr(w, http.StatusForbidden, "Dafür fehlen die Rechte – angemeldet als „"+roleNames[role]+"“, nötig ist „"+roleNames[need]+"“.")
@@ -175,7 +180,9 @@ var actionNames = map[string]string{
 	"PUT /api/update": "Aktualisierung eingestellt", "POST /api/update/install": "Aktualisierung installiert", "PUT /api/update/auto": "Automatische Aktualisierung eingestellt", "PUT /api/settings/channels": "Benachrichtigungen je Kanal eingestellt", "POST /api/pbs/{id}/datastores/{store}/grow": "Datastore vergrößert",
 	"POST /api/pbs/{id}/packages": "Paketlisten aktualisiert", "POST /api/pbs/{id}/upgrade": "Systemupdates gestartet", "POST /api/pbs/{id}/reboot": "Backup-Server neu gestartet", "POST /api/anomalies/{id}/ack": "Auffällige Sicherung als geprüft markiert",
 	"PUT /api/pbs/{id}/autoupdate": "Automatische Updates eingestellt", "POST /api/pbs/{id}/ssh": "SSH-Zugang eingerichtet",
-	"PUT /api/selfbackup": "Sicherung der Appliance eingestellt", "POST /api/selfbackup/run": "Sicherung der Appliance gestartet",
+	"PUT /api/hostbackup/{cluster}": "Host-Sicherung eingestellt", "POST /api/hostbackup/{cluster}/run": "Host-Sicherung gestartet",
+	"POST /api/hostbackup/{cluster}/check": "SSH-Zugang zu Proxmox VE geprüft",
+	"PUT /api/selfbackup":                  "Sicherung der Appliance eingestellt", "POST /api/selfbackup/run": "Sicherung der Appliance gestartet",
 	"GET /api/selfbackup/download": "Sicherung der Appliance heruntergeladen", "POST /api/selfbackup/restore": "Appliance wiederhergestellt",
 	"POST /api/pbs": "Backup-Server verbunden", "PUT /api/pbs/{id}": "Backup-Server geändert", "DELETE /api/pbs/{id}": "Backup-Server entfernt",
 	"POST /api/pbs/{id}/datastores": "Datastore angelegt", "PUT /api/pbs/{id}/datastores/{store}": "Datastore geändert",
