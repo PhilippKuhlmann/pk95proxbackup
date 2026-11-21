@@ -5,6 +5,7 @@ import "testing"
 func TestChannelWants(t *testing.T) {
 	s := Settings{MinSeverity: "warning", Channels: map[string]ChannelPrefs{
 		ChannelTelegram: {MinSeverity: "critical", Off: []string{"changes", "report"}},
+		ChannelHook:     {MinSeverity: "info", Off: []string{"updates"}, Levels: map[string]string{"updates": "problems", "reach": "off", "backups": "all"}},
 	}}
 	for _, c := range []struct {
 		ch   string
@@ -20,6 +21,10 @@ func TestChannelWants(t *testing.T) {
 		{ChannelMail, Message{Severity: "info", Category: "report"}, true},      // the report ignores the level
 		{ChannelTelegram, Message{Severity: "info", Category: "report"}, false}, // but not the switch
 		{ChannelTelegram, Message{Severity: "info"}, true},                      // test messages always
+		{ChannelHook, Message{Severity: "info", Category: "updates"}, false},    // only problems (levels win over off)
+		{ChannelHook, Message{Severity: "warning", Category: "updates"}, true},
+		{ChannelHook, Message{Severity: "critical", Category: "reach"}, false}, // off: not even errors
+		{ChannelHook, Message{Severity: "info", Category: "backups"}, true},
 	} {
 		if got := s.ChannelWants(c.ch, c.m); got != c.want {
 			t.Errorf("%s %+v: got %v", c.ch, c.m, got)

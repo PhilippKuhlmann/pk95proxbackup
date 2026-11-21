@@ -33,10 +33,29 @@ const (
 	ChannelHook     = "hook"
 )
 
+// Levels of a category in one channel.
+const (
+	LevelAll      = "all"      // every message of this kind
+	LevelProblems = "problems" // warnings and errors only
+	LevelOff      = "off"      // nothing
+)
+
 // ChannelPrefs say which messages one channel gets.
 type ChannelPrefs struct {
-	MinSeverity string   `json:"min_severity,omitempty"` // "" = the general setting
-	Off         []string `json:"off,omitempty"`          // categories switched off
+	MinSeverity string            `json:"min_severity,omitempty"` // "" = the general setting
+	Off         []string          `json:"off,omitempty"`          // categories switched off (older settings)
+	Levels      map[string]string `json:"levels,omitempty"`       // category → all, problems, off
+}
+
+// Level is the level of a category in this channel.
+func (p ChannelPrefs) Level(cat string) string {
+	if l := p.Levels[cat]; l == LevelAll || l == LevelProblems || l == LevelOff {
+		return l
+	}
+	if slices.Contains(p.Off, cat) {
+		return LevelOff
+	}
+	return LevelAll
 }
 
 // ChannelWants reports whether a channel gets a message. Messages without category (test
@@ -46,8 +65,13 @@ func (s Settings) ChannelWants(ch string, m Message) bool {
 		return true
 	}
 	p := s.Channels[ch]
-	if slices.Contains(p.Off, m.Category) {
+	switch p.Level(m.Category) {
+	case LevelOff:
 		return false
+	case LevelProblems:
+		if rank[m.Severity] < rank["warning"] {
+			return false
+		}
 	}
 	if m.Category == "report" {
 		return true

@@ -100,7 +100,7 @@ footer { margin-top:24px; padding:16px 28px; border-top:1px solid var(--line); c
 <li>Bei Erpressung zuerst: Netzwerk trennen, nichts löschen, nichts bezahlen, Ansprechpartner anrufen.</li>
 <li>Neue Hardware, Proxmox VE installieren, dann die Appliance wie oben anlegen.</li>
 <li>Eine Kopie außer Haus holen: Wechsel- oder Archiv-Platte (Abschnitt 7){{range .H.Servers}}{{if not .Local}}, Backup-Server „{{.Name}}“{{end}}{{end}}. Platte anstecken und unter Wechselplatten → „Fremde Platte einlesen“ einbinden.</li>
-{{if .H.Keys}}<li>Verschlüsselte Sicherungen brauchen ihren Schlüssel: Papierschlüssel einscannen (Einstellungen → Verschlüsselung → Importieren) und den Fingerabdruck mit Abschnitt 8 vergleichen.</li>{{end}}
+{{if .H.Keys}}<li>Verschlüsselte Sicherungen brauchen ihren Schlüssel: Papierschlüssel einscannen (Schutz → Verschlüsselung → „Schlüssel importieren“) und den Fingerabdruck mit Abschnitt 8 vergleichen.</li>{{end}}
 <li>Server in der Reihenfolge aus Abschnitt 1 zurückspielen; vor dem Einspielen prüfen, ob die Sicherung vor dem Befall liegt (Übersicht → Auffällige Sicherungen).</li></ol></div>
 </section>
 

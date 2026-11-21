@@ -151,7 +151,7 @@ func (c *Core) RunSelfAutoUpdate(ctx context.Context, now time.Time) {
 	}
 	r.Phase, r.Busy, r.Postponed, r.Installed = "done", nil, "", info.Latest
 	save()
-	c.Event("info", "Appliance", "Update auf "+info.Latest+" wird automatisch installiert",
+	c.Record("info", "Appliance", "Update auf "+info.Latest+" wird automatisch installiert",
 		"Geplantes Update (Einstellungen → Aktualisierung). Die Appliance startet dabei neu, Sicherungen in Proxmox VE laufen weiter.")
 	if err := c.InstallUpdate(); err != nil {
 		c.Event("warning", "Appliance", "Automatisches Update auf "+info.Latest+" nicht gestartet", err.Error())

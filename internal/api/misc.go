@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -200,13 +199,13 @@ func (s *Server) putChannels(w http.ResponseWriter, r *http.Request) {
 		if p.MinSeverity != "" && p.MinSeverity != "info" && p.MinSeverity != "warning" && p.MinSeverity != "critical" {
 			p.MinSeverity = ""
 		}
-		var off []string
-		for _, k := range p.Off {
-			if known[k] && !slices.Contains(off, k) {
-				off = append(off, k)
+		levels := map[string]string{}
+		for k := range known {
+			if l := p.Level(k); l != notify.LevelAll {
+				levels[k] = l
 			}
 		}
-		p.Off = off
+		p.Off, p.Levels = nil, levels
 		out[ch] = p
 	}
 	n := s.C.NotifySettings()

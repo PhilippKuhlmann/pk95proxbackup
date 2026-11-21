@@ -517,7 +517,7 @@ func TestDatastoreSchedules(t *testing.T) {
 func TestNotifyChannels(t *testing.T) {
 	cl := login(t)
 	body := map[string]any{"channels": map[string]any{
-		"telegram": map[string]any{"min_severity": "critical", "off": []string{"changes", "gibtsnicht", "changes"}},
+		"telegram": map[string]any{"min_severity": "critical", "off": []string{"changes", "gibtsnicht", "changes"}, "levels": map[string]string{"updates": "problems", "usb": "quatsch"}},
 		"fax":      map[string]any{"off": []string{"backups"}},
 	}}
 	if code, out := cl.do("PUT", "/api/settings/channels", body, true); code != 200 {
@@ -530,7 +530,7 @@ func TestNotifyChannels(t *testing.T) {
 	n := out["notify"].(map[string]any)
 	ch, _ := n["channels"].(map[string]any)
 	tg, _ := ch["telegram"].(map[string]any)
-	if tg == nil || tg["min_severity"] != "critical" || fmt.Sprint(tg["off"]) != "[changes]" || ch["fax"] != nil {
+	if tg == nil || tg["min_severity"] != "critical" || fmt.Sprint(tg["levels"]) != "map[changes:off updates:problems]" || tg["off"] != nil || ch["fax"] != nil {
 		t.Fatalf("channels after saving the settings: %v", ch)
 	}
 	if cats, _ := out["categories"].([]any); len(cats) < 10 {

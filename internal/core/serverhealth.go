@@ -143,6 +143,12 @@ func (c *Core) scheduleServerHealth(now time.Time) {
 
 // CheckServerHealth reads the state of one Backup Server now.
 func (c *Core) CheckServerHealth(ctx context.Context, id string) (ServerHealth, error) {
+	return c.checkServerHealth(ctx, id, true)
+}
+
+// checkServerHealth reads the state; announce reports a new need for a restart (not after an
+// upgrade of the appliance itself, whose message says it already).
+func (c *Core) checkServerHealth(ctx context.Context, id string, announce bool) (ServerHealth, error) {
 	pbs, srv, err := c.PBS(id)
 	if err != nil {
 		return ServerHealth{}, err
@@ -165,12 +171,12 @@ func (c *Core) CheckServerHealth(ctx context.Context, id string) (ServerHealth, 
 	}
 	_ = c.St.SetSetting("srvhealth:"+id, e)
 	// Report a new need for a restart or reboot once.
-	if e.RestartNeeded && !old.RestartNeeded {
+	if e.RestartNeeded && !old.RestartNeeded && announce {
 		c.EventDetails("warning", srv.Name, "Dienste laufen noch mit der alten Version",
 			"Installiert ist Proxmox Backup Server "+e.Installed+", die Dienste laufen aber noch mit "+e.Running+". Unter Verbindungen „Dienste neu laden“ wählen.",
 			&notify.Details{Status: "warning", Link: "/verbindungen"})
 	}
-	if e.RebootNeeded && !old.RebootNeeded {
+	if e.RebootNeeded && !old.RebootNeeded && announce {
 		c.EventDetails("warning", srv.Name, "Neustart nötig: neuer Kernel installiert",
 			"Installiert ist der Kernel "+e.NewestKernel+", es läuft noch "+e.Kernel+". Bitte den Backup-Server bei Gelegenheit neu starten (nicht während einer Sicherung).",
 			&notify.Details{Status: "warning", Link: "/verbindungen"})
@@ -181,6 +187,10 @@ func (c *Core) CheckServerHealth(ctx context.Context, id string) (ServerHealth, 
 // ReloadServerServices reloads the PBS services gracefully (new version after an upgrade,
 // handles of pulled disks let go). Running tasks finish in the old processes.
 func (c *Core) ReloadServerServices(ctx context.Context, id string) (ServerHealth, error) {
+	return c.reloadServerServices(ctx, id, true)
+}
+
+func (c *Core) reloadServerServices(ctx context.Context, id string, announce bool) (ServerHealth, error) {
 	pbs, srv, err := c.PBS(id)
 	if err != nil {
 		return ServerHealth{}, err
@@ -190,7 +200,11 @@ func (c *Core) ReloadServerServices(ctx context.Context, id string) (ServerHealt
 			return ServerHealth{}, err
 		}
 	}
-	c.Event("info", srv.Name, "Dienste neu geladen", "proxmox-backup und proxmox-backup-proxy wurden neu geladen; laufende Aufgaben arbeiten im alten Prozess zu Ende.")
+	if announce {
+		c.Event("info", srv.Name, "Dienste neu geladen", "proxmox-backup und proxmox-backup-proxy wurden neu geladen; laufende Aufgaben arbeiten im alten Prozess zu Ende.")
+	} else {
+		c.Record("info", srv.Name, "Dienste neu geladen", "proxmox-backup und proxmox-backup-proxy wurden neu geladen.")
+	}
 	time.Sleep(3 * time.Second)
 	return c.CheckServerHealth(ctx, id)
 }

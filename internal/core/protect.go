@@ -568,8 +568,8 @@ func (c *Core) judgeDeletions(ctx context.Context, srv PBSServer, store string, 
 	if len(vanished) > 0 {
 		body += fmt.Sprintf(", von %d Servern alle", len(vanished))
 	}
-	body += ". Falls das niemand absichtlich getan hat: Zugänge zu Proxmox VE und zum Backup-Server prüfen, Passwörter ändern und den Löschschutz einschalten (Einstellungen → Löschschutz). Wechsel- und Archiv-Platten sind nicht betroffen, solange sie nicht angesteckt werden."
-	c.EventDetails("critical", srv.Name, title, body, &notify.Details{Status: "error", Link: "/einstellungen/loeschschutz",
+	body += ". Falls das niemand absichtlich getan hat: Zugänge zu Proxmox VE und zum Backup-Server prüfen, Passwörter ändern und den Löschschutz einschalten (Schutz → Löschschutz). Wechsel- und Archiv-Platten sind nicht betroffen, solange sie nicht angesteckt werden."
+	c.EventDetails("critical", srv.Name, title, body, &notify.Details{Status: "error", Link: "/loeschschutz",
 		Facts: []notify.Fact{{Label: "Datastore", Value: srv.Name + " / " + store}, {Label: "Gelöscht", Value: fmt.Sprintf("%d von %d", removed, total)}},
 		Log:   lines})
 }

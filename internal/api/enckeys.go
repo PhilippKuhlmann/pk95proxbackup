@@ -175,7 +175,7 @@ ol { padding-left:20px; } button { font:inherit; padding:8px 14px; border:0; bor
 <div class="grid"><div class="qr">{{.QR}}</div><pre>{{.Paper}}</pre></div>
 <h2 style="font-size:16px;margin:22px 0 6px">Wiederherstellen mit diesem Zettel</h2>
 <ol>
-<li>In PK95 ProxBackup unter Einstellungen → Verschlüsselung → „Schlüssel importieren“ den QR-Code mit dem Telefon lesen oder den Text oben abtippen und einfügen. Die Appliance prüft den Fingerabdruck und meldet Tippfehler.</li>
+<li>In PK95 ProxBackup unter Schutz → Verschlüsselung → „Schlüssel importieren“ den QR-Code mit dem Telefon lesen oder den Text oben abtippen und einfügen. Die Appliance prüft den Fingerabdruck und meldet Tippfehler.</li>
 <li>Ohne Appliance: in Proxmox VE unter Rechenzentrum → Speicher → PBS-Speicher bearbeiten → Verschlüsselung den vorhandenen Schlüssel hochladen – den Text von <code>{</code> bis <code>}</code> einfügen.</li>
 </ol>
 </div></body></html>`))

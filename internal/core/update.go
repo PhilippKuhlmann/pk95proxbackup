@@ -346,7 +346,7 @@ func (c *Core) installUpdate(ctx context.Context, info UpdateInfo) error {
 		return nil
 	}
 	c.setUpdatePhase("restarting", "")
-	c.Event("info", "Appliance", "Update auf "+info.Latest+" wird installiert", "Die Appliance startet neu. Sicherungen, die Proxmox gerade schreibt, laufen weiter.")
+	c.Record("info", "Appliance", "Update auf "+info.Latest+" wird installiert", "Die Appliance startet neu. Sicherungen, die Proxmox gerade schreibt, laufen weiter.")
 	if c.Restart != nil {
 		time.AfterFunc(time.Second, c.Restart)
 	}

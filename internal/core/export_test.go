@@ -79,3 +79,8 @@ func (c *Core) ScheduleSpaceForTest(ctx context.Context, now time.Time) { c.sche
 
 // RecordMediaForTest exposes recordMedia.
 var RecordMediaForTest = recordMedia
+
+// FollowRestartsForTest and CheckForTest expose the planned restarts and the reachability check.
+func (c *Core) FollowRestartsForTest(ov *Overview, now time.Time)     { c.followRestarts(ov, now) }
+func (c *Core) CheckForTest(ctx context.Context, prev, cur *Overview) { c.check(ctx, prev, cur) }
+func (c *Core) PlannedRestartsForTest() map[string]PlannedRestart     { return c.plannedRestarts() }

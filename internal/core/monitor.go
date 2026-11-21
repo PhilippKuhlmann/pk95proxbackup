@@ -268,6 +268,7 @@ func (c *Core) Run(ctx context.Context) {
 		}
 		ov := c.BuildOverview(ctx)
 		c.check(ctx, prev, &ov)
+		c.followRestarts(&ov, time.Now())
 		c.RecordUsage(&ov)
 		c.reportBackups(ctx, &ov)
 		c.scanForeignDisks(ctx, time.Now())
@@ -319,12 +320,15 @@ func (c *Core) check(ctx context.Context, prev, cur *Overview) {
 	for _, s := range prev.Servers {
 		was[s.ID] = s
 	}
+	planned := c.plannedRestartIDs()
 	for _, s := range cur.Servers {
 		p, ok := was[s.ID]
 		if !ok {
 			continue
 		}
-		if p.Online && !s.Online {
+		if planned[s.ID] {
+			// restarted by the appliance: followRestarts reports it
+		} else if p.Online && !s.Online {
 			c.Event("critical", s.Name, "Backup-Server nicht erreichbar", s.Error)
 		} else if !p.Online && s.Online {
 			c.Event("info", s.Name, "Backup-Server wieder erreichbar", "")

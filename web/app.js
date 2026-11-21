@@ -442,6 +442,9 @@ const NAV = [
   { path: "/festplatten", label: "Festplatten", icon: "heart" },
   { path: "/freigaben", label: "NFS & SMB", icon: "folder" },
   { path: "/kopierjobs", label: "Kopierjobs", icon: "sync" },
+  { head: "Schutz", admin: true },
+  { path: "/verschluesselung", label: "Verschlüsselung", icon: "key", admin: true },
+  { path: "/loeschschutz", label: "Löschschutz", icon: "lock", admin: true },
   { head: "Verwaltung" },
   { path: "/verbindungen", label: "Verbindungen", icon: "link" },
   { path: "/benachrichtigungen", label: "Benachrichtigungen", icon: "bell", admin: true },
@@ -630,6 +633,9 @@ async function render() {
       if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
   }
+  // Encryption and delete protection used to be tabs of the settings (links in older mails).
+  const moved = { "/einstellungen/verschluesselung": "/verschluesselung", "/einstellungen/loeschschutz": "/loeschschutz" }[location.pathname];
+  if (moved) history.replaceState({}, "", moved + location.search);
   const sub = Object.keys(PAGES).find((k) => k !== "/" && location.pathname.startsWith(k + "/"));
   const page = PAGES[location.pathname] || PAGES[sub] || PAGES["/"];
   const el = qs("#page");
@@ -834,7 +840,7 @@ PAGES["/"] = async (el, token) => {
     else if (hb.state === "changed") issue("warning", `Notfallhandbuch veraltet – geändert: ${hb.changed.join(", ")}`, "/notfallhandbuch");
     else if (hb.state === "old") issue("warning", "Notfallhandbuch seit über einem halben Jahr nicht neu ausgedruckt", "/notfallhandbuch");
     for (const h of r.host_issues || []) issue("warning", h.error ? `Host-Sicherung von ${h.node} fehlgeschlagen: ${h.error}` : `Host-Sicherung von ${h.node} zuletzt ${fmtAgo(h.last_ok)}`, `/hosts?cluster=${enc(h.cluster)}&node=${enc(h.node)}`);
-    for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/einstellungen/verschluesselung");
+    for (const k of r.unsaved_keys || []) issue("warning", `Schlüssel „${k}“ hat noch keine Kopie außer Haus – ausdrucken oder als Datei sichern`, "/verschluesselung");
     const sb = r.selfbackup || {};
     if (servers.length && !sb.enabled) issue("warning", "Die Konfiguration der Appliance wird nicht gesichert", "/einstellungen/sicherung");
     else if (sb.enabled && sb.last_error) issue("warning", "Konfiguration der Appliance nicht gesichert: " + sb.last_error, "/einstellungen/sicherung");
@@ -1172,20 +1178,6 @@ async function pveStoragesDialog(cl) {
 }
 
 // ---------- server picker ----------
-function currentServer() {
-  const want = new URLSearchParams(location.search).get("server");
-  if (want && state.servers.some((s) => s.id === want)) return want;
-  try { const s = localStorage.getItem("pk95pb-server"); if (s && state.servers.some((x) => x.id === s)) return s; } catch (e) { /* ignore */ }
-  return state.servers[0]?.id;
-}
-function serverPicker(cur) {
-  if (state.servers.length < 2) return "";
-  return `<select data-server aria-label="Backup-Server" style="width:auto;min-width:220px">${state.servers.map((s) => `<option value="${s.id}" ${s.id === cur ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>`;
-}
-function bindPicker(el) {
-  const sel = qs("[data-server]", el);
-  if (sel) sel.onchange = () => { try { localStorage.setItem("pk95pb-server", sel.value); } catch (e) { /* ignore */ } history.replaceState({}, "", location.pathname + "?server=" + sel.value); render(); };
-}
 function noServer(el, title) {
   el.innerHTML = pageHead(title) + empty("Kein Backup-Server verbunden", "Unter Verbindungen den PBS dieser Appliance prüfen oder einen vorhandenen PBS hinzufügen.", `<a class="btn" href="/verbindungen" data-go>Verbindungen</a>`, "server");
 }
@@ -1200,17 +1192,16 @@ function keepText(j) {
 // ---------- Datastores ----------
 PAGES["/datastores"] = async (el, token) => {
   await loadConn();
-  const sid = currentServer();
-  if (!sid) return noServer(el, "Datastores");
-  const srv = state.servers.find((s) => s.id === sid);
-  const draw = async () => {
-    const [r, s3] = await Promise.all([GET(`/api/pbs/${sid}/datastores`), GET(`/api/pbs/${sid}/s3`).catch(() => null)]);
-    if (token !== pageToken) return;
-    const list = r.datastores;
-    el.innerHTML = pageHead("Datastores", `Speicherorte der Sicherungen auf <b>${esc(srv.name)}</b>. Aufbewahrung, Prüfung und Speicherfreigabe laufen nach Zeitplan auf dem Backup-Server.`,
-      `${serverPicker(sid)}${s3 ? `<button class="btn gray" type="button" data-s3>${icon("globe")} Cloud (S3)</button>` : ""}<button class="btn" type="button" data-add>${icon("plus")} Datastore anlegen</button>`) +
-      damageCallouts(list) +
-      (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Datastore</th><th style="min-width:180px">Belegung</th><th>Aufbewahrung</th><th>Zeitpläne</th><th></th></tr></thead><tbody>
+  if (!state.servers.length) return noServer(el, "Datastores");
+  // Links to one server (?server=…) jump to its block.
+  const focus = new URLSearchParams(location.search).get("server");
+  let jumped = false;
+  const section = ({ srv, list, s3, err }) => {
+    if (err) return `<div data-srv="${esc(srv.id)}"><div class="panel"><div class="panel-head"><div class="panel-title">${esc(srv.name)}</div></div>${callout("red", "Nicht erreichbar", esc(err))}</div></div>`;
+    // Damaged backups belong to this server: inside its block, under the title.
+    const dmg = damageCallouts(list) ? `<div style="padding:0 16px">${damageCallouts(list)}</div>` : "";
+    return `<div data-srv="${esc(srv.id)}">` +
+      (list.length ? `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(srv.name)}</div><div class="actions">${s3 ? `<button class="btn gray sm" type="button" data-s3>${icon("globe")} Cloud (S3)</button>` : ""}<button class="btn sm" type="button" data-add>${icon("plus")} Datastore anlegen</button></div></div>${dmg}<div class="table-wrap"><table class="resp"><thead><tr><th>Datastore</th><th style="min-width:180px">Belegung</th><th>Aufbewahrung</th><th>Zeitpläne</th><th></th></tr></thead><tbody>
       ${list.map((d) => {
         const mounted = d["mount-status"] !== "notmounted";
         return `<tr class="${mounted ? "" : "off"}">
@@ -1229,45 +1220,64 @@ PAGES["/datastores"] = async (el, token) => {
           ${!d.removable && !s3Of(d) && can("admin") ? `<button class="ib" type="button" title="Datastore vergrößern" aria-label="Vergrößern" data-grow="${esc(d.name)}">${icon("expand")}</button>` : ""}
           <button class="ib" type="button" title="Aufbewahrung und Zeitpläne" aria-label="Einstellungen" data-edit="${esc(d.name)}">${icon("cog")}</button>
           <button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del="${esc(d.name)}">${icon("trash")}</button></div></td></tr>`; }).join("")}
-      </tbody></table></div></div>` : empty("Noch kein Datastore", "Ein Datastore kann auf einer freien Platte der VM, auf einer NFS/SMB-Freigabe oder in einem Verzeichnis liegen. USB-Wechselplatten richtest du unter „Wechselplatten“ ein.", `<button class="btn" type="button" data-add2>${icon("plus")} Datastore anlegen</button>`, "database")) +
+      </tbody></table></div></div>` : `<div class="panel"><div class="panel-head"><div class="panel-title">${esc(srv.name)}</div><div class="actions">${s3 ? `<button class="btn gray sm" type="button" data-s3>${icon("globe")} Cloud (S3)</button>` : ""}</div></div>${empty("Noch kein Datastore", "Ein Datastore kann auf einer freien Platte der VM, auf einer NFS/SMB-Freigabe oder in einem Verzeichnis liegen. USB-Wechselplatten richtest du unter „Wechselplatten“ ein.", `<button class="btn" type="button" data-add2>${icon("plus")} Datastore anlegen</button>`, "database")}</div>`) +
       (s3 && s3.endpoints.length ? `<div class="panel"><div class="panel-head"><div class="panel-title">Cloud-Ziele (S3)</div></div>
         <div class="table-wrap"><table class="resp"><thead><tr><th>Ziel</th><th>Anbieter</th><th>Datastores</th><th>Upload</th><th></th></tr></thead><tbody>
         ${s3.endpoints.map((e) => `<tr><td data-l="Ziel"><div class="t-main mono">${esc(e.id)}</div><div class="t-sub mono">${esc(e.endpoint)}${e.region ? " · " + esc(e.region) : ""}</div></td><td data-l="Anbieter">${esc(e.provider)}</td>
           <td data-l="Datastores">${e.stores.length ? e.stores.map(esc).join(", ") : '<span class="muted small">noch keiner</span>'}</td>
           <td data-l="Upload" class="small">${e["rate-out"] ? "höchstens " + esc(rateLabel(e["rate-out"])) : '<span class="muted">unbegrenzt</span>'}</td>
-          <td class="act"><button class="ib" type="button" title="Upload begrenzen" aria-label="Upload zu ${esc(e.id)} begrenzen" data-s3lim="${esc(e.id)}">${icon("signal")}</button><button class="ib red" type="button" title="S3-Ziel austragen" aria-label="S3-Ziel ${esc(e.id)} austragen" data-s3del="${esc(e.id)}" ${e.stores.length ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div></div>` : "") +
-      `<div class="callout"><div class="ct"><div class="ch">So funktioniert das Aufräumen</div><div class="cb">„Aufbewahrung“ entfernt alte Sicherungen nach Regeln (z. B. 7 tägliche, 4 wöchentliche). Den Platz gibt erst „Speicher freigeben“ (Garbage Collection) frei – deshalb läuft beides nach Zeitplan. „Prüfen“ liest die Sicherungen und erkennt beschädigte Daten.</div></div></div>`;
-    bindPicker(el);
+          <td class="act"><button class="ib" type="button" title="Upload begrenzen" aria-label="Upload zu ${esc(e.id)} begrenzen" data-s3lim="${esc(e.id)}">${icon("signal")}</button><button class="ib red" type="button" title="S3-Ziel austragen" aria-label="S3-Ziel ${esc(e.id)} austragen" data-s3del="${esc(e.id)}" ${e.stores.length ? "disabled" : ""}>${icon("trash")}</button></td></tr>`).join("")}</tbody></table></div></div>` : "") + `</div>`;
+  };
+  const bind = (box, { srv, list, s3 }) => {
+    const sid = srv.id;
     const add = () => datastoreCreate(srv, draw);
-    qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = add);
-    const s3b = qs("[data-s3]", el);
+    qsa("[data-add], [data-add2]", box).forEach((b) => b.onclick = add);
+    const s3b = qs("[data-s3]", box);
     if (s3b) s3b.onclick = () => s3Wizard(srv, s3, list, draw);
-    qsa("[data-s3lim]", el).forEach((b) => b.onclick = () => {
+    qsa("[data-s3lim]", box).forEach((b) => b.onclick = () => {
       const e = s3.endpoints.find((x) => x.id === b.dataset.s3lim);
       formDialog({ title: `Upload zu ${e.id} begrenzen`, ic: "signal", cls: "",
         text: "Gilt für alles, was der Backup-Server in diesen Cloud-Speicher hochlädt – zu jeder Uhrzeit. Für die Uhrzeit: im Kopierjob „Spätestens fertig um“ setzen.",
         fields: [{ name: "rate_out", label: "Höchstens (MB/s)", type: "number", min: 0, value: e["rate-out"] ? rateMB(e["rate-out"]) : "", placeholder: "unbegrenzt", wide: true, hint: "Leer oder 0 = unbegrenzt. 10 MB/s ≈ 80 Mbit/s." }],
         submit: async (v) => { await PUT(`/api/pbs/${sid}/s3/${enc(e.id)}/limit`, { rate_out: Number(v.rate_out) || 0 }); toast("Gespeichert."); draw(); } });
     });
-    qsa("[data-s3del]", el).forEach((b) => b.onclick = async () => {
+    qsa("[data-s3del]", box).forEach((b) => b.onclick = async () => {
       if (await confirmDialog({ title: `S3-Ziel ${b.dataset.s3del} austragen?`, text: "Der Backup-Server vergisst Adresse und Schlüssel. Die Daten im Bucket bleiben unverändert.", button: "Austragen" }))
         run(b, async () => { await DEL(`/api/pbs/${sid}/s3/${enc(b.dataset.s3del)}`); await draw(); }, "Ausgetragen.");
     });
-    qsa("[data-act]", el).forEach((b) => b.onclick = () => run(b, async () => {
+    qsa("[data-act]", box).forEach((b) => b.onclick = () => run(b, async () => {
       const r = await POST(`/api/pbs/${sid}/datastores/${enc(b.dataset.store)}/${b.dataset.act}`);
       showTask("pbs:" + sid, r.upid, (b.dataset.act === "gc" ? "Speicher freigeben: " : "Prüfung: ") + b.dataset.store);
     }));
-    qsa("[data-mount]", el).forEach((b) => b.onclick = () => run(b, async () => {
+    qsa("[data-mount]", box).forEach((b) => b.onclick = () => run(b, async () => {
       const r = await POST(`/api/pbs/${sid}/datastores/${enc(b.dataset.mount)}/${b.dataset.on === "1" ? "mount" : "unmount"}`);
       showTask("pbs:" + sid, r.upid, (b.dataset.on === "1" ? "Einhängen: " : "Aushängen: ") + b.dataset.mount);
       setTimeout(draw, 2500);
     }));
-    qsa("[data-snaps]", el).forEach((b) => b.onclick = () => snapshotsDialog(srv, b.dataset.snaps));
-    qsa("[data-fc]", el).forEach((b) => b.onclick = () => forecastDialog(srv, list.find((d) => d.name === b.dataset.fc)));
-    qsa("[data-edit]", el).forEach((b) => b.onclick = () => datastoreSettings(srv, list.find((d) => d.name === b.dataset.edit), draw));
-    qsa("[data-grow]", el).forEach((b) => b.onclick = () => growDialog(srv, b.dataset.grow, draw, b));
-    qsa("[data-space]", el).forEach((b) => b.onclick = () => spaceDialog(srv, b.dataset.space));
-    qsa("[data-del]", el).forEach((b) => b.onclick = () => datastoreDelete(srv, b.dataset.del, draw));
+    qsa("[data-snaps]", box).forEach((b) => b.onclick = () => snapshotsDialog(srv, b.dataset.snaps));
+    qsa("[data-fc]", box).forEach((b) => b.onclick = () => forecastDialog(srv, list.find((d) => d.name === b.dataset.fc)));
+    qsa("[data-edit]", box).forEach((b) => b.onclick = () => datastoreSettings(srv, list.find((d) => d.name === b.dataset.edit), draw));
+    qsa("[data-grow]", box).forEach((b) => b.onclick = () => growDialog(srv, b.dataset.grow, draw, b));
+    qsa("[data-space]", box).forEach((b) => b.onclick = () => spaceDialog(srv, b.dataset.space));
+    qsa("[data-del]", box).forEach((b) => b.onclick = () => datastoreDelete(srv, b.dataset.del, draw));
+  };
+  const draw = async () => {
+    const all = await Promise.all(state.servers.map(async (srv) => {
+      try {
+        const [r, s3] = await Promise.all([GET(`/api/pbs/${srv.id}/datastores`), GET(`/api/pbs/${srv.id}/s3`).catch(() => null)]);
+        return { srv, list: r.datastores, s3 };
+      } catch (e) { return { srv, err: e.message }; }
+    }));
+    if (token !== pageToken) return;
+    el.innerHTML = pageHead("Datastores", `Speicherorte der Sicherungen ${state.servers.length > 1 ? "auf allen Backup-Servern" : `auf <b>${esc(state.servers[0].name)}</b>`}. Aufbewahrung, Prüfung und Speicherfreigabe laufen nach Zeitplan auf dem jeweiligen Backup-Server.`) +
+      all.map(section).join("") +
+      `<div class="callout"><div class="ct"><div class="ch">So funktioniert das Aufräumen</div><div class="cb">„Aufbewahrung“ entfernt alte Sicherungen nach Regeln (z. B. 7 tägliche, 4 wöchentliche). Den Platz gibt erst „Speicher freigeben“ (Garbage Collection) frei – deshalb läuft beides nach Zeitplan. „Prüfen“ liest die Sicherungen und erkennt beschädigte Daten.</div></div></div>`;
+    all.forEach((x) => { const box = qs(`[data-srv="${CSS.escape(x.srv.id)}"]`, el); if (box && !x.err) bind(box, x); });
+    if (!jumped && focus && all.length > 1) {
+      jumped = true;
+      const t = qs(`[data-srv="${CSS.escape(focus)}"]`, el);
+      if (t) t.scrollIntoView({ block: "start" });
+    }
   };
   el.innerHTML = pageHead("Datastores", "Lade …");
   await draw();
@@ -1727,17 +1737,16 @@ async function snapshotsDialog(srv, store) {
 // ---------- Kopierjobs ----------
 PAGES["/kopierjobs"] = async (el, token) => {
   await loadConn();
-  const sid = currentServer();
-  if (!sid) return noServer(el, "Kopierjobs");
-  const srv = state.servers.find((s) => s.id === sid);
-  const draw = async () => {
-    const r = await GET(`/api/pbs/${sid}/sync`);
-    if (token !== pageToken) return;
+  if (!state.servers.length) return noServer(el, "Kopierjobs");
+  // Links to one server (?server=…) jump to its block.
+  const focus = new URLSearchParams(location.search).get("server");
+  let jumped = false;
+  const section = ({ srv, r, err }) => {
+    if (err) return `<div data-srv="${esc(srv.id)}"><div class="panel"><div class="panel-head"><div class="panel-title">${esc(srv.name)}</div></div>${callout("red", "Nicht erreichbar", esc(err))}</div></div>`;
     const remotes = Object.fromEntries((r.remotes || []).map((x) => [x.name, x]));
     const jobs = r.jobs || [];
-    el.innerHTML = pageHead("Kopierjobs", `Kopien zwischen Datastores, auch von einem anderen Backup-Server (z. B. Außer-Haus-Kopie). Ziel ist <b>${esc(srv.name)}</b>; die Kopie wird dorthin geholt.`,
-      `${serverPicker(sid)}<button class="btn" type="button" data-add>${icon("plus")} Kopierjob anlegen</button>`) +
-      (jobs.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Job</th><th>Von</th><th>Nach</th><th>Zeitplan</th><th>Letzter Lauf</th><th></th></tr></thead><tbody>
+    return `<div data-srv="${esc(srv.id)}">` +
+      (jobs.length ? `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">${esc(srv.name)}</div><div class="muted small">holt die Kopien zu sich</div></div><div class="actions"><button class="btn sm" type="button" data-add>${icon("plus")} Kopierjob anlegen</button></div></div><div class="table-wrap"><table class="resp"><thead><tr><th>Job</th><th>Von</th><th>Nach</th><th>Zeitplan</th><th>Letzter Lauf</th><th></th></tr></thead><tbody>
       ${jobs.map((j) => { const rot = j.id.startsWith("pk95r-"); const rem = j.remote ? remotes[j.remote] : null; return `<tr>
         <td data-l="Job"><div class="t-main">${esc(j.comment || j.id)}</div><div class="t-sub mono">${esc(j.id)}</div>${rot ? pill("Wechselplatte", "blue") : ""}</td>
         <td data-l="Von">${j.remote ? `<span class="small">${esc(rem ? (rem.comment || "").replace("PK95 ProxBackup: ", "") || rem.host : j.remote)}</span> / ` : ""}<b>${esc(j["remote-store"])}</b></td>
@@ -1748,18 +1757,36 @@ PAGES["/kopierjobs"] = async (el, token) => {
         <td class="act"><div class="row-actions">${j["last-run-upid"] ? `<button class="ib gray" type="button" title="Protokoll" aria-label="Protokoll" data-log="${esc(j["last-run-upid"])}">${icon("terminal")}</button>` : ""}
           <button class="ib" type="button" title="Jetzt ausführen" aria-label="Jetzt ausführen" data-run="${esc(j.id)}">${icon("play")}</button>
           ${rot ? "" : `<button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${esc(j.id)}">${icon("pencil")}</button><button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${esc(j.id)}">${icon("trash")}</button>`}</div></td></tr>`; }).join("")}
-      </tbody></table></div></div>` : empty("Noch kein Kopierjob", "Zum Beispiel: Diese Appliance holt jede Nacht eine Kopie vom PBS im Büro – oder umgekehrt.", `<button class="btn" type="button" data-add2>${icon("plus")} Kopierjob anlegen</button>`, "sync")) +
-      `<div class="panel" data-traffic></div>`;
-    bindPicker(el);
-    qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => syncForm(srv, null, draw, remotes));
-    qsa("[data-edit]", el).forEach((b) => b.onclick = () => syncForm(srv, jobs.find((j) => j.id === b.dataset.edit), draw, remotes, r.windows || {}));
-    trafficPanel(qs("[data-traffic]", el), srv);
-    qsa("[data-run]", el).forEach((b) => b.onclick = () => run(b, async () => { await POST(`/api/pbs/${sid}/sync/${enc(b.dataset.run)}/run`); setTimeout(draw, 1500); }, "Kopierjob gestartet."));
-    qsa("[data-log]", el).forEach((b) => b.onclick = () => showTask("pbs:" + sid, b.dataset.log, "Kopierjob"));
-    qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
+      </tbody></table></div></div>` : `<div class="panel"><div class="panel-head"><div><div class="panel-title">${esc(srv.name)}</div><div class="muted small">holt die Kopien zu sich</div></div></div>${empty("Noch kein Kopierjob", "Zum Beispiel: Diese Appliance holt jede Nacht eine Kopie vom PBS im Büro – oder umgekehrt.", `<button class="btn" type="button" data-add2>${icon("plus")} Kopierjob anlegen</button>`, "sync")}</div>`) +
+      `<div class="panel" data-traffic></div></div>`;
+  };
+  const bind = (box, { srv, r }) => {
+    const sid = srv.id;
+    const remotes = Object.fromEntries((r.remotes || []).map((x) => [x.name, x]));
+    const jobs = r.jobs || [];
+    qsa("[data-add], [data-add2]", box).forEach((b) => b.onclick = () => syncForm(srv, null, draw, remotes));
+    qsa("[data-edit]", box).forEach((b) => b.onclick = () => syncForm(srv, jobs.find((j) => j.id === b.dataset.edit), draw, remotes, r.windows || {}));
+    trafficPanel(qs("[data-traffic]", box), srv);
+    qsa("[data-run]", box).forEach((b) => b.onclick = () => run(b, async () => { await POST(`/api/pbs/${sid}/sync/${enc(b.dataset.run)}/run`); setTimeout(draw, 1500); }, "Kopierjob gestartet."));
+    qsa("[data-log]", box).forEach((b) => b.onclick = () => showTask("pbs:" + sid, b.dataset.log, "Kopierjob"));
+    qsa("[data-del]", box).forEach((b) => b.onclick = async () => {
       if (await confirmDialog({ title: `Kopierjob ${b.dataset.del} löschen?`, text: "Bereits kopierte Sicherungen bleiben erhalten.", button: "Löschen" }))
         run(b, async () => { await DEL(`/api/pbs/${sid}/sync/${enc(b.dataset.del)}`); await draw(); }, "Gelöscht.");
     });
+  };
+  const draw = async () => {
+    const all = await Promise.all(state.servers.map(async (srv) => {
+      try { return { srv, r: await GET(`/api/pbs/${srv.id}/sync`) }; } catch (e) { return { srv, err: e.message }; }
+    }));
+    if (token !== pageToken) return;
+    el.innerHTML = pageHead("Kopierjobs", "Kopien zwischen Datastores, auch von einem anderen Backup-Server (z. B. Außer-Haus-Kopie). Ein Kopierjob läuft immer auf dem Ziel: Er holt die Sicherungen zu sich.") +
+      all.map(section).join("");
+    all.forEach((x) => { const box = qs(`[data-srv="${CSS.escape(x.srv.id)}"]`, el); if (box && !x.err) bind(box, x); });
+    if (!jumped && focus && all.length > 1) {
+      jumped = true;
+      const t = qs(`[data-srv="${CSS.escape(focus)}"]`, el);
+      if (t) t.scrollIntoView({ block: "start" });
+    }
   };
   el.innerHTML = pageHead("Kopierjobs", "Lade …");
   await draw();
@@ -3615,7 +3642,7 @@ function hostPanel(v, key) {
   }
   const notes = [];
   if (t && !t.server_id) notes.push(callout("yellow", "Ziel unbekannt", `Der Speicher „${esc(t.storage)}“ zeigt auf ${esc(t.server)}, den die Appliance nicht kennt. Die Sicherung läuft trotzdem; Stände und Aufräumen gibt es hier erst, wenn der Backup-Server unter Verbindungen eingetragen ist.`));
-  if (t && !t.encrypted && c.enabled) notes.push(callout("yellow", "Unverschlüsselt", `/etc/pve/priv enthält Kennwörter und Schlüssel von Proxmox VE. Sie liegen damit lesbar auf dem Backup-Server und den Wechselplatten. Für „${esc(t.storage)}“ unter <a href="/einstellungen/verschluesselung" data-go>Verschlüsselung</a> einen Schlüssel einschalten – die nächste Host-Sicherung nutzt ihn.`));
+  if (t && !t.encrypted && c.enabled) notes.push(callout("yellow", "Unverschlüsselt", `/etc/pve/priv enthält Kennwörter und Schlüssel von Proxmox VE. Sie liegen damit lesbar auf dem Backup-Server und den Wechselplatten. Für „${esc(t.storage)}“ unter <a href="/verschluesselung" data-go>Verschlüsselung</a> einen Schlüssel einschalten – die nächste Host-Sicherung nutzt ihn.`));
   const sshFail = v.nodes.filter((n) => /SSH|Hostschlüssel|authenticate/i.test(n.state.last_error || ""));
   if (sshFail.length) notes.push(callout("red", `SSH-Zugang zu ${sshFail.map((n) => n.node).join(", ")} fehlt`, `Auf ${sshFail.length === 1 ? "dem Knoten" : "jedem dieser Knoten"} in der Shell ausführen, danach „SSH prüfen“:${codeBlock(sshAddCmd(key))}`));
   const rows = v.nodes.map((n) => {
@@ -3707,7 +3734,7 @@ async function hostDetail(el, token, clusterID, node) {
           <li>Einzelner Knoten: Gäste aus /etc/pve/qemu-server und /etc/pve/lxc zurückkopieren, storage.cfg übernehmen. Im Cluster: mit <span class="mono">pvecm add</span> wieder aufnehmen – /etc/pve kommt von den anderen Knoten.</li>
           <li>Ganzer Cluster verloren: config.db aus Systeminfo nach /var/lib/pve-cluster/ (bei gestopptem pve-cluster).</li></ol>
         ${t ? `<div class="hint" style="margin-bottom:6px">Alles auf einmal zurückholen – auf einem anderen Knoten des Clusters (er kennt Kennwort${t.encrypted ? " und Schlüssel" : ""}):</div>${codeBlock(cmds)}
-        ${t.encrypted ? `<p class="muted small">Auf einem neu installierten Knoten fehlt der Schlüssel: Datei oder Papierschlüssel unter <a href="/einstellungen/verschluesselung" data-go>Verschlüsselung</a>.</p>` : ""}` : ""}</div>`;
+        ${t.encrypted ? `<p class="muted small">Auf einem neu installierten Knoten fehlt der Schlüssel: Datei oder Papierschlüssel unter <a href="/verschluesselung" data-go>Verschlüsselung</a>.</p>` : ""}` : ""}</div>`;
     bindCopy(right);
     // A wanted folder keeps the page from scrolling down to the browser.
     if (sel && t && t.server_id && can("admin")) browse = fileBrowser(qs("[data-browser]", right), queryAt(sel), null, "host", browse || { stack: [{ name: "Host", path: "" }] }, sel, ver, "Dateien");
@@ -3902,9 +3929,19 @@ PAGES["/festplatten"] = async (el, token) => {
   every(60000, token, load);
 };
 
+// ---------- Verschlüsselung, Löschschutz ----------
+PAGES["/verschluesselung"] = async (el) => {
+  el.innerHTML = pageHead("Verschlüsselung") + `<div class="settings-body" data-tab></div>`;
+  await SET_PAGES.verschluesselung(qs("[data-tab]", el));
+};
+PAGES["/loeschschutz"] = async (el) => {
+  el.innerHTML = pageHead("Löschschutz") + `<div class="settings-body" data-tab></div>`;
+  await SET_PAGES.loeschschutz(qs("[data-tab]", el));
+};
+
 // ---------- Einstellungen ----------
 const SET_TABS = [
-  ["sicherung", "Sicherung der Appliance", "archive"], ["verschluesselung", "Verschlüsselung", "lock"], ["loeschschutz", "Löschschutz", "shield"], ["aktualisierung", "Aktualisierung", "download"],
+  ["sicherung", "Sicherung der Appliance", "archive"], ["aktualisierung", "Aktualisierung", "download"],
   ["zugriff", "Zugriff", "globe"], ["system", "System", "server"], ["konten", "Konten", "user"], ["protokoll", "Protokoll", "list"], ["konto", "Mein Konto", "key"],
 ];
 
@@ -4003,20 +4040,22 @@ NOTIFY_PAGES.auswahl = async (box) => {
   const chans = [["mail", "E-Mail", n.mail_enabled], ["telegram", "Telegram", n.telegram_enabled], ["hook", "Push", n.hook_enabled]];
   const prefs = n.channels || {};
   const sevName = { info: "Alles", warning: "Ab Warnung", critical: "Nur Fehler" };
-  const on = (ch, cat) => !((prefs[ch] || {}).off || []).includes(cat);
+  const level = (ch, cat) => ((prefs[ch] || {}).levels || {})[cat] || (((prefs[ch] || {}).off || []).includes(cat) ? "off" : "all");
+  const levelSel = (ch, label, c) => `<select data-ch="${ch}" data-cat="${esc(c.key)}" aria-label="${esc(c.label)} per ${esc(label)}">
+    ${[["all", "Alles"], ...(c.key === "report" ? [] : [["problems", "Nur Probleme"]]), ["off", "Aus"]].map(([v, t]) => `<option value="${v}" ${level(ch, c.key) === v ? "selected" : ""}>${t}</option>`).join("")}</select>`;
   box.innerHTML = `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">Was wohin</div>
-      <div class="muted small">Je Kanal, welche Meldungen er bekommt. Ohne Haken kommt diese Art dort gar nicht an – auch keine Fehler. Die Ereignisse der Appliance zeichnen weiter alles auf.</div></div></div>
+      <div class="muted small">Je Kanal und Art: <b>Alles</b>, <b>Nur Probleme</b> (Warnungen und Fehler – z. B. bei Updates nur, wenn etwas schiefgeht) oder <b>Aus</b> (auch keine Fehler). Die Ereignisse der Appliance zeichnen weiter alles auf.</div></div></div>
     <div class="table-wrap"><table class="resp notify-matrix"><thead><tr><th>Meldungen</th>${chans.map(([k, l, en]) => `<th class="c">${esc(l)}${en ? "" : `<div class="t-sub">aus</div>`}</th>`).join("")}</tr></thead><tbody>
       <tr><td data-l="Stufe"><b>Melden ab</b><div class="t-sub">Standard = wie unter Kanäle („${esc(sevName[n.min_severity] || "")}“)</div></td>${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c"><select data-sev="${k}" aria-label="${esc(l)}: melden ab">
         <option value="">Standard</option>${Object.entries(sevName).map(([v, t]) => `<option value="${v}" ${(prefs[k] || {}).min_severity === v ? "selected" : ""}>${t}</option>`).join("")}</select></td>`).join("")}</tr>
       ${cats.map((c) => `<tr><td data-l="Meldungen"><b>${esc(c.label)}</b><div class="t-sub">${esc(c.hint)}</div></td>
-        ${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c"><input type="checkbox" data-ch="${k}" data-cat="${esc(c.key)}" ${on(k, c.key) ? "checked" : ""} aria-label="${esc(c.label)} per ${esc(l)}"></td>`).join("")}</tr>`).join("")}
+        ${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c">${levelSel(k, l, c)}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div>
     <div class="flex" style="padding:12px 16px"><button class="btn" type="button" data-save>Speichern</button><span class="small muted">Testnachrichten gehen immer über alle eingeschalteten Kanäle.</span></div></div>`;
   qs("[data-save]", box).onclick = (e) => run(e.currentTarget, async () => {
     const out = {};
     for (const [k] of chans) {
-      out[k] = { min_severity: qs(`[data-sev="${k}"]`, box).value, off: qsa(`[data-ch="${k}"]`, box).filter((x) => !x.checked).map((x) => x.dataset.cat) };
+      out[k] = { min_severity: qs(`[data-sev="${k}"]`, box).value, levels: Object.fromEntries(qsa(`select[data-ch="${k}"]`, box).map((x) => [x.dataset.cat, x.value])) };
     }
     await PUT("/api/settings/channels", { channels: out });
     toast("Gespeichert.");

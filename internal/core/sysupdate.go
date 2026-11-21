@@ -136,6 +136,19 @@ func (c *Core) RefreshPackages(ctx context.Context, id string) (ServerHealth, er
 	return c.CheckServerHealth(ctx, id)
 }
 
+// refreshPackagesQuiet reads the package state after an upgrade (its message tells about a
+// needed restart already).
+func (c *Core) refreshPackagesQuiet(ctx context.Context, id string) (ServerHealth, error) {
+	pbs, _, err := c.PBS(id)
+	if err != nil {
+		return ServerHealth{}, err
+	}
+	if err := pbs.RefreshPackages(ctx); err != nil {
+		return ServerHealth{}, err
+	}
+	return c.checkServerHealth(ctx, id, false)
+}
+
 // StartUpgrade starts the package upgrade of a Backup Server in the background.
 func (c *Core) StartUpgrade(ctx context.Context, id, by string) (SysUpgrade, error) {
 	c.upgrades.mu.Lock()
@@ -162,7 +175,7 @@ func (c *Core) StartUpgrade(ctx context.Context, id, by string) (SysUpgrade, err
 	}
 	u := SysUpgrade{State: "running", Started: time.Now().Unix(), By: by, Log: []string{}}
 	_ = c.St.SetSetting(upgradeKey(id), u)
-	c.Event("info", srv.Name, "Updates werden eingespielt", "Debian- und Proxmox-Pakete werden aktualisiert (von "+by+"). Laufende Sicherungen arbeiten weiter.")
+	c.Record("info", srv.Name, "Updates werden eingespielt", "Debian- und Proxmox-Pakete werden aktualisiert (von "+by+"). Laufende Sicherungen arbeiten weiter.")
 	go c.followUpgrade(id)
 	return u, nil
 }
@@ -273,7 +286,7 @@ func (c *Core) finishUpgrade(ctx context.Context, srv PBSServer, u SysUpgrade, r
 	}
 	_ = c.St.SetSetting(upgradeKey(srv.ID), u)
 	// the package state has changed: read it again (this also reports a needed reboot)
-	h, _ := c.RefreshPackages(ctx, srv.ID)
+	h, _ := c.refreshPackagesQuiet(ctx, srv.ID)
 	if u.State == "failed" {
 		c.EventDetails("error", srv.Name, "Updates nicht vollständig eingespielt", failure,
 			&notify.Details{Status: "error", Link: "/einstellungen/aktualisierung", Log: lastN(u.Log, 15)})
@@ -287,6 +300,12 @@ func (c *Core) finishUpgrade(ctx context.Context, srv PBSServer, u SysUpgrade, r
 		body += " Ein Neustart ist nötig, damit der neue Kernel läuft."
 	} else if h.RestartNeeded {
 		body += " Die Dienste des Backup-Servers sollten neu geladen werden."
+	}
+	if u.By == AutoUpdateBy {
+		// The automatic run reports it together with what follows (reload or restart).
+		c.Record("info", srv.Name, "Updates eingespielt", body)
+		c.setPendingUpdate(srv.ID, fmt.Sprintf("%d Pakete aktualisiert.", u.Upgraded))
+		return u, nil
 	}
 	c.EventDetails("info", srv.Name, "Updates eingespielt", body, &notify.Details{Status: "ok", Link: "/einstellungen/aktualisierung"})
 	return u, nil
@@ -335,8 +354,22 @@ func (c *Core) RebootServer(ctx context.Context, id, by string, force bool) ([]s
 	if srv.Local {
 		what = "Die Appliance startet neu"
 	}
-	c.Event("warning", srv.Name, "Neustart", what+" (von "+by+"). Er ist in ein bis zwei Minuten wieder erreichbar.")
+	before := ""
+	if by == AutoUpdateBy {
+		before = c.takePendingUpdate(id)
+	}
+	c.Record("info", srv.Name, "Neustart", what+" (von "+by+").")
+	// planned before the call: the appliance itself may be gone right after it
+	c.planRestart(id, by, before, time.Now())
 	if err := pbs.Reboot(ctx); err != nil {
+		restartMu.Lock()
+		m := c.plannedRestarts()
+		delete(m, id)
+		_ = c.St.SetSetting("planned-restarts", m)
+		restartMu.Unlock()
+		if before != "" {
+			c.setPendingUpdate(id, before)
+		}
 		return nil, fmt.Errorf("Neustart nicht ausgelöst: %w", err)
 	}
 	return nil, nil
@@ -504,12 +537,22 @@ func (c *Core) stepAutoUpdate(ctx context.Context, s PBSServer, a AutoUpdate, r 
 		}
 		var h ServerHealth
 		_ = c.St.GetSetting("srvhealth:"+s.ID, &h)
-		if h.RestartNeeded && !(a.Reboot && h.RebootNeeded) {
-			_, _ = c.ReloadServerServices(ctx, s.ID)
-		}
 		if a.Reboot && h.RebootNeeded {
-			r.Phase = "reboot"
+			r.Phase = "reboot" // reported when the server is back
+			return
 		}
+		body := c.takePendingUpdate(s.ID)
+		if h.RestartNeeded {
+			if _, err := c.reloadServerServices(ctx, s.ID, false); err == nil {
+				body += " Die Dienste wurden neu geladen."
+			} else {
+				body += " Die Dienste ließen sich nicht neu laden: " + err.Error()
+			}
+		}
+		if h.RebootNeeded {
+			body += " Ein Neustart ist nötig, damit der neue Kernel läuft (automatischer Neustart ist aus)."
+		}
+		c.EventDetails("info", s.Name, "Updates eingespielt", body, &notify.Details{Status: "ok", Link: "/einstellungen/aktualisierung"})
 	case "reboot":
 		if !in {
 			why := "Das Einspielen dauerte bis zum Ende des Zeitfensters."
@@ -518,7 +561,7 @@ func (c *Core) stepAutoUpdate(ctx context.Context, s PBSServer, a AutoUpdate, r 
 			}
 			r.Phase, r.Postponed = "done", why
 			c.EventDetails("warning", s.Name, "Automatischer Neustart verschoben",
-				why+" Neuer Versuch beim nächsten Termin; unter Einstellungen → Aktualisierung lässt er sich auch von Hand auslösen.",
+				prefixed(c.takePendingUpdate(s.ID))+why+" Neuer Versuch beim nächsten Termin; unter Einstellungen → Aktualisierung lässt er sich auch von Hand auslösen.",
 				&notify.Details{Status: "warning", Link: "/einstellungen/aktualisierung"})
 			return
 		}
@@ -531,7 +574,7 @@ func (c *Core) stepAutoUpdate(ctx context.Context, s PBSServer, a AutoUpdate, r 
 		}
 		r.Phase, r.Busy, r.Postponed = "done", nil, ""
 		if err != nil {
-			c.Event("error", s.Name, "Automatischer Neustart fehlgeschlagen", err.Error())
+			c.Event("error", s.Name, "Automatischer Neustart fehlgeschlagen", prefixed(c.takePendingUpdate(s.ID))+err.Error())
 		}
 	}
 }

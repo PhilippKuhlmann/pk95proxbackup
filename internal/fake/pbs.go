@@ -79,6 +79,7 @@ type PBS struct {
 	busy     map[string]bool
 	reloads  int
 	reboots  int
+	bootAt   time.Time // last simulated reboot (zero: up for ten days)
 	apt      aptState
 	remotePw map[string]string
 }
@@ -446,6 +447,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// comes back with the newest kernel and the installed version running
 		p.reboots++
+		p.bootAt = time.Now()
 		if len(p.apt.kernels) > 0 {
 			p.apt.kernel = p.apt.kernels[0]
 		}
@@ -454,7 +456,11 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		data(w, nil)
 	case path == "/nodes/localhost/status":
-		data(w, map[string]any{"current-kernel": map[string]string{"release": p.apt.kernel + "-pve"}, "cpu": 0.07, "uptime": 864000, "memory": map[string]int64{"total": 8 * gib, "used": 3 * gib}, "root": map[string]int64{"total": p.root, "used": 9 * gib}})
+		uptime := int64(864000)
+		if !p.bootAt.IsZero() {
+			uptime = int64(time.Since(p.bootAt).Seconds()) + 1
+		}
+		data(w, map[string]any{"current-kernel": map[string]string{"release": p.apt.kernel + "-pve"}, "cpu": 0.07, "uptime": uptime, "memory": map[string]int64{"total": 8 * gib, "used": 3 * gib}, "root": map[string]int64{"total": p.root, "used": 9 * gib}})
 	case path == "/config/datastore" && m == "GET":
 		out := []prox.DatastoreConfig{}
 		for _, s := range p.stores {

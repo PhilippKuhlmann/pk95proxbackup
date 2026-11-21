@@ -298,7 +298,7 @@ func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PV
 	if keyFP != "" {
 		k, ok := s.C.EncKey(keyFP)
 		if !ok {
-			return "", missingKeyError{fmt.Sprintf("Die Sicherung ist verschlüsselt (Schlüssel %s). Diesen Schlüssel hat weder ein Speicher in „%s“ noch die Appliance – bitte unter Einstellungen → Verschlüsselung importieren.",
+			return "", missingKeyError{fmt.Sprintf("Die Sicherung ist verschlüsselt (Schlüssel %s). Diesen Schlüssel hat weder ein Speicher in „%s“ noch die Appliance – bitte unter Schutz → Verschlüsselung importieren.",
 				enckey.Short(keyFP), cl.Name)}
 		}
 		key = k

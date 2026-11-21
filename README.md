@@ -126,7 +126,7 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   neue Appliance lässt sich bei der Ersteinrichtung aus der Datei oder später aus einem Datastore wiederherstellen.
 - **Verschlüsselte Sicherungen:** Proxmox VE verschlüsselt jede Sicherung vor dem Versand (AES-256-GCM), auf dem
   Backup-Server, den Wechsel- und Archiv-Platten liegen nur verschlüsselte Daten. Einschalten je Speicher unter
-  Einstellungen → Verschlüsselung oder beim Eintragen eines Datastores; ein Schlüssel kann für mehrere Speicher und
+  Schutz → Verschlüsselung oder beim Eintragen eines Datastores; ein Schlüssel kann für mehrere Speicher und
   Cluster gelten. Die Appliance verwahrt die Schlüssel (auch in ihrer eigenen Sicherung), trägt sie für
   Wiederherstellungen und Restore-Tests selbst ein und erinnert, bis eine Kopie außer Haus liegt – als
   Papierschlüssel mit QR-Code oder als Datei. Beim Import prüft sie den Fingerabdruck und findet Tippfehler.
@@ -150,148 +150,14 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Datastore fast voll, Freigabe weg, Wechselplatte fertig oder überfällig. Telegram: Bot bei @BotFather anlegen,
   ihm schreiben (oder in die Gruppe aufnehmen), „Chat-ID ermitteln“ liest die Chat-ID aus; Screenshots und Berichte
   der Restore-Tests kommen als Bilder und Datei mit.
-- **Was wohin** (Benachrichtigungen → Was wohin): je Kanal (E-Mail, Telegram, Push) an- und abhaken, welche Arten von
-  Meldungen er bekommt – Sicherungen, Kopierjobs, USB- und Archiv-Platten, Prüfungen, Auffällige Sicherungen, Speicherplatz,
-  Festplatten, Erreichbarkeit, Updates, Konten, Änderungen an der Einrichtung, Monatsbericht – und ab welcher Stufe.
-
-```
-Proxmox-VE-Host
-└─ VM pk95-backup (Debian 13)
-   ├─ Proxmox Backup Server   Port 8007 (eigene PBS-Oberfläche, root@pam)
-   ├─ PK95 ProxBackup         Port 443  (diese Oberfläche, spricht mit PBS und PVE über deren API)
-   ├─ /mnt/pk95/<freigabe>    NFS/SMB über systemd-Mount-Units
-   └─ USB-Platten             durchgereichter USB-Anschluss → Wechsel-Datastores
-```
-
-**Voraussetzungen:** Proxmox VE 8 oder 9, Proxmox Backup Server 4 (die Appliance installiert ihn selbst; ein
-vorhandener PBS sollte ebenfalls auf 4.x sein – Wechsel-Datastores und „beim Anstecken kopieren“ gibt es erst dort).
-
-## Installation auf Proxmox (ein Befehl)
-
-Auf dem **Proxmox-Host** als `root` in der Shell (Weboberfläche → Knoten → „Shell“):
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/PhilippKuhlmann/pk95proxbackup/main/install/proxmox.sh)"
-```
-
-Das Skript fragt Schritt für Schritt, Enter übernimmt den Vorschlag:
-
-```
-1. VM            VM-ID [nächste freie] · Hostname [pk95-backup]
-2. Ressourcen    Kerne [2] · RAM [4096] · Systemplatte [32 GB] · Datenplatte [0 = keine] · Speicher
-3. Netzwerk      Bridge · VLAN · IP mit Präfix oder dhcp · Gateway · DNS
-4. Zugang        root-Passwort (Konsole und PBS-Oberfläche) · SSH-Schlüssel des Hosts übernehmen
-```
-
-Danach lädt es das offizielle Debian-13-Cloud-Image (Prüfsumme wird geprüft), legt die VM an (q35, VirtIO,
-Gast-Agent, serielle Konsole, Datenplatte mit `backup=0`) und startet sie. Beim ersten Start installiert
-cloud-init darin Proxmox Backup Server und PK95 ProxBackup (`install/appliance.sh`). Am Ende stehen
-**Adresse und Einrichtungscode** im Terminal – der Code steht auch auf der Konsole der VM.
-
-Braucht cloud-init einen Speicher für „Snippets“ und gibt es keinen, bietet das Skript an, das beim Speicher
-`local` einzuschalten.
-
-| Variable | Standard | Bedeutung |
-|---|---|---|
-| `VMID`, `VM_HOSTNAME` | nächste freie, `pk95-backup` | |
-| `CORES` / `MEMORY` / `DISK` | `2` / `4096` / `32` | Kerne, RAM in MB, Systemplatte in GB |
-| `DATA_DISK` | `0` | Datenplatte für Sicherungen in GB (0 = keine) |
-| `STORAGE` | `local-lvm`, sonst `local-zfs` | Speicher für die Platten |
-| `BRIDGE` / `VLAN` / `IP` / `GW` / `DNS` | `vmbr0` / – / `dhcp` / – / – | Netzwerk |
-| `ROOT_PASSWORD` | wird erzeugt und angezeigt | root-Passwort der VM |
-| `SNIPPETS` | erster Speicher mit Snippets | Ablage für das cloud-init-Skript |
-
-### Auf einem vorhandenen Debian 13 oder PBS
-
-`install/appliance.sh` installiert (oder aktualisiert) die Appliance auf einem laufenden Debian 13 – auch direkt auf
-einem vorhandenen Proxmox Backup Server. PBS wird nur installiert, wenn er fehlt (`INSTALL_PBS=0` verhindert das).
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/PhilippKuhlmann/pk95proxbackup/main/install/appliance.sh)"
-```
-
-Erneut ausgeführt, holt das Skript die neueste Version. Ab Version 1.5.0 geht das auch in der Oberfläche unter
-Einstellungen → Aktualisierung.
-
-### Ersatz für eine ausgefallene Appliance
-
-1. Neue Appliance installieren (wie oben).
-2. Bei der Ersteinrichtung „Aus einer Sicherung wiederherstellen“ wählen, die Datei (`.pk95cfg`, unter
-   Einstellungen → Sicherung der Appliance → „Als Datei laden“) und das Wiederherstellungs-Passwort angeben.
-3. Gibt es die Datei nicht, aber eine Wechselplatte: Konto anlegen, die Platte unter Wechselplatten →
-   „Fremde Platte einlesen“ einbinden, dann Einstellungen → Sicherung der Appliance → „Wiederherstellen“.
-
-Danach sind Verbindungen, Pläne, Konten und die PBS-Konfiguration zurück; Datastore-Platten und Freigaben müssen
-wieder angeschlossen sein.
-
-## Erste Schritte
-
-1. `https://<IP>` öffnen (selbst signiertes Zertifikat), Einrichtungscode eingeben, Konto anlegen.
-2. **Verbindungen → Proxmox VE hinzufügen.** Token auf einem Knoten anlegen:
-   `pveum user token add root@pam pk95 --privsep 0` – Token-ID `root@pam!pk95` und Secret eintragen,
-   Fingerabdruck mit „Abrufen“ holen und mit dem in PVE vergleichen.
-3. Der **PBS dieser Appliance** trägt sich selbst ein. Bei „Adresse für Proxmox VE“ die IP der VM prüfen.
-4. **Datastores → Datastore anlegen** (Datenplatte `sdb`, Freigabe oder Verzeichnis), Aufbewahrung festlegen.
-5. **Verbindungen → Backup-Speicher** beim Proxmox VE: den Datastore eintragen.
-6. **Sicherungsjobs → Job anlegen** (z. B. täglich 21:00, alles außer der Appliance selbst).
-7. Optional **Wechselplatten** und **Benachrichtigungen** einrichten.
-
-### Vorhandenen PBS einbinden
-
-Auf dem PBS:
-
-```bash
-proxmox-backup-manager user generate-token root@pam pk95
-proxmox-backup-manager acl update / Admin --auth-id 'root@pam!pk95'
-```
-
-Für NFS/SMB-Freigaben auf diesem PBS braucht die Appliance zusätzlich SSH (Schlüssel steht unter
-Einstellungen und im Server-Dialog). Datastores, Wechselplatten, Kopierjobs und Aufgaben laufen allein über die API.
-
-## Wechselplatten
-
-Jede Platte eines Satzes ist ein **Wechsel-Datastore** (removable datastore, PBS ≥ 3.3) mit einem Kopierjob vom
-Quell-Datastore (auch von einem anderen PBS). Ablauf:
-
-1. Platte anstecken – PBS hängt sie ein; mit „beim Anstecken kopieren“ startet die Kopie sofort, sonst zur Uhrzeit.
-   Eine verpasste Uhrzeit wird nicht nachgeholt: Wird die Platte erst danach angesteckt, kopiert die Appliance beim nächsten Termin.
-2. Nach der Kopie räumt die Appliance auf der Platte nach den Regeln des Satzes auf, gibt einmal pro Woche Speicher frei
-   und hängt die Platte aus.
-3. „Fertig – abziehen“ erscheint (auf Wunsch als Benachrichtigung). Platte abziehen und außer Haus bringen.
-4. Erinnerung, wenn die letzte Kopie älter als der Wechselrhythmus ist oder eine Platte lange nicht dran war.
-
-**USB an dieser VM:** Unter Wechselplatten → „USB an diese VM durchreichen“ wird der **Anschluss** des Proxmox-Hosts
-durchgereicht (nicht das Gerät). Jede Platte, die später in diesem Anschluss steckt, erscheint in der VM – so lässt
-sich wechseln, ohne die VM-Konfiguration anzufassen. Die Appliance findet ihre eigene VM über die SMBIOS-UUID.
-Proxmox VE lässt einen USB-Anschluss nur `root@pam` selbst durchreichen – ein API-Token genügt nicht, auch nicht das
-von root. Der Dialog zeigt dann den fertigen Befehl für die Shell des Hosts (`qm set <VMID> -usb0 host=<Anschluss>,usb3=1`)
-oder trägt den Anschluss mit dem root-Passwort ein (einmalige Anmeldung, das Passwort wird nicht gespeichert).
-
-Eine neue Platte wird beim Hinzufügen **gelöscht** und formatiert (Bestätigung durch Eintippen des Plattennamens).
-Platten, auf denen schon ein Wechsel-Datastore liegt, werden nie gelöscht.
-
-### Archiv-Platten
-
-Für einen Stand, der **nicht wieder überschrieben** wird (Jahresabschluss, Bankschließfach, vor einem großen Umbau):
-Wechselplatten → „Archiv-Sicherung“. Die Appliance
-
-1. bereitet die Platte als Wechsel-Datastore vor (oder nimmt einen vorhandenen),
-2. kopiert einmalig per `POST /pull` – es bleibt kein Kopierjob auf dem Server zurück –, standardmäßig nur die
-   neueste Sicherung je VM/CT, auf Wunsch nur ausgewählte Server,
-3. liest alles zurück (Verify, empfohlen), merkt sich den Inhalt mit Namen und Zeitpunkten
-4. und hängt die Platte aus. Die Meldung sagt, dass sie abgezogen und beschriftet werden kann.
-
-Der Datastore bleibt im PBS eingetragen: Steckt die Platte Jahre später wieder, wird sie erkannt, „Prüfen“ liest sie
-erneut vollständig, und unter Wiederherstellen erscheint sie als „Archiv: <Name>“. Älter als ein Jahr: einmal prüfen.
-
-### Fremde Platte einlesen
-
-Archiv-Platten → „Fremde Platte einlesen“ bindet den Datastore einer Platte ein, die ein anderer Backup-Server
-beschrieben hat (`reuse-datastore`, nichts wird gelöscht oder formatiert). Angeboten werden Partitionen (ext4/XFS),
-die kein Datastore dieses Servers benutzt. Mit Kommandozeilen-Zugang (lokaler PBS oder SSH) hängt die Appliance die
-Partition kurz **nur lesend** ein und sucht die Datastore-Ordner (`.chunks`); sonst wird der Ordner von Hand
-angegeben – bei Wechselplatten heißt er wie der Datastore auf dem alten Server. Danach:
-
+- **Was wohin** (Benachrichtigungen → Was wohin): je Kanal (E-Mail, Telegram, Push) und Art – Sicherungen, Kopierjobs,
+  USB- und Archiv-Platten, Prüfungen, Auffällige Sicherungen, Speicherplatz, Festplatten, Erreichbarkeit, Updates,
+  Konten, Änderungen an der Einrichtung, Monatsbericht – **Alles**, **Nur Probleme** (Warnungen und Fehler, z. B.
+  Updates nur, wenn etwas schiefgeht) oder **Aus**; dazu je Kanal eine Mindeststufe.
+- **Ruhe bei Updates und Neustarts:** Je Update kommt eine Meldung mit dem Ergebnis („Updates eingespielt und neu
+  gestartet, nach etwa 2 Minuten wieder erreichbar“) statt einer je Schritt; die Schritte stehen unter Ereignisse.
+  Startet die Appliance einen Backup-Server selbst neu, meldet sie ihn nicht als ausgefallen – erst wenn er nach
+  15 Minuten nicht zurück ist.
 - **Wiederherstellen:** die Platte erscheint als Quelle „Archiv: <Name>“ (Dateien oder ganze VMs/CTs).
 - **Restore-Tests:** das Kalender-Symbol auf der Karte legt einen Plan für diesen Datastore an. Restore-Tests hängen
   USB-Datastores selbst ein und danach wieder aus.
@@ -320,7 +186,7 @@ unveränderlich (`chattr +i`), damit PBS bei fehlender Freigabe nicht ins System
   (`/etc/pve/priv/storage/<speicher>.enc`). Ohne Schlüssel sind verschlüsselte Sicherungen verloren: den
   Papierschlüssel getrennt von den Platten aufbewahren. Löschen in der Appliance geht nur mit Passwort und nur,
   solange kein Speicher den Schlüssel verwendet.
-- **Löschschutz** (Einstellungen → Löschschutz): Der Token, mit dem Proxmox VE sich am Backup-Server anmeldet, hat
+- **Löschschutz** (Schutz → Löschschutz): Der Token, mit dem Proxmox VE sich am Backup-Server anmeldet, hat
   dann die Rollen `DatastoreBackup` und `DatastoreReader` statt `DatastorePowerUser`. Aufbewahrung gehört dann in den
   Datastore (Prune-Job des Backup-Servers); eine eigene Aufbewahrung im Sicherungsjob von Proxmox VE schlägt fehl –
   die Seite zeigt solche Jobs an. Feste Datastores werden alle zehn Minuten auf verschwundene Sicherungen geprüft.

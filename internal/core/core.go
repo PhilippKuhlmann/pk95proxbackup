@@ -332,8 +332,18 @@ func (c *Core) EventDetails(severity, source, title, body string, d *notify.Deta
 	c.EventWithFiles(severity, source, title, body, d, nil)
 }
 
+// Record writes an event to the log of the appliance without sending it anywhere (steps whose
+// result follows in its own message).
+func (c *Core) Record(severity, source, title, body string) {
+	c.event(severity, source, title, body, nil, nil, false)
+}
+
 // EventWithFiles is EventDetails with attachments for the notification mail.
 func (c *Core) EventWithFiles(severity, source, title, body string, d *notify.Details, files []notify.Attachment) {
+	c.event(severity, source, title, body, d, files, true)
+}
+
+func (c *Core) event(severity, source, title, body string, d *notify.Details, files []notify.Attachment, send bool) {
 	ev := store.Event{Severity: severity, Source: source, Title: title, Body: body}
 	if d != nil {
 		if b, err := json.Marshal(d); err == nil {
@@ -344,6 +354,9 @@ func (c *Core) EventWithFiles(severity, source, title, body string, d *notify.De
 		log.Printf("event: %v", err)
 	}
 	log.Printf("[%s] %s: %s %s", severity, source, title, strings.ReplaceAll(body, "\n", " "))
+	if !send {
+		return
+	}
 	ns := c.NotifySettings()
 	msg := c.Message(severity, source, title, body, d)
 	msg.Category = EventCategory(source, title)

@@ -123,7 +123,7 @@ func TestEncryptionKeys(t *testing.T) {
 	_, unknown := enckey.New()
 	fake.Current.Offsite.SetSnapshotKey("offsite", unknown)
 	code, out = cl.do("POST", "/api/restore", req, true)
-	if msg, _ := out["error"].(string); code != 502 || !strings.Contains(msg, "Einstellungen → Verschlüsselung") || len(fake.Current.PVE.StorageList()) != before {
+	if msg, _ := out["error"].(string); code != 502 || !strings.Contains(msg, "Schutz → Verschlüsselung") || len(fake.Current.PVE.StorageList()) != before {
 		t.Fatalf("restore without key: %d %v", code, out)
 	}
 	_, out = cl.do("GET", "/api/enckeys", nil, false)

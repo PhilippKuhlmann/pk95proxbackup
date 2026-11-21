@@ -166,6 +166,10 @@ func TestAutoUpdate(t *testing.T) {
 	if !strings.Contains(eventTitles(t, c), "Automatischer Neustart verschoben") {
 		t.Fatalf("not reported:\n%s", eventTitles(t, c))
 	}
+	// One message for the run: the installed updates are part of it.
+	if b := eventBody(t, c, "Automatischer Neustart verschoben"); !strings.Contains(b, "Pakete aktualisiert") {
+		t.Fatalf("updates missing in the message: %q", b)
+	}
 	// next Saturday: nothing to install, the pending reboot is done
 	time.Sleep(1200 * time.Millisecond) // the check has ended
 	next := sat.AddDate(0, 0, 7)
