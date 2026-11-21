@@ -790,6 +790,5 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .sys-auto > .icon { color: var(--muted); flex: none; }
 
 /* notifications: which message goes to which channel */
-.notify-matrix th.c, .notify-matrix td.c { text-align: center; width: 150px; }
-.notify-matrix td.c input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--c600); }
+.notify-matrix th.c, .notify-matrix td.c { text-align: center; width: 230px; }
 .notify-matrix td.c select { width: 100%; min-width: 0; padding-left: 10px; padding-right: 26px; font-size: 13px; }

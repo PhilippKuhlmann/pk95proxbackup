@@ -4045,9 +4045,9 @@ NOTIFY_PAGES.auswahl = async (box) => {
     ${[["all", "Alles"], ...(c.key === "report" ? [] : [["problems", "Nur Probleme"]]), ["off", "Aus"]].map(([v, t]) => `<option value="${v}" ${level(ch, c.key) === v ? "selected" : ""}>${t}</option>`).join("")}</select>`;
   box.innerHTML = `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">Was wohin</div>
       <div class="muted small">Je Kanal und Art: <b>Alles</b>, <b>Nur Probleme</b> (Warnungen und Fehler – z. B. bei Updates nur, wenn etwas schiefgeht) oder <b>Aus</b> (auch keine Fehler). Die Ereignisse der Appliance zeichnen weiter alles auf.</div></div></div>
-    <div class="table-wrap"><table class="resp notify-matrix"><thead><tr><th>Meldungen</th>${chans.map(([k, l, en]) => `<th class="c">${esc(l)}${en ? "" : `<div class="t-sub">aus</div>`}</th>`).join("")}</tr></thead><tbody>
-      <tr><td data-l="Stufe"><b>Melden ab</b><div class="t-sub">Standard = wie unter Kanäle („${esc(sevName[n.min_severity] || "")}“)</div></td>${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c"><select data-sev="${k}" aria-label="${esc(l)}: melden ab">
-        <option value="">Standard</option>${Object.entries(sevName).map(([v, t]) => `<option value="${v}" ${(prefs[k] || {}).min_severity === v ? "selected" : ""}>${t}</option>`).join("")}</select></td>`).join("")}</tr>
+    <div class="table-wrap"><table class="resp notify-matrix"><thead><tr><th>Meldungen</th>${chans.map(([k, l, en]) => `<th class="c"${en ? "" : ' title="Unter Kanäle ausgeschaltet – die Auswahl gilt, sobald er eingeschaltet ist."'}>${esc(l)}</th>`).join("")}</tr></thead><tbody>
+      <tr><td data-l="Stufe"><b>Melden ab</b><div class="t-sub">„Wie Kanäle“ übernimmt die Stufe aus dem Reiter Kanäle – ändert sie sich dort, gilt sie auch hier.</div></td>${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c"><select data-sev="${k}" aria-label="${esc(l)}: melden ab">
+        <option value="">Wie Kanäle: ${esc(sevName[n.min_severity] || "Alles")}</option>${Object.entries(sevName).map(([v, t]) => `<option value="${v}" ${(prefs[k] || {}).min_severity === v ? "selected" : ""}>${t}</option>`).join("")}</select></td>`).join("")}</tr>
       ${cats.map((c) => `<tr><td data-l="Meldungen"><b>${esc(c.label)}</b><div class="t-sub">${esc(c.hint)}</div></td>
         ${chans.map(([k, l]) => `<td data-l="${esc(l)}" class="c">${levelSel(k, l, c)}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div>
