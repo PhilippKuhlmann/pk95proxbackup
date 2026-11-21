@@ -236,10 +236,13 @@ func (s *Server) restoreSelfBackup(w http.ResponseWriter, r *http.Request) {
 // setupRestore sets up a new appliance from a backup instead of creating an account.
 func (s *Server) setupRestore(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
-	if s.limited(ip) {
+	done, allowed := s.attempt(ip)
+	if !allowed {
 		writeErr(w, http.StatusTooManyRequests, "Zu viele Fehlversuche. Bitte 15 Minuten warten.")
 		return
 	}
+	bad := false
+	defer func() { done(!bad) }()
 	if n, _ := s.C.St.UserCount(); n > 0 {
 		writeErr(w, http.StatusConflict, "Die Einrichtung ist bereits abgeschlossen. Wiederherstellen unter Einstellungen.")
 		return
@@ -250,7 +253,7 @@ func (s *Server) setupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	want := s.setupCode()
 	if want == "" || subtle.ConstantTimeCompare([]byte(strings.ToUpper(strings.TrimSpace(code))), []byte(want)) != 1 {
-		s.failed(ip)
+		bad = true
 		fieldErrs(w, map[string]string{"code": "Einrichtungscode stimmt nicht. Er steht auf der Konsole der VM."})
 		return
 	}

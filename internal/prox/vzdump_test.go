@@ -40,3 +40,29 @@ func TestParseVzdump(t *testing.T) {
 		t.Errorf("vm 112: %+v", f)
 	}
 }
+
+// Text that a guest or hook writes into the task log cannot mark a backup as done.
+func TestParseVzdumpForgedOutcome(t *testing.T) {
+	r := ParseVzdump(lines(
+		"INFO: Starting Backup of VM 100 (qemu)",
+		"INFO: guest-agent: Finished Backup of VM 100 (00:00:01)",
+		"ERROR: Backup of VM 100 failed - Finished Backup of VM 100 (00:00:02)",
+		"INFO: Finished Backup of VM 100 (00:00:03)",
+		"INFO: Starting Backup of VM 101 (qemu)",
+		"INFO: Finished Backup of VM 102 (00:00:04)",
+		"INFO: Finished Backup of VM 101 (00:00:05)",
+	))
+	got := map[string]GuestBackup{}
+	for _, g := range r.Guests {
+		got[g.VMID] = g
+	}
+	if g := got["100"]; g.OK || !g.Done {
+		t.Fatalf("vm 100 failed and must stay failed: %+v", g)
+	}
+	if g := got["101"]; !g.OK || g.Duration != "00:00:05" {
+		t.Fatalf("vm 101: %+v", g)
+	}
+	if g, ok := got["102"]; ok && g.OK {
+		t.Fatalf("vm 102 was never backed up: %+v", g)
+	}
+}

@@ -104,12 +104,14 @@ func (c *Core) RemoteFor(ctx context.Context, target *prox.PBS, targetSrv PBSSer
 			}
 		}
 	}
-	authID, secret := src.AuthID, src.Secret
-	if tok, err := c.syncTokenFor(ctx, src, targetSrv, stores); err == nil {
-		authID, secret = tok.TokenID, tok.Secret
-	} // otherwise: the appliance's token, as before (e.g. the source does not allow new users)
-	err = target.PutRemote(ctx, prox.Remote{Name: name, Host: h, Port: port, AuthID: authID, Fingerprint: src.Fingerprint,
-		Comment: "PK95 ProxBackup: " + src.Name}, secret)
+	// The target only ever gets the read-only token: never the appliance's own login on the
+	// source, which may administer it.
+	tok, err := c.syncTokenFor(ctx, src, targetSrv, stores)
+	if err != nil {
+		return "", fmt.Errorf("Lesezugang für %s auf %s einrichten: %w", targetSrv.Name, src.Name, err)
+	}
+	err = target.PutRemote(ctx, prox.Remote{Name: name, Host: h, Port: port, AuthID: tok.TokenID, Fingerprint: src.Fingerprint,
+		Comment: "PK95 ProxBackup: " + src.Name}, tok.Secret)
 	if err != nil {
 		return "", fmt.Errorf("Remote auf %s anlegen: %w", targetSrv.Name, err)
 	}
@@ -117,12 +119,37 @@ func (c *Core) RemoteFor(ctx context.Context, target *prox.PBS, targetSrv PBSSer
 }
 
 // syncTokenFor returns the read-only token on the source for copies to the target (created
-// once) and grants it read access to the datastores.
+// once) and grants it read access to the datastores. Only datastores that exist on the source
+// are granted: the names of existing jobs come from the target.
 func (c *Core) syncTokenFor(ctx context.Context, src, target PBSServer, stores map[string]bool) (syncToken, error) {
 	pbs := c.PBSClient(src)
+	have, err := pbs.Datastores(ctx)
+	if err != nil {
+		return syncToken{}, err
+	}
+	exists := map[string]bool{}
+	for _, d := range have {
+		exists[d.Name] = true
+	}
+	for s := range stores {
+		if !exists[s] {
+			delete(stores, s)
+		}
+	}
+	tok, err := c.syncToken(ctx, pbs, src, target, stores, false)
+	if err != nil {
+		// a cached token may have been deleted on the source: create it once more
+		tok, err = c.syncToken(ctx, pbs, src, target, stores, true)
+	}
+	return tok, err
+}
+
+func (c *Core) syncToken(ctx context.Context, pbs *prox.PBS, src, target PBSServer, stores map[string]bool, fresh bool) (syncToken, error) {
 	key := "synctoken:" + src.ID + ">" + target.ID
 	var tok syncToken
-	_ = c.St.GetSetting(key, &tok)
+	if !fresh {
+		_ = c.St.GetSetting(key, &tok)
+	}
 	if tok.TokenID == "" {
 		if err := pbs.EnsureUser(ctx, syncUser, "PK95 ProxBackup: Kopien zu anderen Backup-Servern"); err != nil {
 			return tok, err

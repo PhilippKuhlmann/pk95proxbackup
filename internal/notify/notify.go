@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -175,7 +176,35 @@ func mimeHeader(s string) string {
 	return s
 }
 
+// sendHook sends to the webhook. Its errors end up in the event log, which every account
+// reads: they never contain the URL (it may carry a secret path) or the token.
 func sendHook(ctx context.Context, s Settings, m Message) error {
+	err := sendHookRaw(ctx, s, m)
+	if err == nil {
+		return nil
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = fmt.Errorf("nicht erreichbar: %w", ue.Err)
+	}
+	return errors.New(redact(err.Error(), s.HookURL, s.HookToken))
+}
+
+// redact replaces each secret (and its URL-encoded form) in text.
+func redact(text string, secrets ...string) string {
+	for _, sec := range secrets {
+		if len(sec) < 4 {
+			continue
+		}
+		text = strings.ReplaceAll(text, sec, "…")
+		if q := url.QueryEscape(sec); q != sec {
+			text = strings.ReplaceAll(text, q, "…")
+		}
+	}
+	return text
+}
+
+func sendHookRaw(ctx context.Context, s Settings, m Message) error {
 	if s.HookURL == "" {
 		return errors.New("keine URL")
 	}
@@ -204,7 +233,7 @@ func sendHook(ctx context.Context, s Settings, m Message) error {
 			if strings.Contains(u, "?") {
 				sep = "&"
 			}
-			u += sep + "token=" + s.HookToken
+			u += sep + "token=" + url.QueryEscape(s.HookToken)
 		}
 		req, err = http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 		if err == nil {

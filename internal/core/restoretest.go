@@ -232,7 +232,36 @@ func (c *Core) CancelRestoreTest() bool {
 
 // ScreenshotPath is where the picture of a result is stored.
 func (c *Core) ScreenshotPath(runID, file string) string {
-	return filepath.Join(c.DataDir, "restoretests", filepath.Base(runID), filepath.Base(file))
+	return filepath.Join(c.DataDir, "restoretests", safeName(runID), safeName(file))
+}
+
+// safeName reduces s to one path element that cannot leave its directory.
+func safeName(s string) string {
+	s = filepath.Base(s)
+	if s == "." || s == ".." || s == string(filepath.Separator) {
+		return "_"
+	}
+	return s
+}
+
+// RecordedScreenshot returns the stored picture of a run only when that run
+// actually recorded a screenshot under this name.
+func (c *Core) RecordedScreenshot(runID, file string) (string, bool) {
+	if runID == "" || file == "" {
+		return "", false
+	}
+	for _, run := range c.RestoreTestRuns() {
+		if run.ID != runID {
+			continue
+		}
+		for _, r := range run.Results {
+			if r.Screenshot != "" && r.Screenshot == file {
+				return c.ScreenshotPath(run.ID, r.Screenshot), true
+			}
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // StartRestoreTest begins a run of a plan in the background.
@@ -533,7 +562,14 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 		})
 		return
 	}
-	params, notes := isolate(cfg, typ, snap.ID, plan, bridges)
+	params, notes, err := isolate(cfg, typ, snap.ID, testID, plan, bridges)
+	if err != nil {
+		failed = true
+		set(func(r *RestoreTestResult) {
+			r.Status, r.Phase, r.Info = "error", "", "Isolieren nicht möglich: "+err.Error()
+		})
+		return
+	}
 	if err := pve.SetGuestConfig(ctx, plan.Node, typ, testID, params); err != nil {
 		failed = true
 		set(func(r *RestoreTestResult) {
@@ -637,9 +673,33 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 	})
 }
 
+// Config keys a test guest keeps (everything else is removed: an allowlist, so options
+// Proxmox VE adds later cannot reach the host or production unnoticed). net, disks and mount
+// points are checked separately.
+var (
+	rtKeepQemu = map[string]bool{"acpi": true, "agent": true, "arch": true, "balloon": true, "bios": true, "boot": true,
+		"bootdisk": true, "cores": true, "cpu": true, "cpulimit": true, "cpuunits": true, "description": true, "freeze": true,
+		"hotplug": true, "keyboard": true, "kvm": true, "localtime": true, "machine": true, "memory": true, "meta": true,
+		"migrate_downtime": true, "migrate_speed": true, "name": true, "numa": true, "onboot": true, "ostype": true,
+		"reboot": true, "scsihw": true, "shares": true, "smbios1": true, "smp": true, "sockets": true,
+		"spice_enhancements": true, "startdate": true, "tablet": true, "tags": true, "tdf": true, "vcpus": true, "vga": true,
+		"vmgenid": true, "watchdog": true, "citype": true, "ciuser": true, "cipassword": true, "ciupgrade": true,
+		"nameserver": true, "searchdomain": true, "sshkeys": true}
+	rtKeepLXC = map[string]bool{"arch": true, "cmode": true, "console": true, "cores": true, "cpulimit": true, "cpuunits": true,
+		"description": true, "features": true, "hostname": true, "memory": true, "nameserver": true, "onboot": true,
+		"ostype": true, "searchdomain": true, "swap": true, "tags": true, "timezone": true, "tty": true, "unprivileged": true}
+	// rtMeta are read-only entries of a config, never sent back.
+	rtMeta = map[string]bool{"digest": true, "lock": true, "parent": true, "pending": true, "runningmachine": true, "runningcpu": true}
+	// rtVolRe is a volume of a storage; group 1 is the guest that owns it.
+	rtVolRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*:(?:\d+/)?(?:vm|base|subvol|basevol)-(\d+)-`)
+)
+
 // isolate builds the config changes that keep a test guest away from production: network
-// links down, passthrough devices and bind mounts removed, no autostart, limited resources.
-func isolate(cfg map[string]any, typ, origID string, plan RestoreTestPlan, bridges []string) (prox.Params, []string) {
+// links down, every option that is not on the allowlist removed (passthrough devices, bind
+// mounts, shared folders, raw QEMU arguments, hook scripts …), no autostart, limited
+// resources. A disk or mount point that is not a volume of the restored test guest stops the
+// test: starting would write to another guest's disk.
+func isolate(cfg map[string]any, typ, origID string, testID int, plan RestoreTestPlan, bridges []string) (prox.Params, []string, error) {
 	p := prox.Params{}
 	var del, notes []string
 	bridgeOK := map[string]bool{}
@@ -652,22 +712,32 @@ func isolate(cfg map[string]any, typ, origID string, plan RestoreTestPlan, bridg
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	devRe := regexp.MustCompile(`^(hostpci|usb|parallel|dev)\d+$`)
 	netRe := regexp.MustCompile(`^net\d+$`)
 	mpRe := regexp.MustCompile(`^mp\d+$`)
-	diskRe := regexp.MustCompile(`^(ide|sata|scsi)\d+$`)
+	diskRe := regexp.MustCompile(`^(ide|sata|scsi|virtio)\d+$|^efidisk0$|^tpmstate0$`)
+	ipRe := regexp.MustCompile(`^ipconfig\d+$`)
+	serialRe := regexp.MustCompile(`^serial\d+$`)
+	keep := rtKeepQemu
+	if typ == "lxc" {
+		keep = rtKeepLXC
+	}
+	// ownVolume reports whether a disk value is a volume of the test guest; host reports a
+	// plain host path (a device or a bind mount).
+	ownVolume := func(v string) (own, host bool) {
+		vol, _, _ := strings.Cut(v, ",")
+		if strings.HasPrefix(vol, "/") {
+			return false, true
+		}
+		m := rtVolRe.FindStringSubmatch(vol)
+		return m != nil && m[1] == strconv.Itoa(testID), false
+	}
 	for _, k := range keys {
 		v := str(cfg[k])
 		switch {
-		case devRe.MatchString(k):
-			del = append(del, k)
-			notes = append(notes, k+" entfernt")
-		case strings.HasPrefix(k, "serial") && v != "socket":
-			del = append(del, k)
-			notes = append(notes, k+" entfernt")
-		case typ == "lxc" && mpRe.MatchString(k) && strings.HasPrefix(v, "/"):
-			del = append(del, k)
-			notes = append(notes, k+" (Bind-Mount) entfernt")
+		case rtMeta[k]:
+		case k == "lxc":
+			// raw lxc.* lines cannot be removed through the API
+			return nil, nil, errors.New("Die Konfiguration enthält rohe lxc.*-Einträge – der Test wird nicht gestartet.")
 		case netRe.MatchString(k):
 			parts := []string{}
 			for _, x := range strings.Split(v, ",") {
@@ -680,14 +750,32 @@ func isolate(cfg map[string]any, typ, origID string, plan RestoreTestPlan, bridg
 				}
 			}
 			p[k] = strings.Join(append(parts, "link_down=1"), ",")
-		case typ == "qemu" && diskRe.MatchString(k) && strings.Contains(v, "media=cdrom") && !strings.HasPrefix(v, "none") && !strings.HasPrefix(v, "cdrom"):
-			p[k] = "none,media=cdrom"
-			notes = append(notes, "ISO in "+k+" entfernt")
-		}
-	}
-	for _, k := range []string{"startup", "hookscript"} {
-		if _, ok := cfg[k]; ok {
+		case typ == "qemu" && diskRe.MatchString(k) && strings.Contains(v, "media=cdrom"):
+			if !strings.HasPrefix(v, "none") && !strings.HasPrefix(v, "cdrom") {
+				p[k] = "none,media=cdrom"
+				notes = append(notes, "ISO in "+k+" entfernt")
+			}
+		case (typ == "qemu" && diskRe.MatchString(k)) || (typ == "lxc" && (k == "rootfs" || mpRe.MatchString(k))):
+			own, host := ownVolume(v)
+			switch {
+			case own:
+			case host && k != "rootfs":
+				del = append(del, k)
+				if typ == "lxc" {
+					notes = append(notes, k+" (Bind-Mount) entfernt")
+				} else {
+					notes = append(notes, k+" (Pfad auf dem Host) entfernt")
+				}
+			default:
+				vol, _, _ := strings.Cut(v, ",")
+				return nil, nil, fmt.Errorf("%s verweist auf %s, nicht auf eine wiederhergestellte Disk – der Test wird nicht gestartet.", k, vol)
+			}
+		case typ == "qemu" && ipRe.MatchString(k):
+		case typ == "qemu" && serialRe.MatchString(k) && v == "socket":
+		case keep[k]:
+		default:
 			del = append(del, k)
+			notes = append(notes, k+" entfernt")
 		}
 	}
 	p["onboot"] = false
@@ -723,7 +811,7 @@ func isolate(cfg map[string]any, typ, origID string, plan RestoreTestPlan, bridg
 		p["delete"] = strings.Join(del, ",")
 	}
 	notes = append([]string{"Netzwerk getrennt"}, notes...)
-	return p, notes
+	return p, notes, nil
 }
 
 func agentEnabled(cfg map[string]any) bool {

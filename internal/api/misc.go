@@ -942,6 +942,9 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request) {
 		// Password of root@pam: Proxmox VE lets only root@pam itself pass a host USB port
 		// through (an API token never qualifies). Used for one login, never stored.
 		Password string `json:"password"`
+		// The VM the administrator saw in the dialog: the change goes only to that VM.
+		Cluster string `json:"cluster"`
+		VMID    int    `json:"vmid"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -949,6 +952,10 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request) {
 	self, err := s.findSelf(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if req.Cluster != self.Cluster || req.VMID != self.VMID {
+		writeErr(w, http.StatusConflict, fmt.Sprintf("Diese VM ist jetzt %d %s in %s – bitte den Dialog neu laden und prüfen.", self.VMID, self.Name, self.ClusterName))
 		return
 	}
 	pve, cl, err := s.C.PVE(self.Cluster)

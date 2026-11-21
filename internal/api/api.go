@@ -56,18 +56,24 @@ func New(c *core.Core, web fs.FS, secure bool) *Server {
 
 type ctxKey struct{}
 
+// noteProxy remembers a reverse proxy in front of the appliance (signed-in requests only, so
+// a visitor cannot plant an address in the settings).
+func (s *Server) noteProxy(r *http.Request) {
+	if r.Header.Get("X-Forwarded-For") == "" {
+		return
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	s.C.NoteProxy(remoteIP(r), strings.ToLower(r.Header.Get("X-Forwarded-Proto")), host)
+}
+
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "same-origin")
-	if r.Header.Get("X-Forwarded-For") != "" {
-		host := r.Header.Get("X-Forwarded-Host")
-		if host == "" {
-			host = r.Host
-		}
-		s.C.NoteProxy(remoteIP(r), strings.ToLower(r.Header.Get("X-Forwarded-Proto")), host)
-	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
 	}
@@ -375,7 +381,10 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) limited(ip string) bool {
+// attempt reserves one try of ip before a credential is checked, so requests running at the
+// same time count against the limit as well. done(true) gives the try back (success or no
+// check made); done(false) keeps it as failure. allowed is false when the limit is reached.
+func (s *Server) attempt(ip string) (done func(ok bool), allowed bool) {
 	s.limMu.Lock()
 	defer s.limMu.Unlock()
 	var keep []time.Time
@@ -384,8 +393,29 @@ func (s *Server) limited(ip string) bool {
 			keep = append(keep, t)
 		}
 	}
-	s.fails[ip] = keep
-	return len(keep) >= 10
+	if len(keep) >= 10 {
+		s.fails[ip] = keep
+		return func(bool) {}, false
+	}
+	mark := time.Now()
+	s.fails[ip] = append(keep, mark)
+	var once sync.Once
+	return func(ok bool) {
+		once.Do(func() {
+			if !ok {
+				return
+			}
+			s.limMu.Lock()
+			defer s.limMu.Unlock()
+			list := s.fails[ip]
+			for i, t := range list {
+				if t.Equal(mark) {
+					s.fails[ip] = append(list[:i:i], list[i+1:]...)
+					break
+				}
+			}
+		})
+	}, true
 }
 
 func (s *Server) failed(ip string) {
@@ -406,17 +436,20 @@ func (s *Server) startSession(w http.ResponseWriter, userID int64) error {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
-	if s.limited(ip) {
+	done, allowed := s.attempt(ip)
+	if !allowed {
 		writeErr(w, http.StatusTooManyRequests, "Zu viele Fehlversuche. Bitte 15 Minuten warten.")
 		return
 	}
+	bad := false
+	defer func() { done(!bad) }()
 	var req struct{ Username, Password string }
 	if !decode(w, r, &req) {
 		return
 	}
 	u, err := s.C.St.UserByName(strings.TrimSpace(req.Username))
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(u.Hash), []byte(req.Password)) != nil {
-		s.failed(ip)
+		bad = true
 		_ = s.C.St.AddAudit(store.AuditEntry{TS: time.Now().Unix(), User: strings.TrimSpace(req.Username), IP: ip, Action: "Anmeldung fehlgeschlagen", Status: http.StatusUnauthorized})
 		time.Sleep(400 * time.Millisecond)
 		writeErr(w, http.StatusUnauthorized, "Benutzername oder Passwort falsch.")
@@ -460,10 +493,13 @@ func validPassword(pw string) string {
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
-	if s.limited(ip) {
+	done, allowed := s.attempt(ip)
+	if !allowed {
 		writeErr(w, http.StatusTooManyRequests, "Zu viele Fehlversuche. Bitte 15 Minuten warten.")
 		return
 	}
+	bad := false
+	defer func() { done(!bad) }()
 	n, _ := s.C.St.UserCount()
 	if n > 0 {
 		writeErr(w, http.StatusConflict, "Die Einrichtung ist bereits abgeschlossen.")
@@ -475,7 +511,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	code := s.setupCode()
 	if code == "" || subtle.ConstantTimeCompare([]byte(strings.ToUpper(strings.TrimSpace(req.Code))), []byte(code)) != 1 {
-		s.failed(ip)
+		bad = true
 		fieldErrs(w, map[string]string{"code": "Einrichtungscode stimmt nicht. Er steht auf der Konsole der VM."})
 		return
 	}

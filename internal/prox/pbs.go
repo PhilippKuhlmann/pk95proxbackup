@@ -476,9 +476,24 @@ func (p *PBS) NewToken(ctx context.Context, userid, name, comment string) (strin
 	return out.TokenID, out.Value, nil
 }
 
-// SetACL grants a role on a path to an auth id.
+// SetACL grants a role on a path (and everything below it) to an auth id.
 func (p *PBS) SetACL(ctx context.Context, path, role, authID string) error {
-	return p.Do(ctx, http.MethodPut, "/access/acl", Params{"path": path, "role": role, "auth-id": authID, "propagate": true}, nil)
+	return p.SetACLScope(ctx, path, role, authID, true)
+}
+
+// SetACLScope grants a role on a path to an auth id; without propagate the grant covers only
+// that path (for a datastore: only its root namespace), not the namespaces below it.
+func (p *PBS) SetACLScope(ctx context.Context, path, role, authID string, propagate bool) error {
+	return p.Do(ctx, http.MethodPut, "/access/acl", Params{"path": path, "role": role, "auth-id": authID, "propagate": propagate}, nil)
+}
+
+// NamespacePath is the ACL path of one namespace of a datastore ("" = the root namespace).
+func NamespacePath(store, ns string) string {
+	ns = strings.Trim(ns, "/")
+	if ns == "" {
+		return "/datastore/" + store
+	}
+	return "/datastore/" + store + "/" + ns
 }
 
 // S3Endpoint is an S3 object store the server can put datastores into (/config/s3).

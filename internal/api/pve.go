@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -223,31 +225,49 @@ func (s *Server) addPVEStorage(w http.ResponseWriter, r *http.Request) {
 
 var tokenNameRe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
-// registerPBSStorage adds a datastore of a Backup Server as storage to a cluster. Each
-// cluster/datastore pair gets its own PBS token that may only use this datastore (one token
-// per pair: re-creating a shared one would break the storages that use its old secret).
+// storageTokenName is the PBS token of one PVE storage: one token per storage, so adding a
+// storage never re-creates (and revokes) the token another storage logs in with. The prefix
+// differs from the per-datastore tokens of older versions ("pve-…"), which stay untouched.
+func storageTokenName(clusterID, storage string) string {
+	name := tokenNameRe.ReplaceAllString("pves-"+clusterID+"-"+storage, "-")
+	if len(name) > 60 {
+		sum := sha256.Sum256([]byte(clusterID + "\x00" + storage))
+		name = name[:51] + "-" + hex.EncodeToString(sum[:4])
+	}
+	return name
+}
+
+// registerPBSStorage adds a datastore of a Backup Server as storage to a cluster. Each storage
+// gets its own PBS token that may only use this datastore and read only its own namespace.
 func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, pbs *prox.PBS, srv core.PBSServer, store, name, ns, encKey string) error {
 	if srv.Address() == "" {
 		return fmt.Errorf("für %s ist keine Adresse für Proxmox VE hinterlegt (Verbindungen → Server bearbeiten)", srv.Name)
 	}
-	user := "pk95-pve@pbs"
+	// The token is created before the storage: make sure the name is free first, or a
+	// failing add would still have replaced the token of the storage of that name.
+	storages, err := pve.Storages(ctx)
+	if err != nil {
+		return err
+	}
+	for _, st := range storages {
+		if st.Storage == name {
+			return fmt.Errorf("in %s gibt es schon einen Speicher „%s“", cl.Name, name)
+		}
+	}
+	user := core.ApplianceStorageUser
 	if err := pbs.EnsureUser(ctx, user, "PK95 ProxBackup: Zugang für Proxmox VE"); err != nil {
 		return fmt.Errorf("Benutzer auf dem Backup-Server anlegen: %w", err)
 	}
-	tname := tokenNameRe.ReplaceAllString("pve-"+cl.ID+"-"+store, "-")
-	if len(tname) > 60 {
-		tname = tname[:60]
-	}
-	tokenID, secret, err := pbs.NewToken(ctx, user, tname, "PK95 ProxBackup: "+cl.Name+" / "+store)
+	tokenID, secret, err := pbs.NewToken(ctx, user, storageTokenName(cl.ID, name), "PK95 ProxBackup: "+cl.Name+" / "+name+" ("+store+")")
 	if err != nil {
 		return fmt.Errorf("Token anlegen: %w", err)
 	}
 	// The user needs the rights as well: a token never has more than its user.
-	// PowerUser: back up and prune; Reader: also read backups written by others (sync
-	// jobs, USB copies) – without it restoring them fails with "backup owner check failed".
-	// With the delete protection for new storages, the token gets DatastoreBackup instead of
-	// PowerUser: back up and read, but not delete or prune (the user keeps PowerUser, so lifting
-	// the protection later only touches the token).
+	// PowerUser: back up and prune; Reader (only the storage's namespace): also read backups
+	// written by others (sync jobs, USB copies) – without it restoring them fails with "backup
+	// owner check failed". With the delete protection for new storages, the token gets
+	// DatastoreBackup instead of PowerUser: back up and read, but not delete or prune (the user
+	// keeps PowerUser, so lifting the protection later only touches the token).
 	tokenRole := "DatastorePowerUser"
 	if s.C.ProtectSettings().NewStorages {
 		tokenRole = "DatastoreBackup"
@@ -257,11 +277,12 @@ func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.
 		if id == tokenID {
 			role = tokenRole
 		}
-		for _, role := range []string{role, "DatastoreReader"} {
-			if err := pbs.SetACL(ctx, "/datastore/"+store, role, id); err != nil {
-				return fmt.Errorf("Rechte setzen: %w", err)
-			}
+		if err := pbs.SetACL(ctx, "/datastore/"+store, role, id); err != nil {
+			return fmt.Errorf("Rechte setzen: %w", err)
 		}
+	}
+	if err := s.C.GrantStorageRead(ctx, srv, store, ns, tokenID); err != nil {
+		return err
 	}
 	port := srv.Port
 	if port == 0 {
@@ -277,7 +298,36 @@ func (s *Server) registerPBSStorage(ctx context.Context, pve *prox.PVE, cl core.
 // is none (for restoring from a USB disk or another Backup Server). Backups encrypted with the
 // key keyFP need a storage with that key: if none has it, the appliance adds one with the key
 // from its own store (any storage reads unencrypted backups).
+// A context marked with noStorageCreate may only use existing storages (see storageCtx).
 func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string) (string, error) {
+	return s.ensureStorage(ctx, pve, cl, srv, store, keyFP, ctx.Value(noStorageCreate{}) == nil)
+}
+
+type noStorageCreate struct{}
+
+// storageCtx is the context for work of a request that may need a storage: only
+// administrators may have one added.
+func storageCtx(r *http.Request) context.Context {
+	if currentUser(r).Role == "admin" {
+		return r.Context()
+	}
+	return context.WithValue(r.Context(), noStorageCreate{}, true)
+}
+
+// errStorageNeedsAdmin is returned when a restore would have to add a storage (with a PBS
+// token and possibly an encryption key) to a cluster and the user is no administrator.
+type errStorageNeedsAdmin struct{ msg string }
+
+func (e errStorageNeedsAdmin) Error() string { return e.msg }
+
+// ensureStorageFor is ensurePVEStorage for a request: only administrators may have a storage
+// added – that hands a PBS token and possibly an encryption key to the cluster, the same as
+// adding a storage by hand (admin).
+func (s *Server) ensureStorageFor(r *http.Request, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string) (string, error) {
+	return s.ensurePVEStorage(storageCtx(r), pve, cl, srv, store, keyFP)
+}
+
+func (s *Server) ensureStorage(ctx context.Context, pve *prox.PVE, cl core.PVECluster, srv core.PBSServer, store, keyFP string, mayCreate bool) (string, error) {
 	storages, err := pve.Storages(ctx)
 	if err != nil {
 		return "", err
@@ -289,10 +339,17 @@ func (s *Server) ensurePVEStorage(ctx context.Context, pve *prox.PVE, cl core.PV
 		if m, ok := s.matchServer(st); !ok || m.ID != srv.ID {
 			continue
 		}
-		if err := s.readAccess(ctx, srv, store, st.Username); err != nil {
+		if err := s.readAccess(ctx, srv, store, st.Namespace, st.Username); err != nil {
 			return "", err
 		}
 		return st.Storage, nil
+	}
+	if !mayCreate {
+		what := "Für " + srv.Name + " / " + store
+		if keyFP != "" {
+			what += " mit dem Schlüssel " + enckey.Short(keyFP)
+		}
+		return "", errStorageNeedsAdmin{what + " gibt es in „" + cl.Name + "“ noch keinen Speicher. Den muss einmal ein Administrator eintragen (Verbindungen → Speicher hinzufügen, oder selbst wiederherstellen)."}
 	}
 	var key core.EncKey
 	if keyFP != "" {
@@ -728,26 +785,19 @@ func (s *Server) pveStorageEntry(ctx context.Context, pve *prox.PVE, srv core.PB
 // readAccess makes sure the PBS login of a PVE storage may read every backup of the
 // datastore, not only its own (USB copies and sync jobs belong to the job). Storages added
 // before the appliance granted DatastoreReader get it here, once per process.
-func (s *Server) readAccess(ctx context.Context, srv core.PBSServer, store, authID string) error {
+func (s *Server) readAccess(ctx context.Context, srv core.PBSServer, store, ns, authID string) error {
 	if authID == "" || strings.HasPrefix(authID, "root@pam") {
 		return nil
 	}
-	key := srv.ID + "|" + store + "|" + authID
+	key := srv.ID + "|" + store + "|" + ns + "|" + authID
 	s.limMu.Lock()
 	done := s.granted[key]
 	s.limMu.Unlock()
 	if done {
 		return nil
 	}
-	pbs := s.C.PBSClient(srv)
-	ids := []string{authID}
-	if user, _, isToken := strings.Cut(authID, "!"); isToken {
-		ids = append(ids, user)
-	}
-	for _, id := range ids {
-		if err := pbs.SetACL(ctx, "/datastore/"+store, "DatastoreReader", id); err != nil {
-			return fmt.Errorf("Leserecht für %s auf %s setzen: %w", id, store, err)
-		}
+	if err := s.C.GrantStorageRead(ctx, srv, store, ns, authID); err != nil {
+		return err
 	}
 	s.limMu.Lock()
 	s.granted[key] = true
@@ -791,7 +841,7 @@ func (s *Server) resolveVolume(w http.ResponseWriter, r *http.Request) (*backupV
 		// A host backup is read through the storage that wrote it (its namespace and key).
 		storage, err = s.hostStorage(r.Context(), pve, srv, q.Get("store"), q.Get("storage"))
 	} else {
-		storage, err = s.ensurePVEStorage(r.Context(), pve, cl, srv, q.Get("store"), s.snapshotKey(r.Context(), srv, q.Get("store"), typ, id, t))
+		storage, err = s.ensureStorageFor(r, pve, cl, srv, q.Get("store"), s.snapshotKey(r.Context(), srv, q.Get("store"), typ, id, t))
 	}
 	if err != nil {
 		fail(w, storageErr(err, q.Get("store"), cl.Name))
@@ -997,7 +1047,7 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	pveStore, err := s.ensurePVEStorage(ctx, pve, cl, srv, req.Store, s.snapshotKey(ctx, srv, req.Store, req.Type, req.ID, req.Time))
+	pveStore, err := s.ensureStorageFor(r, pve, cl, srv, req.Store, s.snapshotKey(ctx, srv, req.Store, req.Type, req.ID, req.Time))
 	if err != nil {
 		fail(w, storageErr(err, req.Store, cl.Name))
 		return

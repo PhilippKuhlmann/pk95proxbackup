@@ -557,6 +557,12 @@ func (c *Core) RestoreConfig(ctx context.Context, data []byte, password string) 
 		_ = os.RemoveAll(stage)
 		return man, fmt.Errorf("Die Datenbank der Sicherung lässt sich nicht öffnen: %w", err)
 	}
+	// Sessions of the backup are not restored: everyone signs in again after the restore.
+	if err := st.ClearSessions(); err != nil {
+		st.Close()
+		_ = os.RemoveAll(stage)
+		return man, fmt.Errorf("Sitzungen der Sicherung entfernen: %w", err)
+	}
 	st.Close()
 	for _, suf := range []string{"-wal", "-shm"} {
 		os.Remove(filepath.Join(stage, "data", "pk95proxbackup.db"+suf))

@@ -279,7 +279,7 @@ func (s *Server) restoreDisk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.By = currentUser(r).Username
-	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	ctx, cancel := context.WithTimeout(storageCtx(r), time.Minute)
 	defer cancel()
 	job, errs, err := s.C.StartDiskRestore(ctx, req)
 	if err != nil {

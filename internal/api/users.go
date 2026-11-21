@@ -67,6 +67,8 @@ var routeRole = map[string]string{
 	"GET /api/users":                            "admin",
 	"GET /api/audit":                            "admin",
 	"GET /api/pbs/{id}/datastores/{store}/grow": "admin", // runs commands on the Backup Server
+	"GET /api/pbs/{id}/foreign":                 "admin", // only used to read in a foreign disk (admin)
+	"GET /api/pbs/{id}/foreign/scan":            "admin", // mounts a partition as root on the Backup Server
 }
 
 // auditedReads are GET routes worth a line in the audit log.
@@ -162,6 +164,7 @@ func (s *Server) auth(pattern string, next http.HandlerFunc) http.Handler {
 			writeErr(w, http.StatusForbidden, "Dafür fehlen die Rechte – angemeldet als „"+roleNames[role]+"“, nötig ist „"+roleNames[need]+"“.")
 			return
 		}
+		s.noteProxy(r)
 		ctx := context.WithValue(r.Context(), ctxKey{}, u)
 		if !audited {
 			next(w, r.WithContext(ctx))

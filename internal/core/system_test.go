@@ -342,6 +342,9 @@ func TestSelfBackupRoundTrip(t *testing.T) {
 		fake.Current.Local.AddBlob("backup", "host", "pk95proxbackup", time.Now().Add(-time.Duration(i)*24*time.Hour).Unix(), "pk95proxbackup.conf.blob", []byte("alt"))
 	}
 	_ = c.St.SetSetting("marker", "vorher")
+	// a session that exists when the backup is made and is ended afterwards
+	uid, _ := c.St.CreateUser("alt", "x")
+	_ = c.St.CreateSession("alte-sitzung", uid, time.Hour)
 	if err := c.RunSelfBackup(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -399,6 +402,10 @@ func TestSelfBackupRoundTrip(t *testing.T) {
 	_ = st.GetSetting("marker", &marker)
 	if marker != "vorher" {
 		t.Fatalf("restored marker %q", marker)
+	}
+	// sessions do not come back with the backup (one ended since then would work again)
+	if _, err := st.SessionUser("alte-sitzung"); err == nil {
+		t.Fatal("a session from the backup must not be restored")
 	}
 	if _, err := os.Stat(filepath.Join(c.DataDir, "restore-staging")); err == nil {
 		t.Fatal("staging must be cleaned up")

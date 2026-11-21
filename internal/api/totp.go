@@ -77,10 +77,13 @@ func (s *Server) newTicket(userID int64) string {
 // loginTOTP completes the login with the code of the authenticator app or a recovery code.
 func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
-	if s.limited(ip) {
+	done, allowed := s.attempt(ip)
+	if !allowed {
 		writeErr(w, http.StatusTooManyRequests, "Zu viele Fehlversuche. Bitte 15 Minuten warten.")
 		return
 	}
+	bad := false
+	defer func() { done(!bad) }()
 	var req struct{ Ticket, Code string }
 	if !decode(w, r, &req) {
 		return
@@ -92,7 +95,19 @@ func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 		delete(s.tickets, req.Ticket)
 		t = nil
 	}
+	// Reserve the try before the code is checked: requests at the same time count as well.
+	spent := t != nil && t.tries >= ticketTries
+	if t != nil && !spent {
+		t.tries++
+	}
+	if spent {
+		delete(s.tickets, req.Ticket)
+	}
 	s.limMu.Unlock()
+	if spent {
+		writeErr(w, http.StatusUnauthorized, "Zu viele falsche Codes. Bitte erneut anmelden.")
+		return
+	}
 	if t == nil {
 		writeErr(w, http.StatusUnauthorized, expired)
 		return
@@ -119,9 +134,8 @@ func (s *Server) loginTOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	totpMu.Unlock()
 	if !okCode {
-		s.failed(ip)
+		bad = true
 		s.limMu.Lock()
-		t.tries++
 		gone := t.tries >= ticketTries
 		if gone {
 			delete(s.tickets, req.Ticket)

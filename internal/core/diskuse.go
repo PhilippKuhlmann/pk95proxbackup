@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"path"
 	"regexp"
 	"slices"
@@ -25,6 +26,7 @@ type SelfVM struct {
 	VMID        int
 	Name        string
 	Config      map[string]any
+	running     bool
 }
 
 var smbiosUUIDRe = regexp.MustCompile(`uuid=([0-9a-fA-F-]{36})`)
@@ -42,6 +44,10 @@ func (c *Core) FindSelfVM(ctx context.Context) (*SelfVM, error) {
 	if len(clusters) == 0 {
 		return nil, errors.New("zuerst unter Verbindungen den Proxmox VE eintragen, auf dem diese VM läuft")
 	}
+	// The SMBIOS UUID is part of the VM configuration and is copied with a clone: every VM
+	// carrying it is collected, and the result must be unique (the network card's MAC address
+	// decides between running copies). Passthrough must never reach another VM.
+	var found []SelfVM
 	for _, cl := range clusters {
 		pve := c.PVEClient(cl)
 		guests, err := pve.Guests(ctx)
@@ -58,11 +64,70 @@ func (c *Core) FindSelfVM(ctx context.Context) (*SelfVM, error) {
 			}
 			sm, _ := cfg["smbios1"].(string)
 			if m := smbiosUUIDRe.FindStringSubmatch(sm); m != nil && strings.EqualFold(m[1], uuid) {
-				return &SelfVM{Cluster: cl.ID, ClusterName: cl.Name, Node: g.Node, VMID: g.VMID, Name: g.Name, Config: cfg}, nil
+				found = append(found, SelfVM{Cluster: cl.ID, ClusterName: cl.Name, Node: g.Node, VMID: g.VMID, Name: g.Name, Config: cfg, running: g.Status == "running"})
 			}
 		}
 	}
-	return nil, errors.New("diese VM wurde in keinem eingetragenen Proxmox VE gefunden")
+	if len(found) > 1 {
+		found = narrowSelf(found, localMACs())
+	}
+	switch len(found) {
+	case 0:
+		return nil, errors.New("diese VM wurde in keinem eingetragenen Proxmox VE gefunden")
+	case 1:
+		return &found[0], nil
+	}
+	var names []string
+	for _, f := range found {
+		names = append(names, fmt.Sprintf("VM %d auf %s (%s)", f.VMID, f.Node, f.ClusterName))
+	}
+	return nil, fmt.Errorf("mehrere VMs tragen die SMBIOS-UUID dieser Maschine: %s – die Appliance kann sich nicht eindeutig zuordnen. Bitte bei der Kopie unter Optionen → SMBIOS eine neue UUID erzeugen", strings.Join(names, ", "))
+}
+
+var netMACRe = regexp.MustCompile(`(?i)(?:^|[=,])((?:[0-9a-f]{2}:){5}[0-9a-f]{2})(?:,|$)`)
+
+// narrowSelf keeps the running VMs, then those with a network card of this machine.
+func narrowSelf(vms []SelfVM, macs map[string]bool) []SelfVM {
+	var running []SelfVM
+	for _, v := range vms {
+		if v.running {
+			running = append(running, v)
+		}
+	}
+	if len(running) > 0 {
+		vms = running
+	}
+	if len(vms) < 2 || len(macs) == 0 {
+		return vms
+	}
+	var mine []SelfVM
+	for _, v := range vms {
+		for k, val := range v.Config {
+			if !strings.HasPrefix(k, "net") {
+				continue
+			}
+			if m := netMACRe.FindStringSubmatch(fmt.Sprint(val)); m != nil && macs[strings.ToLower(m[1])] {
+				mine = append(mine, v)
+				break
+			}
+		}
+	}
+	if len(mine) > 0 {
+		return mine
+	}
+	return vms
+}
+
+// localMACs are the hardware addresses of this machine's network cards.
+func localMACs() map[string]bool {
+	out := map[string]bool{}
+	ifs, _ := net.Interfaces()
+	for _, i := range ifs {
+		if i.Flags&net.FlagLoopback == 0 && len(i.HardwareAddr) == 6 {
+			out[strings.ToLower(i.HardwareAddr.String())] = true
+		}
+	}
+	return out
 }
 
 var (

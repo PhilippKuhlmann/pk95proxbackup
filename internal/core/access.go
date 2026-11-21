@@ -2,6 +2,7 @@ package core
 
 import (
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,13 +37,27 @@ func (c *Core) Access() Access {
 	return a
 }
 
-// NoteProxy remembers a request that came through a reverse proxy.
+// proxyHostRe is a host name with an optional port, as a reverse proxy forwards it.
+var proxyHostRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*(:[0-9]{1,5})?$`)
+
+// NoteProxy remembers a request that came through a reverse proxy (shown in the settings to
+// be adopted; used for links only when the proxy is trusted, see PublicURL).
 func (c *Core) NoteProxy(proxyIP, proto, host string) {
-	if host == "" || net.ParseIP(strings.Trim(host, "[]")) != nil {
+	if host == "" || len(host) > 253 || !proxyHostRe.MatchString(host) {
 		return
 	}
-	if proto == "" {
+	if h, _, err := net.SplitHostPort(host); err == nil && net.ParseIP(h) != nil {
+		return
+	}
+	if net.ParseIP(host) != nil {
+		return
+	}
+	switch proto {
+	case "":
 		proto = "https"
+	case "http", "https":
+	default:
+		return
 	}
 	seenMu.Lock()
 	seen = Seen{ProxyIP: proxyIP, URL: proto + "://" + host, At: time.Now().Unix()}
@@ -56,13 +71,13 @@ func (c *Core) SeenProxy() Seen {
 	return seen
 }
 
-// PublicURL is the address used in links: the setting, else a proxy seen in front of the
-// appliance, else https://<IP>.
+// PublicURL is the address used in links: the setting, else a trusted proxy seen in front of
+// the appliance, else https://<IP>. The headers of an untrusted client never become a link.
 func (c *Core) PublicURL() string {
 	if u := strings.TrimRight(c.Access().PublicURL, "/"); u != "" {
 		return u
 	}
-	if s := c.SeenProxy(); s.URL != "" {
+	if s := c.SeenProxy(); s.URL != "" && s.ProxyIP != "" && c.TrustsProxy(s.ProxyIP) {
 		return s.URL
 	}
 	if ip := PrimaryIP(); ip != "" {

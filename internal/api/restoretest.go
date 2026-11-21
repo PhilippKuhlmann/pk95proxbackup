@@ -9,7 +9,9 @@ import (
 	"pk95proxbackup/internal/core"
 )
 
-var fileNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+// fileNameRe accepts one plain file name: no leading dot, so "." and ".."
+// cannot pass.
+var fileNameRe = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]*$`)
 
 func (s *Server) listRestoreTests(w http.ResponseWriter, r *http.Request) {
 	plans, err := s.C.RestoreTestPlans()
@@ -111,7 +113,12 @@ func (s *Server) restoreTestScreenshot(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "Ungültig.")
 		return
 	}
-	b, err := os.ReadFile(s.C.ScreenshotPath(run, file))
+	path, found := s.C.RecordedScreenshot(run, file)
+	if !found {
+		writeErr(w, http.StatusNotFound, "Kein Bild.")
+		return
+	}
+	b, err := os.ReadFile(path)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "Kein Bild.")
 		return

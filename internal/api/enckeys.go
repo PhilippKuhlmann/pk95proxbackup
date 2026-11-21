@@ -345,5 +345,9 @@ func storageErr(err error, store, cluster string) error {
 	if errors.As(err, &mk) {
 		return mk
 	}
+	var na errStorageNeedsAdmin
+	if errors.As(err, &na) {
+		return na
+	}
 	return fmt.Errorf("Der Datastore %s ist in „%s“ nicht als Speicher eingetragen, und das Eintragen hat nicht geklappt: %w", store, cluster, err)
 }

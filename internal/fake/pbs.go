@@ -43,9 +43,14 @@ type job struct {
 	state  string
 }
 
+// PBSNoUserAdmin makes the simulated servers refuse to create users (a login without the
+// right to manage users).
+var PBSNoUserAdmin bool
+
 var (
-	aclMu sync.Mutex
-	acls  = map[string][]string{}
+	aclMu  sync.Mutex
+	acls   = map[string][]string{}
+	aclNoP = map[string]bool{} // path|authID|role granted without propagate
 )
 
 // ACLRoles returns the roles the simulated servers granted on path to authID.
@@ -53,6 +58,13 @@ func ACLRoles(path, authID string) []string {
 	aclMu.Lock()
 	defer aclMu.Unlock()
 	return append([]string(nil), acls[path+"|"+authID]...)
+}
+
+// ACLPropagates reports whether a granted role also covers the paths below path.
+func ACLPropagates(path, authID, role string) bool {
+	aclMu.Lock()
+	defer aclMu.Unlock()
+	return !aclNoP[path+"|"+authID+"|"+role]
 }
 
 // PBS is a simulated Proxmox Backup Server.
@@ -1030,6 +1042,8 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case len(seg) == 5 && seg[2] == "tasks" && seg[4] == "log":
 		upid, _ := url.PathUnescape(seg[3])
 		taskLog(w, p.tasks.get(upid), f)
+	case path == "/access/users" && m == "POST" && PBSNoUserAdmin:
+		apiErr(w, 403, "permission check failed")
 	case path == "/access/users" && m == "POST":
 		if p.users[f.Get("userid")] {
 			apiErr(w, 400, "user already exists")
@@ -1051,7 +1065,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for k, roles := range acls {
 			pth, id, _ := strings.Cut(k, "|")
 			for _, r := range roles {
-				out = append(out, prox.ACL{Path: pth, UGID: id, UGIDType: "user", Role: r, Propagate: true})
+				out = append(out, prox.ACL{Path: pth, UGID: id, UGIDType: "user", Role: r, Propagate: !aclNoP[k+"|"+r]})
 			}
 		}
 		aclMu.Unlock()
@@ -1067,8 +1081,12 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			acls[k] = keep
-		} else if !slices.Contains(acls[k], f.Get("role")) {
-			acls[k] = append(acls[k], f.Get("role"))
+			delete(aclNoP, k+"|"+f.Get("role"))
+		} else {
+			if !slices.Contains(acls[k], f.Get("role")) {
+				acls[k] = append(acls[k], f.Get("role"))
+			}
+			aclNoP[k+"|"+f.Get("role")] = f.Get("propagate") == "0"
 		}
 		aclMu.Unlock()
 		data(w, nil)

@@ -28,9 +28,11 @@ type VzdumpResult struct {
 }
 
 var (
-	vzStart    = regexp.MustCompile(`Starting Backup of VM (\d+) \((qemu|lxc)\)`)
-	vzFinish   = regexp.MustCompile(`Finished Backup of VM (\d+) \(([\d:]+)\)`)
-	vzFailed   = regexp.MustCompile(`ERROR: Backup of VM (\d+) failed - (.*)`)
+	// Outcome lines are matched as whole lines with vzdump's own prefix: text a guest or a
+	// hook script writes into the log can then not mark a backup as done.
+	vzStart    = regexp.MustCompile(`^INFO: Starting Backup of VM (\d+) \((qemu|lxc)\)$`)
+	vzFinish   = regexp.MustCompile(`^INFO: Finished Backup of VM (\d+) \(([\d:]+)\)$`)
+	vzFailed   = regexp.MustCompile(`^ERROR: Backup of VM (\d+) failed - (.*)$`)
 	vzName     = regexp.MustCompile(`INFO: (?:VM|CT) Name: (.+)`)
 	vzTransfer = regexp.MustCompile(`transferred ([\d.]+ \w+)`)
 	vzReused   = regexp.MustCompile(`backup was done incrementally, reused ([\d.]+ \w+) \((\d+%)\)`)
@@ -69,10 +71,13 @@ func ParseVzdump(lines []TaskLine) VzdumpResult {
 			g := get(m[1])
 			g.Type = m[2]
 			cur = idx[m[1]]
-		case vzFinish.MatchString(t):
+		case vzFinish.MatchString(t) && cur >= 0 && r.Guests[cur].VMID == vzFinish.FindStringSubmatch(t)[1]:
+			// success only for the guest being backed up right now, and never over a failure
 			m := vzFinish.FindStringSubmatch(t)
-			g := get(m[1])
-			g.OK, g.Done, g.Duration = true, true, m[2]
+			g := &r.Guests[cur]
+			if !(g.Done && !g.OK) {
+				g.OK, g.Done, g.Duration = true, true, m[2]
+			}
 			cur = -1
 		case vzFailed.MatchString(t):
 			m := vzFailed.FindStringSubmatch(t)

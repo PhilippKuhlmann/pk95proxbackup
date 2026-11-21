@@ -412,6 +412,13 @@ func (s *Store) DeleteSession(token string) error {
 	return err
 }
 
+// ClearSessions ends every session (after restoring a config backup: sessions ended since
+// the backup was made must not come back).
+func (s *Store) ClearSessions() error {
+	_, err := s.db.Exec("DELETE FROM sessions")
+	return err
+}
+
 // PruneSessions removes expired sessions.
 func (s *Store) PruneSessions() error {
 	_, err := s.db.Exec("DELETE FROM sessions WHERE expires_at <= ?", time.Now().Unix())

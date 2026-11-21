@@ -135,7 +135,7 @@ func TestAddPBSStorageToPVE(t *testing.T) {
 		m := s.(map[string]any)
 		if m["storage"] == "pbs-nas" {
 			found = true
-			if m["server"] != "192.168.10.20" || m["datastore"] != "nas-backup" || m["username"] != "pk95-pve@pbs!pve-cluster-nas-backup" {
+			if m["server"] != "192.168.10.20" || m["datastore"] != "nas-backup" || m["username"] != "pk95-pve@pbs!pves-cluster-pbs-nas" {
 				t.Fatalf("storage %v", m)
 			}
 			if m["pbs_server"] != "local" {
@@ -212,8 +212,26 @@ func TestReverseProxy(t *testing.T) {
 	if seen := out["seen_proxy"].(map[string]any); seen["url"] != "https://backup.example.org" || seen["proxy_ip"] != "127.0.0.1" {
 		t.Fatalf("seen proxy %v", seen)
 	}
-	if out["public_url"] != "https://backup.example.org" {
-		t.Fatalf("public url from the proxy: %v", out["public_url"])
+	// …but an untrusted client's headers never become the address in notification links
+	if out["public_url"] == "https://backup.example.org" {
+		t.Fatalf("public url from an untrusted proxy: %v", out["public_url"])
+	}
+	// not signed in: the headers are not even noticed
+	req, _ := http.NewRequest("GET", cl.base+"/api/session", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+	req.Header.Set("X-Forwarded-Host", "evil.example.net")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	if seen := get("")["seen_proxy"].(map[string]any); seen["url"] != "https://backup.example.org" {
+		t.Fatalf("visitor changed the seen proxy: %v", seen)
+	}
+	// a trusted proxy's address is used
+	if code, o := cl.do("PUT", "/api/settings/access", map[string]any{"public_url": "", "trusted_proxies": []string{"127.0.0.1"}}, true); code != 200 {
+		t.Fatalf("access: %d %v", code, o)
+	}
+	if out = get("203.0.113.7"); out["public_url"] != "https://backup.example.org" {
+		t.Fatalf("public url from the trusted proxy: %v", out["public_url"])
 	}
 	if code, o := cl.do("PUT", "/api/settings/access", map[string]any{"public_url": "ftp://x", "trusted_proxies": []string{"kein-ip"}}, true); code != 422 {
 		t.Fatalf("bad access settings: %d %v", code, o)
@@ -410,15 +428,19 @@ func TestRestoreSources(t *testing.T) {
 	_, out = cl.do("GET", "/api/pve/cluster/storages", nil, false)
 	for _, st := range out["storages"].([]any) {
 		m := st.(map[string]any)
-		if m["storage"] == "pk95-usb-a" && m["username"] != "pk95-pve@pbs!pve-cluster-usb-a" {
+		if m["storage"] == "pk95-usb-a" && m["username"] != "pk95-pve@pbs!pves-cluster-pk95-usb-a" {
 			t.Fatalf("usb storage must use its own token: %v", m)
 		}
 	}
-	// It may read backups written by others (the copies belong to the sync job).
-	for _, id := range []string{"pk95-pve@pbs!pve-cluster-usb-a", "pk95-pve@pbs"} {
+	// It may read backups written by others (the copies belong to the sync job), but only in
+	// its own namespace: not the namespaces of other clusters below it.
+	for _, id := range []string{"pk95-pve@pbs!pves-cluster-pk95-usb-a", "pk95-pve@pbs"} {
 		if roles := strings.Join(fake.ACLRoles("/datastore/usb-a", id), ","); !strings.Contains(roles, "DatastoreReader") || !strings.Contains(roles, "DatastorePowerUser") {
 			t.Fatalf("%s roles on usb-a: %q", id, roles)
 		}
+	}
+	if fake.ACLPropagates("/datastore/usb-a", "pk95-pve@pbs!pves-cluster-pk95-usb-a", "DatastoreReader") {
+		t.Fatal("the read right of a storage must not cover the namespaces below it")
 	}
 	// A storage added earlier without the read role gets it when restoring from it.
 	if code, _ := cl.do("GET", "/api/restore/files?cluster=cluster&pbs=local&store=backup&type=vm&bid=100&time=1794168000", nil, false); code != 200 {
@@ -426,6 +448,9 @@ func TestRestoreSources(t *testing.T) {
 	}
 	if roles := strings.Join(fake.ACLRoles("/datastore/backup", "pk95-pve@pbs!pve-cluster"), ","); !strings.Contains(roles, "DatastoreReader") {
 		t.Fatalf("existing storage must get read access: %v", roles)
+	}
+	if fake.ACLPropagates("/datastore/backup", "pk95-pve@pbs!pve-cluster", "DatastoreReader") {
+		t.Fatal("an earlier datastore-wide read right must be narrowed to the namespace")
 	}
 }
 
@@ -546,15 +571,19 @@ func TestUSBPassthroughNeedsRoot(t *testing.T) {
 	if self, _ := out["self"].(map[string]any); self == nil || self["vmid"] != float64(120) {
 		t.Fatalf("own VM: %v", out)
 	}
-	code, out := cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1"}, true)
+	// the change only goes to the VM the dialog showed
+	if code, out := cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "cluster": "cluster", "vmid": 121}, true); code != 409 || out["need_root"] == true {
+		t.Fatalf("other vm: %d %v", code, out)
+	}
+	code, out := cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "cluster": "cluster", "vmid": 120}, true)
 	if code != 409 || out["need_root"] != true || out["command"] != "qm set 120 -usb0 host=2-1,usb3=1" || out["node"] != "pve1" {
 		t.Fatalf("token: %d %v", code, out)
 	}
-	code, out = cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "password": "falsch"}, true)
+	code, out = cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "cluster": "cluster", "vmid": 120, "password": "falsch"}, true)
 	if code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "stimmt nicht") {
 		t.Fatalf("wrong password: %d %v", code, out)
 	}
-	if code, out = cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "password": fake.RootPassword}, true); code != 200 {
+	if code, out = cl.do("POST", "/api/passthrough", map[string]any{"port": "2-1", "cluster": "cluster", "vmid": 120, "password": fake.RootPassword}, true); code != 200 {
 		t.Fatalf("as root: %d %v", code, out)
 	}
 	_, out = cl.do("GET", "/api/passthrough", nil, false)

@@ -87,6 +87,7 @@ type StorageGuard struct {
 	Server      string   `json:"server,omitempty"`
 	ServerName  string   `json:"server_name,omitempty"`
 	Datastore   string   `json:"datastore"`
+	Namespace   string   `json:"namespace,omitempty"`
 	AuthID      string   `json:"auth_id"`
 	State       string   `json:"state"`             // protected, open, user, unknown
 	Problem     string   `json:"problem,omitempty"` // why it cannot be switched here
@@ -155,7 +156,7 @@ func (c *Core) StorageGuards(ctx context.Context) ([]StorageGuard, []string) {
 			if st.Type != "pbs" {
 				continue
 			}
-			g := StorageGuard{Cluster: cl.ID, ClusterName: cl.Name, Storage: st.Storage, Datastore: st.Datastore, AuthID: st.Username, Retention: []string{}}
+			g := StorageGuard{Cluster: cl.ID, ClusterName: cl.Name, Storage: st.Storage, Datastore: st.Datastore, Namespace: st.Namespace, AuthID: st.Username, Retention: []string{}}
 			if !keepsAll(st.PruneBackups) {
 				g.Retention = append(g.Retention, "Speicher "+st.Storage+": "+st.PruneBackups)
 			}
@@ -223,10 +224,11 @@ func (c *Core) SetStorageGuard(ctx context.Context, clusterID, storage string, o
 			return g, err
 		}
 		// first the new rights, then the old ones away: backups keep running throughout
-		for _, role := range []string{"DatastoreBackup", "DatastoreReader"} {
-			if err := pbs.SetACL(ctx, path, role, g.AuthID); err != nil {
-				return g, fmt.Errorf("Rechte setzen: %w", err)
-			}
+		if err := pbs.SetACL(ctx, path, "DatastoreBackup", g.AuthID); err != nil {
+			return g, fmt.Errorf("Rechte setzen: %w", err)
+		}
+		if err := c.GrantStorageRead(ctx, srv, g.Datastore, g.Namespace, g.AuthID); err != nil {
+			return g, err
 		}
 		for _, a := range acls {
 			if a.UGID == g.AuthID && a.Path == path && slices.Contains(deleteRoles, a.Role) {
@@ -262,6 +264,98 @@ func (c *Core) SetStorageGuard(ctx context.Context, clusterID, storage string, o
 			"Proxmox VE darf auf "+srv.Name+" / "+g.Datastore+" wieder Sicherungen löschen (von "+by+").")
 	}
 	return g, nil
+}
+
+// ---------- read right of Proxmox VE ----------
+
+// ApplianceStorageUser is the PBS user whose tokens the appliance creates for PVE storages.
+const ApplianceStorageUser = "pk95-pve@pbs"
+
+// GrantStorageRead lets the PBS login of a PVE storage read every backup of the storage's own
+// namespace, also those it does not own (USB copies and sync jobs belong to the job). The grant
+// covers only that namespace: on the whole datastore one cluster could read the backups of
+// the others and the appliance's own config archive. An earlier datastore-wide grant of a
+// login the appliance created is narrowed; grants an administrator made by hand stay.
+func (c *Core) GrantStorageRead(ctx context.Context, srv PBSServer, store, ns, authID string) error {
+	if authID == "" || strings.HasPrefix(authID, "root@pam") {
+		return nil
+	}
+	pbs := c.PBSClient(srv)
+	acls, err := pbs.ACLs(ctx)
+	if err != nil {
+		return fmt.Errorf("Rechte auf %s lesen: %w", srv.Name, err)
+	}
+	path := prox.NamespacePath(store, ns)
+	wide := "/datastore/" + store
+	ours := strings.HasPrefix(authID, ApplianceStorageUser+"!")
+	ids := []string{authID}
+	if user, _, isToken := strings.Cut(authID, "!"); isToken {
+		ids = append(ids, user) // a token never has more than its user
+	}
+	for _, id := range ids {
+		if id != authID || !ours {
+			if hasReader(acls, id, path) {
+				continue // already readable (also by a wider grant made by hand)
+			}
+		}
+		if err := pbs.SetACLScope(ctx, path, "DatastoreReader", id, false); err != nil {
+			return fmt.Errorf("Leserecht für %s auf %s setzen: %w", id, path, err)
+		}
+	}
+	if ours && wide != path {
+		for _, a := range acls {
+			if a.UGID == authID && a.Path == wide && a.Role == "DatastoreReader" {
+				if err := pbs.RemoveACL(ctx, wide, "DatastoreReader", authID); err != nil {
+					return fmt.Errorf("Leserecht für %s auf %s entfernen: %w", authID, wide, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// hasReader reports whether id may already read path through an ACL entry.
+func hasReader(acls []prox.ACL, id, path string) bool {
+	for _, a := range acls {
+		if a.UGID != id || !slices.Contains(readRoles, a.Role) {
+			continue
+		}
+		if a.Path == path || (a.Propagate && (a.Path == "/" || strings.HasPrefix(path, strings.TrimSuffix(a.Path, "/")+"/"))) {
+			return true
+		}
+	}
+	return false
+}
+
+// readRoles may read every backup of a datastore.
+var readRoles = []string{"Admin", "DatastoreAdmin", "DatastoreReader", "DatastoreAudit"}
+
+// narrowStorageReads narrows the datastore-wide read rights the appliance gave its storage
+// tokens in earlier versions to the namespace of each storage (once after the start).
+func (c *Core) narrowStorageReads(ctx context.Context) {
+	clusters, _ := c.Clusters()
+	for _, cl := range clusters {
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		storages, err := c.PVEClient(cl).Storages(cctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, st := range storages {
+			if st.Type != "pbs" || !strings.HasPrefix(st.Username, ApplianceStorageUser+"!") {
+				continue
+			}
+			srv, ok := c.MatchServer(st)
+			if !ok {
+				continue
+			}
+			sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			if err := c.GrantStorageRead(sctx, srv, st.Datastore, st.Namespace, st.Username); err != nil {
+				log.Printf("read right %s/%s: %v", cl.Name, st.Storage, err)
+			}
+			cancel()
+		}
+	}
 }
 
 // ---------- monthly and yearly backups ----------

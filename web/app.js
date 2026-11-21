@@ -62,6 +62,8 @@ const ICONS = {
 // ---------- helpers ----------
 const app = document.getElementById("app");
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+// shq quotes a value for a POSIX shell (copy-paste commands).
+const shq = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 const icon = (name, cls = "") => `<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ICONS.box}"/></svg>`;
 const qs = (sel, root = document) => root.querySelector(sel);
 const qsa = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -2654,10 +2656,12 @@ async function passthroughDialog() {
     <div class="dlg-foot"><button class="btn gray" type="button" data-close>Schließen</button></div>`, "wide");
   qs("[data-close]", d).onclick = () => d.close();
   const body = qs("[data-body]", d);
+  let target = {}; // the VM shown: changes go only to it
   const draw = async () => {
     const r = await GET("/api/passthrough");
     if (r.error && !r.self) { body.innerHTML = `<div class="form-error">${esc(r.error)}</div>`; return; }
     const self = r.self;
+    target = { cluster: self.cluster, vmid: self.vmid };
     const used = Object.fromEntries(self.usb.map((u) => { const [k, v] = u.split("="); return [(u.match(/host=([\d.-]+)/) || [])[1], k]; }));
     body.innerHTML = `<table class="kv"><tr><td>Diese VM</td><td><b>${self.vmid}</b> ${esc(self.name)} auf ${esc(self.node)} (${esc(self.cluster_name)})</td></tr>
       <tr><td>Durchgereicht</td><td>${self.usb.length ? self.usb.map((u) => `<span class="tag mono">${esc(u)}</span> <button class="btn ghost sm" type="button" data-rm="${esc(u.split("=")[0])}">entfernen</button>`).join("<br>") : '<span class="muted">nichts</span>'}</td></tr></table>
@@ -2673,7 +2677,7 @@ async function passthroughDialog() {
   const change = async (b, payload, okText) => {
     try {
       await run(b, async () => {
-        try { await POST("/api/passthrough", payload); toast(okText); await draw(); }
+        try { await POST("/api/passthrough", { ...payload, ...target }); toast(okText); await draw(); }
         catch (e) { if (e.data?.need_root) rootBox(payload, e.data, okText); else throw e; }
       });
     } catch (e) { /* run reported it */ }
@@ -2701,7 +2705,7 @@ async function passthroughDialog() {
       if (!pw.value) { pw.focus(); return; }
       err.hidden = true;
       run(go1, async () => {
-        try { await POST("/api/passthrough", { ...payload, password: pw.value }); pw.value = ""; toast(okText); await draw(); }
+        try { await POST("/api/passthrough", { ...payload, ...target, password: pw.value }); pw.value = ""; toast(okText); await draw(); }
         catch (e) { pw.value = ""; err.textContent = e.message; err.hidden = false; }
       });
     };
@@ -3806,9 +3810,10 @@ async function hostDetail(el, token, clusterID, node) {
     const right = qs("[data-right]", el);
     const stamp = sel ? new Date(sel * 1000).toISOString().replace(/\.\d+Z$/, "Z") : "<zeit>";
     const repo = t ? `${t.user}@${t.server.includes(":") ? "[" + t.server + "]" : t.server}:${t.datastore}` : "";
-    const opts = `${t && t.ns ? ` --ns '${t.ns}'` : ""}${t && t.encrypted ? ` --keyfile /etc/pve/priv/storage/${t.storage}.enc` : ""}`;
-    const cmds = t ? [`export PBS_REPOSITORY='${repo}'`, `export PBS_PASSWORD="$(cat /etc/pve/priv/storage/${t.storage}.pw)"`,
-      ...["etc", "root", "info"].map((a) => `proxmox-backup-client restore host/${node}/${stamp} ${a}.pxar /root/wiederherstellung/${a}${opts}`)].join("\n") : "";
+    // every value from the Proxmox VE configuration is quoted for the shell it gets pasted into
+    const opts = `${t && t.ns ? ` --ns ${shq(t.ns)}` : ""}${t && t.encrypted ? ` --keyfile ${shq(`/etc/pve/priv/storage/${t.storage}.enc`)}` : ""}`;
+    const cmds = t ? [`export PBS_REPOSITORY=${shq(repo)}`, `export PBS_PASSWORD="$(cat ${shq(`/etc/pve/priv/storage/${t.storage}.pw`)})"`,
+      ...["etc", "root", "info"].map((a) => `proxmox-backup-client restore ${shq(`host/${node}/${stamp}`)} ${a}.pxar ${shq(`/root/wiederherstellung/${a}`)}${opts}`)].join("\n") : "";
     right.innerHTML = `<div data-browser></div>
       <div class="panel"><div class="panel-head"><div class="panel-title">Knoten neu aufbauen</div></div>
         <ol class="small" style="margin:0 0 12px;padding-left:20px;line-height:1.6">

@@ -258,6 +258,7 @@ func (c *Core) Run(ctx context.Context) {
 	var prev *Overview
 	localTry := time.Time{}
 	go c.afterStart(ctx)
+	go c.narrowStorageReads(ctx)
 	c.resumeUpgrades()
 	for {
 		if time.Since(localTry) > 2*time.Minute {
