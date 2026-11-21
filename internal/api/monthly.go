@@ -115,7 +115,7 @@ footer { margin-top:24px; padding:16px 28px; border-top:1px solid var(--line); c
 {{if .R.Disks}}<section><h2>Festplatten (Stand {{day .R.Built}})</h2><div style="overflow-x:auto"><table>
 <thead><tr><th>Platte</th><th>Server</th><th>Verwendung</th><th>Zustand</th><th>Befund</th><th class="num">In Betrieb</th></tr></thead><tbody>
 {{range .R.Disks}}<tr><td><b>{{.Label}}</b><div class="sub">{{.Serial}}</div></td><td>{{.Host}}</td><td>{{.Use}}</td><td><span class="pill c-{{.Status}}">{{word .Status}}</span></td>
-<td>{{range .Problems}}<div class="err">{{.}}</div>{{else}}<span class="sub">{{if .Note}}{{.Note}}{{else}}keine Fehler{{end}}</span>{{end}}</td><td class="nowrap num">{{years .Smart.PowerOnHours}}</td></tr>{{end}}
+<td>{{range .Problems}}<div class="err">{{.}}</div>{{else}}<span class="sub">{{if .Note}}{{.Note}}{{else if .Info}}{{.Info}}{{else}}keine Fehler{{end}}</span>{{end}}</td><td class="nowrap num">{{years .Smart.PowerOnHours}}</td></tr>{{end}}
 </tbody></table></div></section>{{end}}
 
 {{if .R.Servers}}<section><h2>Backup-Server</h2><table>

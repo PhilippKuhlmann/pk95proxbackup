@@ -3862,7 +3862,7 @@ PAGES["/festplatten"] = async (el, token) => {
       const p = (d.problems || []).map((x) => `<div class="${d.status === "error" ? "bad" : "warnc"} small">${esc(x)}</div>`).join("");
       const s = d.smart || {};
       const facts = [s.reallocated >= 0 ? `${s.reallocated} ersetzte Sektoren` : "", s.wearout >= 0 ? `Lebensdauer ${s.wearout} %` : ""].filter(Boolean).join(" · ");
-      return p || `<span class="small">Keine Fehler</span>${facts ? `<div class="t-sub">${esc(facts)}</div>` : ""}`;
+      return p || `<span class="small">Keine Fehler</span>${facts ? `<div class="t-sub">${esc(facts)}</div>` : ""}${d.info ? `<div class="t-sub">${esc(d.info)}</div>` : ""}`;
     };
     const row = (d) => {
       const [l, t] = HEALTH[d.status] || HEALTH.unknown;

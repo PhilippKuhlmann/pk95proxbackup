@@ -117,14 +117,23 @@ func TestDiskHealth(t *testing.T) {
 	if !strings.Contains(eventTitles(t, c), "Festplatte bald tauschen: Seagate Expansion HDD") {
 		t.Fatal("error must be reported")
 	}
-	// The NVMe of pve1 reports its first read error: it came up just now, so replace it.
+	// The NVMe of pve1 reports its first read error: it came up just now, so watch it.
 	fake.Current.PVE.SetNodeSmart("pve1", "/dev/nvme0n1", fake.PVESmartNVMe(3, 1, 9130, 41))
 	c.CheckDisksNow(ctx)
-	if nvme = findHealth(t, c, "S5GXNF0R123456"); nvme.Status != "error" || nvme.MediaGrewAt == 0 || !strings.Contains(nvme.Problems[0], "mehr geworden") {
+	if nvme = findHealth(t, c, "S5GXNF0R123456"); nvme.Status != "warning" || nvme.MediaGrewAt == 0 || !strings.Contains(nvme.Problems[0], "dazugekommen") || len(nvme.MediaLog) != 2 {
 		t.Fatalf("nvme with a new read error: %+v", nvme)
 	}
-	if !strings.Contains(eventTitles(t, c), "Festplatte bald tauschen: Samsung SSD 980 PRO 1TB") {
+	if !strings.Contains(eventTitles(t, c), "Festplatte zeigt erste Fehler: Samsung SSD 980 PRO 1TB") {
 		t.Fatalf("new read error not reported:\n%s", eventTitles(t, c))
+	}
+	// Five more within the month: replace it.
+	fake.Current.PVE.SetNodeSmart("pve1", "/dev/nvme0n1", fake.PVESmartNVMe(3, 6, 9140, 41))
+	c.CheckDisksNow(ctx)
+	if nvme = findHealth(t, c, "S5GXNF0R123456"); nvme.Status != "error" || !strings.Contains(nvme.Problems[0], "in den letzten 30 Tagen") {
+		t.Fatalf("nvme with many new read errors: %+v", nvme)
+	}
+	if !strings.Contains(eventTitles(t, c), "Festplatte bald tauschen: Samsung SSD 980 PRO 1TB") {
+		t.Fatalf("burst not reported:\n%s", eventTitles(t, c))
 	}
 	// No change: no further event.
 	before := strings.Count(eventTitles(t, c), "Seagate")
@@ -151,23 +160,66 @@ func TestEvaluateSmart(t *testing.T) {
 	}
 }
 
-// Read errors of the flash memory: a few that stay put are a warning, many or new ones an error.
+// Read errors of the flash memory: one or two old ones are fine, new ones are worth watching,
+// many or many new ones mean the SSD should be replaced.
 func TestEvaluateMediaErrors(t *testing.T) {
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.Local)
+	day := func(d int) int64 { return now.AddDate(0, 0, -d).Unix() }
 	r := prox.NewSmartReport()
 	r.MediaErrors = 1
-	if s, p := core.EvaluateSmartAt(r, 0, now); s != "warning" || !strings.Contains(p[0], "beobachten") {
-		t.Fatalf("one old error: %s %v", s, p)
+	// Seen with one error since 60 days, never more: healthy, with a remark.
+	log := []core.MediaPoint{{At: day(60), N: 1}}
+	if s, p, info := core.EvaluateSmartAt(r, log, 0, now); s != "ok" || len(p) != 0 || !strings.Contains(info, "seit 21.09.2026 keiner dazugekommen") {
+		t.Fatalf("one old error: %s %v %q", s, p, info)
 	}
-	if s, p := core.EvaluateSmartAt(r, now.AddDate(0, 0, -3).Unix(), now); s != "error" || !strings.Contains(p[0], "17.11.2026 mehr geworden") {
-		t.Fatalf("an error that came up three days ago: %s %v", s, p)
+	// Came up three days ago: watch it.
+	log = []core.MediaPoint{{At: day(60), N: 0}, {At: day(3), N: 1}}
+	if s, p, info := core.EvaluateSmartAt(r, log, day(3), now); s != "warning" || !strings.Contains(p[0], "17.11.2026 dazugekommen") || info != "" {
+		t.Fatalf("new error: %s %v %q", s, p, info)
 	}
-	if s, _ := core.EvaluateSmartAt(r, now.AddDate(0, 0, -40).Unix(), now); s != "warning" {
-		t.Fatalf("grown long ago and stayed: %s", s)
+	// Two that came long ago and stayed: fine again.
+	r.MediaErrors = 2
+	if s, _, info := core.EvaluateSmartAt(r, []core.MediaPoint{{At: day(80), N: 1}, {At: day(40), N: 2}}, day(40), now); s != "ok" || !strings.Contains(info, "seit 11.10.2026") {
+		t.Fatalf("two old errors: %s %q", s, info)
 	}
+	// Three or more stay worth watching.
+	r.MediaErrors = 4
+	if s, p, _ := core.EvaluateSmartAt(r, []core.MediaPoint{{At: day(80), N: 4}}, day(80), now); s != "warning" || !strings.Contains(p[0], "beobachten") {
+		t.Fatalf("four old errors: %s %v", s, p)
+	}
+	// Five new within 30 days: replace.
+	r.MediaErrors = 6
+	if s, p, _ := core.EvaluateSmartAt(r, []core.MediaPoint{{At: day(80), N: 1}, {At: day(10), N: 6}}, day(10), now); s != "error" || !strings.Contains(p[0], "5 davon in den letzten 30 Tagen") {
+		t.Fatalf("burst: %s %v", s, p)
+	}
+	// Many: replace, with or without history.
 	r.MediaErrors = 12
-	if s, _ := core.EvaluateSmartAt(r, 0, now); s != "error" {
+	if s, _ := core.EvaluateSmart(r); s != "error" {
 		t.Fatalf("many errors: %s", s)
+	}
+	// Without history one error is fine, three are worth watching.
+	r.MediaErrors = 1
+	if s, _, info := core.EvaluateSmartAt(r, nil, 0, now); s != "ok" || !strings.Contains(info, "solange keiner dazukommt") {
+		t.Fatalf("no history: %s %q", s, info)
+	}
+}
+
+func TestRecordMedia(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.Local)
+	var log []core.MediaPoint
+	log = core.RecordMediaForTest(log, -1, 0, now.AddDate(0, 0, -210))
+	if log != nil {
+		t.Fatalf("no value, no log: %v", log)
+	}
+	log = core.RecordMediaForTest(log, 0, now.AddDate(0, 0, -200).Unix(), now.AddDate(0, 0, -200))
+	log = core.RecordMediaForTest(log, 1, 0, now.AddDate(0, 0, -150))
+	log = core.RecordMediaForTest(log, 1, 0, now.AddDate(0, 0, -100))
+	log = core.RecordMediaForTest(log, 2, 0, now.AddDate(0, 0, -95))
+	log = core.RecordMediaForTest(log, 3, 0, now.AddDate(0, 0, -20))
+	log = core.RecordMediaForTest(log, 3, 0, now)
+	// Older than 90 days is dropped except the count at the start of the window.
+	if len(log) != 2 || log[0].N != 2 || log[1].N != 3 {
+		t.Fatalf("log: %+v", log)
 	}
 }
 

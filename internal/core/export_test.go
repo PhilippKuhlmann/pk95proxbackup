@@ -76,3 +76,6 @@ var (
 
 // ScheduleSpaceForTest exposes scheduleSpace.
 func (c *Core) ScheduleSpaceForTest(ctx context.Context, now time.Time) { c.scheduleSpace(ctx, now) }
+
+// RecordMediaForTest exposes recordMedia.
+var RecordMediaForTest = recordMedia
