@@ -2917,6 +2917,39 @@ function restoreStart(el, data, guests, srcs) {
   };
   qs("[data-q]", list).oninput = (e) => draw(e.target.value.trim().toLowerCase());
   draw("");
+  if (can("admin")) restoreOthers(el.appendChild(document.createElement("div")));
+}
+
+// restoreOthers lists the backups that are no guest: the Proxmox VE hosts (files and the
+// commands for rebuilding a node) and the configuration of this appliance. Administrators
+// only – host backups hold the passwords of Proxmox VE, the configuration replaces everything.
+async function restoreOthers(box) {
+  const token = pageToken;
+  box.innerHTML = `<div class="panel flex"><span class="spinner"></span> Lade Host- und Appliance-Sicherungen …</div>`;
+  const [hb, sb] = await Promise.all([GET("/api/hostbackup").catch(() => null), GET("/api/selfbackup/found").catch(() => null)]);
+  if (token !== pageToken) return;
+  const hosts = [];
+  for (const v of hb?.clusters || []) {
+    for (const n of v.nodes || []) {
+      if (n.snapshots?.length) hosts.push({ v, n });
+    }
+  }
+  const cfg = sb?.backups || [];
+  const where = (list) => [...new Set(list.map((b) => b.store))].map(esc).join(", ");
+  const rows = hosts.map(({ v, n }) => `<tr><td data-l="Sicherung"><div class="t-main"><span class="tag mono">Host</span> ${esc(n.node)}</div><div class="t-sub">${esc(v.cluster_name)} · /etc, /root, Systeminfo</div></td>
+      <td data-l="Letzte Sicherung">${fmtTime(n.snapshots[0].time, true)}<div class="t-sub">${fmtAgo(n.snapshots[0].time)}</div></td>
+      <td data-l="Stände" class="small">${n.snapshots.length}</td>
+      <td data-l="Gesichert auf" class="small">${esc(v.target?.datastore || "")}</td>
+      <td class="act"><a class="btn sm" href="/hosts?cluster=${enc(v.cluster)}&node=${enc(n.node)}" data-go>${icon("restore")} Auswählen</a></td></tr>`);
+  rows.push(`<tr><td data-l="Sicherung"><div class="t-main"><span class="tag mono">PK95</span> Diese Appliance</div><div class="t-sub">Einstellungen, Verbindungen, Pläne, Konten</div></td>
+      <td data-l="Letzte Sicherung">${cfg.length ? `${fmtTime(cfg[0].time, true)}<div class="t-sub">${fmtAgo(cfg[0].time)}</div>` : '<span class="muted">keine im Datastore – aus Datei möglich</span>'}</td>
+      <td data-l="Stände" class="small">${cfg.length || "—"}</td>
+      <td data-l="Gesichert auf" class="small">${where(cfg)}</td>
+      <td class="act"><button class="btn sm" type="button" data-cfgrestore>${icon("restore")} Wiederherstellen</button></td></tr>`);
+  box.innerHTML = `<div class="panel flush"><div class="panel-head"><div class="panel-title">Proxmox-Hosts und diese Appliance</div></div>
+    <div class="table-wrap"><table class="resp"><thead><tr><th>Sicherung</th><th>Letzte Sicherung</th><th>Stände</th><th>Gesichert auf</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>
+    ${hosts.length ? "" : `<p class="hint" style="padding:0 16px 12px">Noch keine Host-Sicherung – einrichten unter <a href="/hosts" data-go>Hosts</a>.</p>`}</div>`;
+  qs("[data-cfgrestore]", box).onclick = () => restoreConfigDialog();
 }
 
 // Step 2 for one source: the servers backed up on it.
