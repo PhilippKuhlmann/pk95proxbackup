@@ -220,8 +220,9 @@ func (c *Core) StartDiskRestore(ctx context.Context, req DiskRestoreRequest) (Di
 	volume := fmt.Sprintf("%s:backup/vm/%d/%s", volStorage, req.Source, time.Unix(req.Time, 0).UTC().Format("2006-01-02T15:04:05Z"))
 	c.Event("info", cl.Name, fmt.Sprintf("Disk %s aus der Sicherung von %d wird zurückgeholt", req.Drive, req.Source),
 		fmt.Sprintf("Stand %s, Ziel VM %d %s, Umweg über VM %d (von %s).", fmtTime(req.Time), target.VMID, target.Name, tempID, req.By))
+	started := *j // a copy before the job runs: it changes j from now on
 	go c.runDiskRestore(pve, j, volume)
-	return *j, nil, nil
+	return started, nil, nil
 }
 
 func humanSize(n int64) string {
