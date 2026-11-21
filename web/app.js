@@ -773,9 +773,37 @@ function setupRestorePage() {
 }
 
 // ---------- Übersicht ----------
+// jobRows shows every backup job, copy job and rotation set with its last runs: the name
+// leads to where it is set up, the squares tell how each run went.
+function jobRows(cards) {
+  if (!cards.length) return "";
+  const kindIc = { pve: "calendar", sync: "sync", usb: "disk" };
+  const word = { ok: "erfolgreich", warning: "teilweise", error: "fehlgeschlagen" };
+  const runText = (x) => {
+    const parts = [fmtTime(x.start, true), word[x.status] || x.status];
+    if (x.label) parts.push(x.label);
+    const ok = x.ok || 0, failed = x.failed || 0;
+    if (ok + failed) parts.push(failed ? `${ok} von ${ok + failed} gesichert` : `${ok} gesichert`);
+    if (x.end > x.start) parts.push(fmtDur(x.start, x.end));
+    if (x.bytes) parts.push(fmtBytes(x.bytes));
+    return parts.join(" · ");
+  };
+  const strip = (runs) => {
+    const last = runs.slice(-14);
+    return Array(14 - last.length).fill('<span class="run-sq"></span>').join("") +
+      last.map((x) => `<span class="run-sq ${esc(x.status)}" title="${esc(runText(x))}"></span>`).join("");
+  };
+  return `<div class="panel flush job-panel"><div class="panel-head"><div class="panel-title">Sicherungen</div><span class="muted small">letzte Läufe</span></div>
+    <div class="rows">${cards.map((c) => `<div class="row job-row${c.status === "off" ? " off" : ""}">
+      <span class="job-ic" title="${esc(c.sub)}">${icon(kindIc[c.kind] || "archive")}</span>
+      <a class="grow job-name" href="${esc(c.link)}" data-go title="${esc(c.sub)}">${esc(c.title)}</a>
+      ${c.status === "running" ? pill("läuft", "blue", true, true) : c.status === "off" ? pill("aus") : ""}
+      <span class="run-strip" aria-label="Letzte Läufe von ${esc(c.title)}">${strip(c.runs)}</span></div>`).join("")}</div></div>`;
+}
+
 PAGES["/"] = async (el, token) => {
   const draw = async (fresh) => {
-    const r = await GET("/api/overview" + (fresh ? "?fresh=1" : ""));
+    const [r, jr] = await Promise.all([GET("/api/overview" + (fresh ? "?fresh=1" : "")), GET("/api/overview/jobs").catch(() => ({ jobs: [] }))]);
     if (token !== pageToken) return;
     const ov = r.overview;
     state.ov = r;
@@ -880,6 +908,7 @@ PAGES["/"] = async (el, token) => {
       </div>
       <div class="dash-cols">
         <div class="dash-col">
+          ${jobRows(jr.jobs || [])}
           <div class="panel flush"><div class="panel-head"><div class="panel-title">Datastores</div><a class="btn gray sm" href="/datastores" data-go>Alle</a></div>
             ${stores.length ? `<div class="table-wrap"><table class="resp dash-table"><thead><tr><th>Datastore</th><th>Belegung</th><th class="num">Frei</th></tr></thead><tbody>
             ${stores.map((d) => `<tr><td data-l="Datastore"><div class="t-main">${esc(d.store)} ${d["mount-status"] === "notmounted" ? pill("ausgehängt") : d["mount-status"] === "mounted" ? pill("USB", "blue") : ""}</div><div class="t-sub">${esc(d.server)}</div></td>

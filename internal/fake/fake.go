@@ -326,10 +326,35 @@ func Setup(c *core.Core) (func(), error) {
 			local.stores["backup"].snaps[i].Comment = name
 		}
 	}
-	for i := 1; i <= 6; i++ {
+	// Twelve nights of the backup job on both nodes (one with a failed guest), the copy to the
+	// office at 03:00 (once without connection) and the rotation disks in turn.
+	guestsOn := map[string][][3]string{"pve1": {{"100", "qemu", "dc01"}, {"101", "qemu", "fileserver"}, {"111", "qemu", "homeassistant"}},
+		"pve2": {{"102", "qemu", "nextcloud"}, {"110", "lxc", "pihole"}}}
+	for i := 1; i <= 12; i++ {
 		t := time.Date(now.Year(), now.Month(), now.Day()-i, 21, 0, 0, 0, now.Location())
-		pve.tasks.seed("pve1", "vzdump", "", "OK", t, 42*time.Minute)
+		for _, node := range []string{"pve1", "pve2"} {
+			lines := []string{"INFO: starting new backup job: vzdump --all 1 --exclude 112,120,130 --storage pbs-appliance --mode snapshot --notes-template '{{guestname}}'"}
+			status := "OK"
+			for k, g := range guestsOn[node] {
+				lines = append(lines, "INFO: Starting Backup of VM "+g[0]+" ("+g[1]+")", "INFO: VM Name: "+g[2])
+				if node == "pve2" && i == 4 && k == 0 {
+					lines = append(lines, "ERROR: Backup of VM 102 failed - job failed with err -5 - Input/output error")
+					status = "job errors"
+					continue
+				}
+				lines = append(lines, "INFO: transferred "+strconv.Itoa(3+atoi(g[0])%5)+".20 GiB in 61 seconds (52.0 MiB/s)", "INFO: Finished Backup of VM "+g[0]+" (00:0"+strconv.Itoa(1+k)+":12)")
+			}
+			pve.tasks.seedLog(node, "vzdump", "", status, t.Add(time.Duration(map[string]int{"pve1": 0, "pve2": 7}[node])*time.Second), 42*time.Minute, lines)
+		}
 		local.tasks.seed("pbs-appliance", "garbage_collection", "backup", "OK", t.Add(3*time.Hour), 9*time.Minute)
+		sync := "OK"
+		if i == 7 {
+			sync = "connection error: connection timed out"
+		}
+		local.tasks.seed("pbs-appliance", "syncjob", "pk95-buero:offsite:backup::pk95-sync-offsite", sync, t.Add(6*time.Hour), 14*time.Minute)
+		offsite.tasks.seed("pbs-buero", "syncjob", "pk95-local:backup:offsite::pk95-sync-home", sync, t.Add(6*time.Hour), 16*time.Minute)
+		disk := map[bool]string{true: "pk95r-demo-a1", false: "pk95r-demo-b2"}[t.Day()%2 == 0]
+		local.tasks.seed("pbs-appliance", "syncjob", "-:backup:usb-"+map[bool]string{true: "a", false: "b"}[t.Day()%2 == 0]+"::"+disk, "OK", t.Add(90*time.Minute), 18*time.Minute)
 	}
 	pve.tasks.seed("pve2", "vzdump", "112", "ERROR: VM 112 - unable to find configuration file", now.Add(-20*time.Hour), time.Minute)
 	// Two failed verifications: on "backup" only a snapshot the retention removed meanwhile

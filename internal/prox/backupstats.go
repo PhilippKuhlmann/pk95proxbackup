@@ -97,6 +97,13 @@ func (p *PBS) BackupTasks(ctx context.Context, since int64) ([]Task, error) {
 	return out, err
 }
 
+// TasksOfType lists the tasks of one type (e.g. syncjob) since a time.
+func (p *PBS) TasksOfType(ctx context.Context, typ string, since int64) ([]Task, error) {
+	var out []Task
+	err := p.Do(ctx, http.MethodGet, "/nodes/localhost/tasks", Params{"typefilter": typ, "since": since, "limit": 1000}, &out)
+	return out, err
+}
+
 // TaskLogRange returns lines start … start+limit-1 of a task log and the total number of lines.
 func (p *PBS) TaskLogRange(ctx context.Context, upid string, start, limit int) ([]TaskLine, int, error) {
 	var out []TaskLine

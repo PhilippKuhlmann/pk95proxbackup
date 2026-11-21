@@ -269,6 +269,7 @@ func (c *Core) Run(ctx context.Context) {
 		ov := c.BuildOverview(ctx)
 		c.check(ctx, prev, &ov)
 		c.followRestarts(&ov, time.Now())
+		c.recordJobRuns(ctx, &ov, time.Now())
 		c.RecordUsage(&ov)
 		c.reportBackups(ctx, &ov)
 		c.scanForeignDisks(ctx, time.Now())

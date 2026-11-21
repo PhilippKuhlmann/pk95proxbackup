@@ -84,3 +84,10 @@ var RecordMediaForTest = recordMedia
 func (c *Core) FollowRestartsForTest(ov *Overview, now time.Time)     { c.followRestarts(ov, now) }
 func (c *Core) CheckForTest(ctx context.Context, prev, cur *Overview) { c.check(ctx, prev, cur) }
 func (c *Core) PlannedRestartsForTest() map[string]PlannedRestart     { return c.plannedRestarts() }
+
+// RecordJobRunsForTest exposes recordJobRuns; MatchBackupJobForTest matchBackupJob.
+func (c *Core) RecordJobRunsForTest(ctx context.Context, ov *Overview, now time.Time) {
+	c.recordJobRuns(ctx, ov, now)
+}
+
+var MatchBackupJobForTest = matchBackupJob

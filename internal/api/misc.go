@@ -1030,3 +1030,10 @@ func (s *Server) setAsRoot(w http.ResponseWriter, r *http.Request, pve *prox.PVE
 }
 
 var _ = store.ErrNotFound
+
+// overviewJobs lists the jobs with their last runs for the overview.
+func (s *Server) overviewJobs(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": s.C.JobCards(ctx)})
+}

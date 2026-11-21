@@ -792,3 +792,15 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 /* notifications: which message goes to which channel */
 .notify-matrix th.c, .notify-matrix td.c { text-align: center; width: 230px; }
 .notify-matrix td.c select { width: 100%; min-width: 0; padding-left: 10px; padding-right: 26px; font-size: 13px; }
+
+/* Overview: backup jobs with their last runs */
+.job-row { display: flex; align-items: center; gap: 10px; }
+.job-row.off { opacity: .6; }
+.job-ic { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 3px; background: var(--blue-bg); color: var(--blue-ink); flex: none; }
+.job-ic .icon { width: 14px; height: 14px; }
+.job-name { font-weight: 600; color: inherit; text-decoration: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-name:hover { color: var(--c600); text-decoration: underline; }
+.run-strip { display: flex; gap: 3px; flex: none; }
+.run-sq { width: 12px; height: 12px; border-radius: 2px; background: var(--bar-track); }
+.run-sq.ok { background: var(--bar-ok); } .run-sq.warning { background: var(--bar-warn); } .run-sq.error { background: var(--bar-bad); }
+@media (max-width: 560px) { .run-sq { width: 8px; } .run-strip { gap: 2px; } }

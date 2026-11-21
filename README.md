@@ -65,6 +65,10 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
   Tage** aus dem täglichen Verlauf. Gäste, die es in Proxmox VE nicht mehr gibt, sind markiert – ihre alten Stände
   sind oft der schnellste Weg zu Platz. Braucht beim externen PBS den SSH-Zugang; Wechsel-, Archiv- und
   Cloud-Datastores bleiben außen vor.
+- **Sicherungen auf der Übersicht:** je Sicherungsjob in Proxmox VE, Kopierjob und Wechselplatten-Satz eine Zeile mit
+  Link zur Einstellung und den letzten 14 Läufen als farbige Kästchen (grün, gelb bei einzelnen Fehlern, rot);
+  der Tooltip zeigt Zeit, Ergebnis, gesicherte Server, Dauer und Datenmenge. Die Läufe eines Sicherungsjobs auf allen
+  Knoten zählen als ein Lauf; beim ersten Start liest die Appliance die vorhandenen Läufe rückwirkend ein.
 - **Platzprognose:** Die Appliance merkt sich täglich die Belegung jedes Datastores (beim ersten Start ein Jahr
   rückwirkend aus dem Verlauf des Backup-Servers, Wechselplatten an den Tagen, an denen sie stecken) und rechnet das
   Wachstum der letzten Wochen weiter. Datastores zeigt „voll ca. …“, ein Klick öffnet Verlauf, Prognose und was hilft

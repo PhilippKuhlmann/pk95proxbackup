@@ -98,3 +98,45 @@ func ParseVzdump(lines []TaskLine) VzdumpResult {
 	}
 	return r
 }
+
+// VzdumpJob is the command line of a backup task: which job and which guests.
+type VzdumpJob struct {
+	JobID   string   // --job-id (newer Proxmox VE), "" if not in the log
+	All     bool     // --all 1
+	IDs     []string // guests named on the command line
+	Exclude []string // --exclude
+	Storage string
+}
+
+var (
+	vzJobID   = regexp.MustCompile(`--job-id (\S+)`)
+	vzAll     = regexp.MustCompile(`--all 1\b`)
+	vzExclude = regexp.MustCompile(`--exclude '?([\d,]+)'?`)
+	vzIDs     = regexp.MustCompile(`vzdump((?: \d+)+)`)
+)
+
+// ParseVzdumpJob reads the command line ("starting new backup job: vzdump …") of a backup task.
+func ParseVzdumpJob(lines []TaskLine) (VzdumpJob, bool) {
+	for _, l := range lines {
+		t := strings.TrimSpace(l.T)
+		if !vzJob.MatchString(t) {
+			continue
+		}
+		var j VzdumpJob
+		if m := vzJobID.FindStringSubmatch(t); m != nil {
+			j.JobID = strings.Trim(m[1], "'")
+		}
+		if m := vzStorage.FindStringSubmatch(t); m != nil {
+			j.Storage = strings.Trim(m[1], "'")
+		}
+		j.All = vzAll.MatchString(t)
+		if m := vzExclude.FindStringSubmatch(t); m != nil {
+			j.Exclude = strings.Split(m[1], ",")
+		}
+		if m := vzIDs.FindStringSubmatch(t); m != nil {
+			j.IDs = strings.Fields(m[1])
+		}
+		return j, true
+	}
+	return VzdumpJob{}, false
+}
