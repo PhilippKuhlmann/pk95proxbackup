@@ -99,6 +99,11 @@ und einer eigenen Weboberfläche, über die du Sicherungen verwaltest und einric
 - **Automatische Updates:** je Backup-Server nach Plan (Wochentage, Uhrzeit) einspielen und bei Bedarf (neuer
   Kernel) neu starten. Läuft dabei noch eine Sicherung, Kopie oder Prüfung, wartet die Appliance bis zu drei Stunden;
   sonst verschiebt sie den Neustart auf den nächsten Termin und meldet das.
+- **Sicherungsnachweis** (VMs & Container bzw. Wiederherstellen → „Nachweis“): für Versicherung, Prüfer oder Kunden
+  ein druckbares Dokument (HTML/PDF) für einen Zeitraum und alle oder ausgewählte Server – je Server erfolgreiche und
+  fehlgeschlagene Läufe, Tage mit Sicherung, längste Lücke, zuletzt gesichert, letzter Restore-Test, dazu wo die
+  Sicherungen heute liegen (Backup-Server, außer Haus, USB) und ein Feld für die Unterschrift. Laufdaten reichen sechs
+  Monate zurück; auch Kunden mit der Rolle „Dateien wiederherstellen“ können ihn erstellen.
 - **Monatsbericht:** am 1. jedes Monats per Mail, Telegram oder Push – Sicherungen je Server, USB-Kopien,
   Restore-Tests, Festplatten, Backup-Server, Archiv-Platten und alle Hinweise des Vormonats, vollständig als
   HTML-Datei (druckbar als PDF); jederzeit unter Benachrichtigungen → Monatsbericht ansehbar.

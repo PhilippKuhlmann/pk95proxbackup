@@ -71,6 +71,7 @@ func Run(ctx context.Context, cfg Config) error {
 		stopRun()
 	}
 	if cfg.Demo {
+		fake.SeedHistory = true
 		stop, err := fake.Setup(c)
 		if err != nil {
 			return err

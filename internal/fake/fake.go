@@ -22,6 +22,7 @@ import (
 	"pk95proxbackup/internal/notify"
 	"pk95proxbackup/internal/prox"
 	"pk95proxbackup/internal/shares"
+	appstore "pk95proxbackup/internal/store"
 )
 
 const gib = int64(1) << 30
@@ -537,6 +538,7 @@ func Setup(c *core.Core) (func(), error) {
 	}
 	seedSpaceHistory(c, local, "local", "backup", now)
 	_ = c.St.SetSetting("space", map[string]core.StoreSpace{})
+	seedBackupHistory(c, now)
 	pve.AddJob(prox.BackupJob{ID: "backup-nightly", Schedule: "21:00", Storage: "pbs-appliance", Mode: "snapshot", All: 1, Exclude: "112,120,130", Comment: "Jede Nacht alles", NotesTemplate: "{{guestname}}", NotificationMode: "notification-system"})
 
 	var x struct{}
@@ -803,4 +805,51 @@ func lastHostRun(now time.Time) int64 {
 		t = t.AddDate(0, 0, -1)
 	}
 	return t.Unix()
+}
+
+// SeedHistory adds 90 recorded nights of backups to the demo (off in tests that count events).
+var SeedHistory bool
+
+// seedBackupHistory records 90 nights of the backup job as events (once per data directory),
+// like the appliance does after each run: VM 102 failed four nights ago, VM 111 joined the job
+// 60 days ago, one night the backup server could not be reached.
+func seedBackupHistory(c *core.Core, now time.Time) {
+	if !SeedHistory {
+		return
+	}
+	var done bool
+	if c.St.GetSetting("demo-history", &done) == nil && done {
+		return
+	}
+	guests := [][3]string{{"VM", "100", "dc01"}, {"VM", "101", "fileserver"}, {"VM", "102", "nextcloud"}, {"CT", "110", "pihole"}, {"VM", "111", "homeassistant"}}
+	for d := 90; d >= 1; d-- {
+		t := time.Date(now.Year(), now.Month(), now.Day()-d, 21, 42, 0, 0, now.Location())
+		var rows []notify.Row
+		ok := 0
+		for _, g := range guests {
+			if g[1] == "111" && d > 60 {
+				continue
+			}
+			r := notify.Row{Kind: g[0], ID: g[1], Name: g[2], Status: "ok", Size: "4.2 GiB", Duration: "00:01:12"}
+			if d == 4 && g[1] == "102" || d == 33 {
+				r.Status, r.Info = "error", "job failed with err -5 - Input/output error"
+				if d == 33 {
+					r.Info = "Backup-Server nicht erreichbar"
+				}
+			} else {
+				ok++
+			}
+			rows = append(rows, r)
+		}
+		status, sev, title := "ok", "info", fmt.Sprintf("Datensicherung erfolgreich – alle %d Server gesichert", ok)
+		switch {
+		case ok == 0:
+			status, sev, title = "error", "critical", "Datensicherung fehlgeschlagen"
+		case ok < len(rows):
+			status, sev, title = "warning", "warning", fmt.Sprintf("Datensicherung unvollständig – %d von %d Servern gesichert", ok, len(rows))
+		}
+		b, _ := json.Marshal(notify.Details{Status: status, RowsTitle: "Gesicherte Server", Rows: rows, Link: "/sicherungen"})
+		_, _ = c.St.AddEvent(appstore.Event{TS: t.Unix(), Severity: sev, Source: "Cluster Zuhause", Title: title, Details: b})
+	}
+	_ = c.St.SetSetting("demo-history", true)
 }

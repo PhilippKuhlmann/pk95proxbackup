@@ -2789,7 +2789,8 @@ PAGES["/sicherungen"] = async (el, token) => {
     });
   };
   el.innerHTML = pageHead("VMs & Container", "Alle Gäste der verbundenen Proxmox-VE-Systeme mit ihren Sicherungen auf den Backup-Servern.",
-    `<input type="search" data-q placeholder="Suchen: Name, ID, Knoten …" style="width:240px"><label class="check"><input type="checkbox" data-issues ${onlyIssues ? "checked" : ""}><span>nur Lücken</span></label>`) + `<div data-list><div class="panel flex"><span class="spinner"></span> Lade …</div></div>`;
+    `<input type="search" data-q placeholder="Suchen: Name, ID, Knoten …" style="width:240px"><label class="check"><input type="checkbox" data-issues ${onlyIssues ? "checked" : ""}><span>nur Lücken</span></label><button class="btn gray" type="button" data-proof>${icon("shield")} Nachweis</button>`) + `<div data-list><div class="panel flex"><span class="spinner"></span> Lade …</div></div>`;
+  qs("[data-proof]", el).onclick = () => proofDialog();
   qs("[data-q]", el).oninput = (e) => { filter = e.target.value.trim().toLowerCase(); draw(); };
   qs("[data-issues]", el).onchange = (e) => { onlyIssues = e.target.checked; draw(); };
   const load = async () => {
@@ -2882,7 +2883,8 @@ async function mountSource(btn, x, done) {
 // Step 1: where from? All backups, or one datastore / NAS share / USB disk.
 function restoreStart(el, data, guests, srcs) {
   const sources = srcs.sources || [];
-  el.innerHTML = pageHead("Wiederherstellen", can("operator") ? "Einzelne Dateien und Ordner aus einer Sicherung holen oder eine ganze VM bzw. einen Container zurückspielen." : "Einzelne Dateien und Ordner aus einer Sicherung herunterladen: Quelle, Server und Stand wählen, dann die Dateien.") +
+  el.innerHTML = pageHead("Wiederherstellen", can("operator") ? "Einzelne Dateien und Ordner aus einer Sicherung holen oder eine ganze VM bzw. einen Container zurückspielen." : "Einzelne Dateien und Ordner aus einer Sicherung herunterladen: Quelle, Server und Stand wählen, dann die Dateien.",
+    `<button class="btn gray" type="button" data-proof>${icon("shield")} Sicherungsnachweis</button>`) +
     (data.errors || []).concat(srcs.errors || []).map((e) => callout("red", "Nicht alles erreichbar", esc(e))).join("") +
     `<div class="panel"><div class="panel-head"><div class="panel-title">1. Quelle wählen</div></div>
       <div class="src-cards">
@@ -2895,6 +2897,8 @@ function restoreStart(el, data, guests, srcs) {
         </div>`).join("")}
       </div></div><div data-list></div>`;
   qsa("[data-mount]", el).forEach((b) => b.onclick = () => { const x = sources[+b.dataset.mount]; mountSource(b, x, () => go(srcHref(x))); });
+  const pb = qs("[data-proof]", el);
+  if (pb) pb.onclick = () => proofDialog();
   const list = qs("[data-list]", el);
   list.innerHTML = `<div class="panel flush"><div class="panel-head"><div class="panel-title">2. Server wählen</div><input type="search" data-q placeholder="Suchen: Name, ID …" style="width:240px"></div><div data-rows></div></div>`;
   const draw = (f) => {
@@ -3219,6 +3223,56 @@ function diskJobDialog(job) {
   };
   draw(job);
   timer = setTimeout(poll, 1000);
+}
+
+// proofDialog creates the proof of backup for a period and a choice of guests (opens the
+// printable document in a new tab).
+async function proofDialog() {
+  let guests = [];
+  try { guests = ((await GET("/api/guests")).guests || []).filter((g) => !g.template).sort((a, b) => a.vmid - b.vmid); } catch (e) { /* all */ }
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const now = new Date();
+  const ranges = {
+    month: [new Date(now.getFullYear(), now.getMonth() - 1, 1), new Date(now.getFullYear(), now.getMonth(), 0)],
+    quarter: [new Date(now.getFullYear(), now.getMonth() - 3, 1), new Date(now.getFullYear(), now.getMonth(), 0)],
+    half: [new Date(now.getFullYear(), now.getMonth() - 6, 1), new Date(now.getFullYear(), now.getMonth(), 0)],
+    year: [new Date(now.getFullYear(), 0, 1), now],
+    days30: [new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30), now],
+  };
+  const list = `<div class="field wide" data-field="pick"><span class="fl">Server</span>
+    <div class="section guest-list" style="max-height:220px;overflow:auto;gap:6px">${guests.map((g) => `<label class="check"><input type="checkbox" class="plain" data-g="${g.type === "lxc" ? "ct" : "vm"}/${g.vmid}"><span>${g.vmid} ${esc(g.name)} <span class="muted small">${g.type === "lxc" ? "CT" : "VM"} · ${esc(g.cluster_name || "")}</span></span></label>`).join("") || '<span class="muted small">Keine Gäste gefunden.</span>'}</div><span class="err" hidden></span></div>`;
+  formDialog({
+    title: "Sicherungsnachweis", ic: "shield", button: "Nachweis öffnen", grid: "cols-2",
+    text: "Für Versicherung, Prüfer oder Kunden: wann jeder Server gesichert wurde, wo die Sicherungen liegen und wann ein Restore-Test lief. Öffnet sich als druckbares Dokument (auch als PDF).",
+    fields: [
+      { name: "range", label: "Zeitraum", type: "select", value: "month", wide: true, options: [["month", "Letzter Monat"], ["quarter", "Letzte 3 Monate"], ["half", "Letzte 6 Monate"], ["days30", "Letzte 30 Tage"], ["year", "Dieses Jahr bis heute"], ["custom", "Eigener Zeitraum"]] },
+      { name: "from", label: "Von", type: "date", value: iso(ranges.month[0]) },
+      { name: "to", label: "Bis", type: "date", value: iso(ranges.month[1]) },
+      { name: "for", label: "Für (optional)", value: "", wide: true, placeholder: "z. B. Muster GmbH" },
+      { name: "which", type: "radio", label: "Welche Server?", value: "all", wide: true, options: [["all", "Alle", "Alle VMs und Container"], ["pick", "Auswahl", "Nur die angehakten"]] },
+      { type: "html", name: "pick_box", wide: true, html: list },
+    ],
+    onMount: (d) => {
+      const f = qs("form", d);
+      const sync = () => {
+        const v = formValues(f);
+        if (v.range !== "custom") { qs('[name="from"]', d).value = iso(ranges[v.range][0]); qs('[name="to"]', d).value = iso(ranges[v.range][1]); }
+        qs('[name="from"]', d).disabled = qs('[name="to"]', d).disabled = v.range !== "custom";
+        qs('[data-field="pick"]', d).hidden = v.which !== "pick";
+      };
+      qs('[name="range"]', d).onchange = sync;
+      qsa('[name="which"]', d).forEach((x) => x.onchange = sync);
+      sync();
+    },
+    submit: async (v, d) => {
+      const from = qs('[name="from"]', d).value, to = qs('[name="to"]', d).value;
+      if (!from || !to || from > to) throw new Error("Zeitraum prüfen: „Von“ muss vor „Bis“ liegen.");
+      const picked = v.which === "pick" ? qsa("[data-g]", d).filter((x) => x.checked).map((x) => x.dataset.g) : [];
+      if (v.which === "pick" && !picked.length) throw new Error("Mindestens einen Server anhaken.");
+      const q = new URLSearchParams({ from, to, for: v.for || "", guests: picked.join(",") });
+      window.open("/api/proof?" + q.toString(), "_blank", "noopener");
+    },
+  });
 }
 
 async function restoreWhole(g, typ, b, time) {

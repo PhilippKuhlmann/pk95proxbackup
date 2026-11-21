@@ -97,6 +97,7 @@ func (s *Server) routes() {
 
 	a("GET /api/overview", s.overview)
 	a("GET /api/overview/jobs", s.overviewJobs)
+	a("GET /api/proof", s.proofDocument)
 	a("GET /api/events", s.events)
 	a("GET /api/running", s.running)
 	a("GET /api/system", s.system)
