@@ -3065,34 +3065,143 @@ function fileBrowser(box, query, g, typ, want, time, ver, title = "3. Dateien au
   const arch = (text) => { const a = text.replace(/\.pxar\.didx$/, ""); return typ === "host" ? ({ etc: "/etc", root: "/root", info: "Systeminfo" }[a] || a) : a; };
   const stack = want.stack.slice();
   const typeIcon = { d: "folder", v: "disk", f: "copy", l: "link", h: "link" };
-  let fresh = true;
+  const crumbName = (e) => e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.type === "v" ? arch(e.text) : e.text;
+  let fresh = true, seek = false, typed = false;
   // go navigates on the user's behalf: the new folder becomes the wanted one.
   const go = () => { want.stack = stack.slice(); show(); };
+  // A typed path starts at the root of a file system: the archive of a container or host
+  // backup, or a partition (or LVM/ZFS volume) of a VM disk.
+  const fsRootRe = /^\/[^/]+\.m?pxar\.didx$|^\/[^/]+\.img\.fidx\/(?:part\/[^/]+|lvm\/[^/]+\/[^/]+|zpool\/[^/]+)$/;
+  const fsRoot = () => stack.findIndex((s2, i) => i > 0 && fsRootRe.test(unb64(s2.path)));
+  // here is the open folder as a path in that file system ("" above it). Host archives hold
+  // /etc and /root, so their path starts with that folder.
+  const here = () => {
+    const ri = fsRoot();
+    if (ri < 0) return "";
+    const base = unb64(stack[ri].path), rel = unb64(stack[stack.length - 1].path).slice(base.length);
+    if (typ !== "host") return rel || "/";
+    const top = arch(base.slice(1));
+    return top.startsWith("/") ? top + rel : "";
+  };
+  const ls = async (path) => (await GET(`/api/restore/files?${query}${path ? "&path=" + enc(path) : ""}`)).entries;
+  const isDir = (e) => e.type === "d" || e.type === "v";
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  const child = (path, name) => b64(unb64(path).replace(/\/$/, "") + "/" + name);
+  // findPartition walks the disks of a VM down to their file systems (partitions, LVM and ZFS
+  // volumes) and returns the crumbs to the first one that holds the folder first – so "/var/www"
+  // or "C:\Users" open without picking disk and partition by hand. Without a folder (just "C:\")
+  // it looks for Windows, else takes the first file system that opens.
+  const findPartition = async (first, windows) => {
+    const roots = [];
+    let level = (await ls("")).filter(isDir).map((e) => [e]);
+    for (let depth = 0; depth < 4 && level.length; depth++) {
+      const next = [];
+      for (const chain of level) {
+        const e = chain[chain.length - 1];
+        if (fsRootRe.test(unb64(e.filepath))) { roots.push(chain); continue; }
+        try { next.push(...(await ls(e.filepath)).filter(isDir).map((k) => [...chain, k])); } catch (err) { /* not readable */ }
+      }
+      level = next;
+    }
+    const want1 = first || (windows ? "Windows" : "");
+    for (const chain of roots) {
+      let kids;
+      try { kids = await ls(chain[chain.length - 1].filepath); } catch (err) { continue; } // no file system Proxmox can read (MSR, swap …)
+      if (!want1 || kids.some((k) => isDir(k) && same(k.text, want1))) return chain;
+    }
+    return null;
+  };
+  // gotoPath opens a typed folder: "/…" or "C:\…" from the root of the file system, anything else
+  // from the open folder. Windows paths and any letter case work: show corrects the case, and
+  // folders that do not exist fall back to the nearest parent.
+  const gotoPath = async (raw, progress) => {
+    let text = raw.trim().replace(/\\/g, "/");
+    const drive = /^[A-Za-z]:(?=\/|$)/.exec(text);
+    if (drive) text = "/" + text.slice(2);
+    const segs = text.split("/").filter((x) => x && x !== ".");
+    if (text.startsWith("/")) {
+      let ri = fsRoot();
+      if (typ === "host" || ri < 0) {
+        let chain;
+        if (typ === "vm") {
+          progress(segs[0] ? `Partition mit „${segs[0]}“ wird gesucht …` : "Partition wird gesucht …");
+          chain = await findPartition(segs[0], !!drive);
+          if (!chain) throw new Error(segs[0] ? `Keine Partition dieser Sicherung enthält „${segs[0]}“.` : "Keine Partition dieser Sicherung lässt sich öffnen.");
+        } else {
+          const top = await ls("");
+          if (typ === "host") {
+            const a = top.find((e) => same(arch(e.text), "/" + (segs[0] || "")));
+            if (!a) throw new Error("Eine Host-Sicherung enthält nur /etc und /root.");
+            segs.shift();
+            chain = [a];
+          } else {
+            const archives = top.filter((e) => fsRootRe.test(unb64(e.filepath)));
+            if (archives.length !== 1) throw new Error("Bitte zuerst das Archiv öffnen.");
+            chain = archives;
+          }
+        }
+        stack.length = 1;
+        chain.forEach((e) => stack.push({ name: crumbName(e), path: e.filepath }));
+        ri = stack.length - 1;
+      }
+      stack.length = ri + 1;
+    }
+    for (const s2 of segs) {
+      if (s2 === "..") { if (stack.length > 1) stack.pop(); continue; }
+      stack.push({ name: s2, path: child(stack[stack.length - 1].path, s2) });
+    }
+    seek = typed = true;
+    go();
+  };
   const show = async () => {
     const cur = stack[stack.length - 1];
     const missing = want.stack.slice(stack.length).map((s2) => s2.name);
-    const note = missing.length ? `<div style="padding:0 16px 12px">${callout("yellow", `„${esc(missing.join("/"))}“ gibt es in diesem Stand nicht`, "Angezeigt wird der Ordner darüber. Ein anderer Stand links zeigt den Ordner wieder, wenn es ihn dort gibt.")}</div>` : "";
+    const note = missing.length ? `<div style="padding:0 16px 12px" data-missing>${callout("yellow", `„${esc(missing.join("/"))}“ gibt es in diesem Stand nicht`, "Angezeigt wird der Ordner darüber. Ein anderer Stand links zeigt den Ordner wieder, wenn es ihn dort gibt.")}</div>` : "";
     box.innerHTML = `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">${esc(title)}</div>${time ? `<div class="muted small">Stand vom ${fmtTime(time, true)}</div>` : ""}</div></div>
-      ${note}<div style="padding:0 16px 12px" class="flex small">${stack.map((s2, i) => i < stack.length - 1 ? `<a href="#" data-crumb="${i}">${esc(s2.name)}</a> /` : `<b>${esc(s2.name)}</b>`).join(" ")}</div>
+      ${note}<div class="path-bar"><div class="flex small crumbs">${stack.map((s2, i) => i < stack.length - 1 ? `<a href="#" data-crumb="${i}">${esc(s2.name)}</a> /` : `<b>${esc(s2.name)}</b>`).join(" ")}</div>
+        <form class="path-go" data-goto><input type="text" data-gopath value="${esc(here())}" placeholder="Pfad, z. B. /var/www oder C:\\Users" aria-label="Pfad öffnen" autocomplete="off" spellcheck="false"><button class="btn gray sm" type="submit">Öffnen</button></form></div>
+      <div data-goerr></div>
       <div class="rows" data-entries><div class="row flex"><span class="spinner"></span> Sicherung wird geöffnet …${typ === "vm" && fresh ? " Bei VMs startet Proxmox dafür kurz eine Hilfs-VM, das dauert bis zu einer Minute." : ""}</div></div></div>`;
     qsa("[data-crumb]", box).forEach((a) => a.onclick = (e) => { e.preventDefault(); stack.length = +a.dataset.crumb + 1; go(); });
+    qs("[data-goto]", box).onsubmit = async (e) => {
+      e.preventDefault();
+      const input = qs("[data-gopath]", box), err = qs("[data-goerr]", box), btn = qs("[data-goto] button", box);
+      if (!input.value.trim()) return input.focus();
+      btn.disabled = true;
+      const progress = (msg) => { err.innerHTML = `<div style="padding:0 16px 12px" class="flex small muted"><span class="spinner"></span> ${esc(msg)}${typ === "vm" ? " Proxmox liest dafür die Platten über eine Hilfs-VM, das kann bis zu einer Minute dauern." : ""}</div>`; };
+      try { await gotoPath(input.value, progress); }
+      catch (e2) { btn.disabled = false; if (err.isConnected) err.innerHTML = `<div style="padding:0 16px 12px"><div class="form-error">${esc(e2.message)}</div></div>`; }
+    };
     let r;
     try { r = await GET(`/api/restore/files?${query}${cur.path ? "&path=" + enc(cur.path) : ""}`); }
     catch (e) {
       if (!box.isConnected) return; // another backup was picked meanwhile
-      // The carried-over folder is not in this backup: try its parent.
-      if (carried && fresh && stack.length > 1) { stack.pop(); return show(); }
+      // The carried-over or typed folder is not in this backup: try its parent.
+      if (((carried && fresh) || seek) && stack.length > 1) { stack.pop(); return show(); }
+      seek = false;
       qs("[data-entries]", box).innerHTML = `<div class="row"><div class="form-error grow">${esc(e.message)}</div></div>`; return;
     }
     if (!box.isConnected) return;
-    fresh = false;
+    fresh = false; seek = false;
+    // A typed name with other letter case (Windows does not care: "c:\users"): take the real one.
+    const typedRest = want.stack.slice(stack.length);
+    const real = typed && typedRest.length ? r.entries.find((e) => e.text !== typedRest[0].name && same(e.text, typedRest[0].name)) : null;
+    if (real && isDir(real)) {
+      stack.push({ name: crumbName(real), path: real.filepath });
+      typedRest.slice(1).forEach((s2) => stack.push({ name: s2.name, path: child(stack[stack.length - 1].path, s2.name) }));
+      want.stack = stack.slice();
+      seek = true;
+      return show();
+    }
+    if (real && typedRest.length === 1) want.stack[want.stack.length - 1] = { ...typedRest[0], name: real.text };
+    typed = false;
     const list = r.entries.slice().sort((a, b) => (a.type === "f") - (b.type === "f") || a.text.localeCompare(b.text, "de"));
     const dl = (e) => `/api/restore/download?${query}&path=${enc(e.filepath)}&name=${enc(e.text)}${e.type === "f" ? "" : "&dir=1"}`;
     qs("[data-entries]", box).innerHTML = (stack.length > 1 ? `<div class="row" style="cursor:pointer" data-up>${icon("back")} <span class="grow">Eine Ebene zurück</span></div>` : "") +
       (list.map((e, i) => {
         const folder = e.type !== "f" && e.type !== "l" && e.type !== "h";
         const label = e.type === "v" ? (e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : arch(e.text)) : e.text;
-        return `<div class="row" style="align-items:center">${icon(typeIcon[e.type] || "copy")}
+        return `<div class="row" style="align-items:center" data-row="${i}">${icon(typeIcon[e.type] || "copy")}
           <div class="grow">${folder ? `<a href="#" data-open="${i}"><b>${esc(label)}</b></a>` : `<span>${esc(label)}</span>`}
             <div class="t-sub">${e.type === "f" ? fmtBytes(e.size) + " · " : ""}${e.mtime ? fmtTime(e.mtime, true) : ""}</div></div>
           ${e.type === "f" && ver ? `<button class="btn gray sm" type="button" data-ver="${i}" title="In welchen Ständen es diese Datei gibt und wann sie sich geändert hat">${icon("clock")} Versionen</button>` : ""}
@@ -3101,7 +3210,16 @@ function fileBrowser(box, query, g, typ, want, time, ver, title = "3. Dateien au
     const up = qs("[data-up]", box);
     if (up) up.onclick = () => { stack.pop(); go(); };
     qsa("[data-ver]", box).forEach((b) => b.onclick = () => versionsDialog(list[+b.dataset.ver], cur.path, typ, ver, time));
-    qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: e.type === "v" && e.text.startsWith("drive-") ? "Platte " + e.text.replace(/^drive-|\.img\.fidx$/g, "") : e.type === "v" ? arch(e.text) : e.text, path: e.filepath }); go(); });
+    qsa("[data-open]", box).forEach((a) => a.onclick = (e2) => { e2.preventDefault(); const e = list[+a.dataset.open]; stack.push({ name: crumbName(e), path: e.filepath }); go(); });
+    // A path that ends in a file: it is not a missing folder, mark the file instead.
+    const missingNow = want.stack.slice(stack.length);
+    const hit = missingNow.length === 1 ? list.findIndex((e) => e.text === missingNow[0].name && e.type !== "d" && e.type !== "v") : -1;
+    if (hit >= 0) {
+      qs("[data-missing]", box)?.remove();
+      const row = qs(`[data-row="${hit}"]`, box);
+      row.classList.add("hit");
+      row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   };
   show();
   if (!carried) box.scrollIntoView({ behavior: "smooth", block: "start" });

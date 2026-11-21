@@ -285,6 +285,12 @@ tr.off td { color: var(--muted); }
 /* ---- lists ---- */
 .rows > .row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line-soft); }
 .rows > .row:first-child { border-top: 0; }
+.rows > .row.hit { background: var(--nav-on-bg); box-shadow: inset 3px 0 0 var(--accent); }
+/* file browser: breadcrumbs and a field to type a path */
+.path-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; padding: 0 16px 12px; }
+.path-bar .crumbs { flex-wrap: wrap; min-width: 0; }
+.path-go { display: flex; gap: 6px; flex: 0 1 340px; min-width: 220px; }
+.path-go input[type="text"] { min-height: 30px; padding: 4px 10px; font-family: var(--mono); font-size: 13px; }
 .row .when { width: 112px; flex: none; font-family: var(--mono); font-size: 12px; color: var(--muted); padding-top: 2px; }
 .row .grow { flex: 1; min-width: 0; }
 .row .title { font-size: 14px; color: var(--ink); }

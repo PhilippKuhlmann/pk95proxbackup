@@ -20,6 +20,15 @@ var fileTree = []string{
 	"var/log/syslog", "var/www/html/index.html", "root/.bashrc",
 }
 
+// winTree is the system disk of the Windows file server (VM 101): partition 4 is C:, next to
+// recovery (1), EFI (2) and the reserved partition (3) Proxmox cannot open.
+var winTree = []string{
+	"Users/Administrator/Desktop/Notizen.txt", "Users/Administrator/Documents/Rechnung-2026-10.pdf",
+	"Users/Public/Documents/Liesmich.txt", "Daten/Buchhaltung/2026/Oktober.xlsx", "Daten/Buchhaltung/2026/November.xlsx",
+	"Daten/Vorlagen/Briefkopf.dotx", "Program Files/7-Zip/7z.exe", "Windows/System32/drivers/etc/hosts", "Windows/win.ini",
+	"inetpub/wwwroot/iisstart.htm",
+}
+
 // changeEvery makes some files change between backups: every n days a new version (size and
 // modification time); all other files stay the same in every backup.
 var changeEvery = map[string]int{
@@ -83,8 +92,12 @@ func (p *PVE) fileList(w http.ResponseWriter, volume, b64 string) {
 		arch, _, _ := strings.Cut(strings.TrimPrefix(dir, "/"), "/")
 		prefix, tree = "/"+arch, hostTree[strings.TrimSuffix(arch, ".pxar.didx")]
 	}
+	isWin := isVM && strings.Contains(volume, ":backup/vm/101/")
 	if isVM {
 		prefix = "/drive-scsi0.img.fidx/part/2"
+		if isWin {
+			prefix, tree = "/drive-scsi0.img.fidx/part/4", winTree
+		}
 		time.Sleep(1500 * time.Millisecond) // the helper VM boots
 	}
 	bt := backupTime(volume)
@@ -99,6 +112,15 @@ func (p *PVE) fileList(w http.ResponseWriter, volume, b64 string) {
 		out = append(out, entry("/drive-scsi0.img.fidx", "drive-scsi0.img.fidx", "v", 64<<30))
 	case dir == "/drive-scsi0.img.fidx":
 		out = append(out, entry(dir+"/part", "part", "d", 0))
+	case dir == "/drive-scsi0.img.fidx/part" && isWin:
+		for _, n := range []string{"1", "2", "3", "4"} {
+			out = append(out, entry(dir+"/"+n, n, "d", 0))
+		}
+	case isWin && (dir == "/drive-scsi0.img.fidx/part/1" || dir == "/drive-scsi0.img.fidx/part/3"):
+		apiErr(w, 500, "unable to mount partition: no supported file system found")
+		return
+	case isWin && dir == "/drive-scsi0.img.fidx/part/2":
+		out = append(out, entry(dir+"/EFI", "EFI", "d", 0))
 	case dir == "/drive-scsi0.img.fidx/part":
 		out = append(out, entry(dir+"/1", "1", "d", 0), entry(dir+"/2", "2", "d", 0))
 	case dir == "/drive-scsi0.img.fidx/part/1":
