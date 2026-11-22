@@ -199,17 +199,31 @@ func (p *PBS) GCJobs(ctx context.Context) ([]GCJob, error) {
 	return out, err
 }
 
-// UPIDStart is the start time a task ID carries (UPID:node:pid:pstart:starttime:…), 0 if none.
+// UPIDStart is the start time a task ID carries, 0 if none. Proxmox VE writes
+// UPID:node:pid:pstart:starttime:type:…, the Backup Server has a task counter before the start
+// (UPID:node:pid:pstart:taskid:starttime:type:…).
 func UPIDStart(upid string) int64 {
 	f := strings.Split(upid, ":")
-	if len(f) < 5 || f[0] != "UPID" {
+	if len(f) < 6 || f[0] != "UPID" {
 		return 0
 	}
-	v, err := strconv.ParseInt(f[4], 16, 64)
+	field := f[4]
+	if hex8(f[5]) {
+		field = f[5] // the Backup Server's form: f[4] is the task counter
+	}
+	v, err := strconv.ParseInt(field, 16, 64)
 	if err != nil {
 		return 0
 	}
 	return v
+}
+
+func hex8(s string) bool {
+	if len(s) != 8 {
+		return false
+	}
+	_, err := strconv.ParseUint(s, 16, 32)
+	return err == nil
 }
 
 // Verify starts a verification of all snapshots.

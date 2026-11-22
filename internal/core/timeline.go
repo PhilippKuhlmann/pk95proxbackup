@@ -53,6 +53,9 @@ type Timeline struct {
 
 const timelineRuns = 10
 
+// timelineMaxRun: a longer run is a misread time, not a duration to draw.
+const timelineMaxRun = 3 * 24 * 3600
+
 // timelineGuess is the assumed duration of something that has not run yet.
 var timelineGuess = map[string]time.Duration{
 	"backup": 30 * time.Minute, "copy": 15 * time.Minute, "usb": 30 * time.Minute, "verify": 30 * time.Minute,
@@ -113,7 +116,7 @@ func (it *TimelineItem) plan(spec string, from, to time.Time) {
 func (it *TimelineItem) took(runs []JobRun) {
 	var done []JobRun
 	for _, r := range runs {
-		if r.End > r.Start && r.Start > 0 {
+		if r.End > r.Start && r.Start > 0 && r.End-r.Start <= timelineMaxRun {
 			done = append(done, r)
 		}
 	}

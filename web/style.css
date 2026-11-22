@@ -876,3 +876,4 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 :root[data-theme="dark"] .tl-tag.clash { color: #fbbf24; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tl-tag.clash { color: #fbbf24; } }
 @media (max-width: 640px) { .tl-one .tl-tick:nth-child(even) { display: none; } }
+.tl-in { display: block; overflow: hidden; text-overflow: ellipsis; font: 600 11.5px/18px var(--font); }

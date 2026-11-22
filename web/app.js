@@ -3767,7 +3767,9 @@ PAGES["/zeitplan"] = async (el, token) => {
         const label = `${hhmm(Math.max(b.s, from))} ${b.it.title}`;
         const lw = (label.length * 6.4 + 18) / width * 100;
         const x0 = pos(b.s), x1 = Math.max(pos(b.e), x0 + 0.4);
-        // name right of the bar; left of it when it fits only there; else right and shortened
+        // name inside a long bar; else right of it; left of it when it fits only there; else
+        // right and shortened
+        if (x1 - x0 >= lw) return { ...b, label, x0, x1, inside: true, from: x0, to: x1 };
         const right = x1 + lw <= 100 || x0 - lw < 0;
         return { ...b, label, x0, x1, right, from: right ? x0 : x0 - lw, to: right ? Math.min(100, x1 + lw) : x1 };
       }).sort((a, b) => a.from - b.from);
@@ -3784,8 +3786,8 @@ PAGES["/zeitplan"] = async (el, token) => {
           const clash = clashAt.has(p.it.key + "@" + p.s);
           const tip = `${p.it.title}: ${p.s < from ? "seit Vortag " : ""}${hhmm(p.s)}–${hhmm(p.e)} (${p.it.estimated ? "geschätzt" : "dauerte zuletzt"} ${fmtSecs(p.it.duration)})${clash ? " – gleichzeitig mit einem anderen Job auf demselben Datastore" : ""}`;
           const top = p.lane * lane + 4;
-          return `<button type="button" class="tl-bar ${tone[p.it.group]}${p.it.estimated ? " est" : ""}${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" style="left:${p.x0}%;width:${p.x1 - p.x0}%;top:${top}px;bottom:auto;height:${lane - 8}px" title="${esc(tip)}" aria-label="${esc(tip)}"></button>
-            <button type="button" class="tl-tag${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" tabindex="-1" style="${p.right ? `left:calc(${p.x1}% + 7px);max-width:calc(${100 - p.x1}% - 7px)` : `right:calc(${100 - p.x0}% + 7px)`};top:${top}px">${esc(p.label)}</button>`;
+          return `<button type="button" class="tl-bar ${tone[p.it.group]}${p.it.estimated ? " est" : ""}${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" style="left:${p.x0}%;width:${p.x1 - p.x0}%;top:${top}px;bottom:auto;height:${lane - 8}px" title="${esc(tip)}" aria-label="${esc(tip)}">${p.inside ? `<span class="tl-in">${esc(p.label)}</span>` : ""}</button>
+            ${p.inside ? "" : `<button type="button" class="tl-tag${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" tabindex="-1" style="${p.right ? `left:calc(${p.x1}% + 7px);max-width:calc(${100 - p.x1}% - 7px)` : `right:calc(${100 - p.x0}% + 7px)`};top:${top}px">${esc(p.label)}</button>`}`;
         }).join("")}</div></div>`;
     };
     const tabs = Array.from({ length: 7 }, (_, n) => {

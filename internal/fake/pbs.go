@@ -312,7 +312,7 @@ func (p *PBS) snapshotsOf(st string) []prox.Snapshot {
 func (p *PBS) AddJob(kind string, params map[string]string, end int64, state string) {
 	// The last run took a while, so the time plan has a duration to show.
 	took := map[string]int64{"sync": 14 * 60, "prune": 40, "verify": 38 * 60}[kind]
-	upid := fmt.Sprintf("UPID:%s:00000000:00000000:%08X:%sjob:%s:root@pam:", p.node, end-took, kind, params["id"])
+	upid := fmt.Sprintf("UPID:%s:00000000:00000000:0000002A:%08X:%sjob:%s:root@pam:", p.node, end-took, kind, params["id"]) // like PBS: task counter before the start
 	p.jobs[kind+"/"+params["id"]] = &job{kind: kind, params: params, end: end, state: state, upid: upid}
 }
 
@@ -823,7 +823,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				took := 120 + s.total/(4*gib)
 				end := time.Now().Add(-9 * time.Hour).Unix()
 				gj.NextRun, gj.LastRunState, gj.LastRunEnd, gj.Duration = time.Now().Add(15*time.Hour).Unix(), "OK", end, took
-				gj.LastRunUPID = fmt.Sprintf("UPID:%s:00000000:00000000:%08X:garbage_collection:%s:root@pam:", p.node, end-took, name)
+				gj.LastRunUPID = fmt.Sprintf("UPID:%s:00000000:00000000:0000002B:%08X:garbage_collection:%s:root@pam:", p.node, end-took, name)
 			}
 			out = append(out, gj)
 		}
