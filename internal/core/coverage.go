@@ -108,6 +108,94 @@ type GuestCoverage struct {
 	Seen        []BackupRef `json:"seen"`    // on USB disks that are not plugged in
 	LastBackup  int64       `json:"last_backup"`
 	Chain       Chain       `json:"chain"`
+	seen        guestSeen
+}
+
+// guestSeen is when the appliance first saw a guest and when its first backup is due: the next
+// run of a backup job that covers it, plus time for that run to finish. A guest in a job without
+// any backup is "new" until then, not a gap.
+type guestSeen struct {
+	Name string `json:"name"`
+	Seen int64  `json:"seen"`
+	Next int64  `json:"next,omitempty"` // start of that run (0: unknown)
+	Due  int64  `json:"due"`
+}
+
+// firstRunGrace is how long the first run of a job may take before a new guest without backup
+// counts as a gap.
+const firstRunGrace = 6 * time.Hour
+
+// firstBackupDue is when the first backup of a guest seen now is due: the earliest next run of an
+// enabled job that names it (all guests or its ID); when no job does (a pool, say), the earliest of
+// all enabled jobs; without any schedule two days.
+func firstBackupDue(jobs []prox.BackupJob, g prox.Guest, now time.Time) guestSeen {
+	id := strconv.Itoa(g.VMID)
+	listed := func(list string) bool {
+		for _, x := range strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
+			if x == id {
+				return true
+			}
+		}
+		return false
+	}
+	var named, earliest int64
+	for _, j := range jobs {
+		if !j.IsEnabled() || j.NextRun <= now.Unix() {
+			continue
+		}
+		if earliest == 0 || j.NextRun < earliest {
+			earliest = j.NextRun
+		}
+		if (j.All != 0 && !listed(j.Exclude) && (j.Node == "" || j.Node == g.Node)) || listed(j.VMID) {
+			if named == 0 || j.NextRun < named {
+				named = j.NextRun
+			}
+		}
+	}
+	s := guestSeen{Name: g.Name, Seen: now.Unix(), Next: named}
+	if s.Next == 0 {
+		s.Next = earliest
+	}
+	if s.Next == 0 {
+		s.Due = now.Add(48 * time.Hour).Unix()
+	} else {
+		s.Due = time.Unix(s.Next, 0).Add(firstRunGrace).Unix()
+	}
+	return s
+}
+
+// noteFirstSeen gives every guest its first sighting (stored, so it survives restarts) and
+// forgets guests that are gone from clusters that answered.
+func (c *Core) noteFirstSeen(guests []GuestCoverage, jobs map[string][]prox.BackupJob, now time.Time) {
+	var seen map[string]guestSeen
+	_ = c.St.GetSetting("guest-first-seen", &seen)
+	if seen == nil {
+		seen = map[string]guestSeen{}
+	}
+	changed := false
+	present := map[string]bool{}
+	for i := range guests {
+		g := &guests[i]
+		k := g.Cluster + "/" + strconv.Itoa(g.VMID)
+		present[k] = true
+		s, ok := seen[k]
+		if !ok || s.Name != g.Name { // a new guest (or a VMID used again)
+			s = firstBackupDue(jobs[g.Cluster], g.Guest, now)
+			seen[k] = s
+			changed = true
+		}
+		g.seen = s
+	}
+	for k := range seen {
+		cl, _, _ := strings.Cut(k, "/")
+		if _, answered := jobs[cl]; answered && !present[k] {
+			delete(seen, k)
+			changed = true
+		}
+	}
+	if changed {
+		_ = c.St.SetSetting("guest-first-seen", seen)
+	}
 }
 
 // age judges how old a link is: ok up to okDays, warn up to warnDays, then bad.
@@ -214,6 +302,7 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 		}()
 	}
 	out := []GuestCoverage{}
+	jobsOf := map[string][]prox.BackupJob{} // clusters that answered
 	for _, cl := range clusters {
 		wg.Add(1)
 		go func() {
@@ -232,7 +321,9 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 					nb[g.VMID] = true
 				}
 			}
+			jobs, _ := pve.BackupJobs(ctx)
 			mu.Lock()
+			jobsOf[cl.ID] = jobs
 			for _, g := range list {
 				if g.Template == 0 {
 					out = append(out, GuestCoverage{Guest: g, Cluster: cl.ID, ClusterName: cl.Name, InJob: !nb[g.VMID]})
@@ -264,6 +355,7 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 		}
 		unreadSets[r.ID] = !read
 	}
+	c.noteFirstSeen(out, jobsOf, now)
 	for i := range out {
 		c.chainOf(&out[i], refs, rots, unreadSets, twoServers, plans, runs, now)
 	}
@@ -321,11 +413,17 @@ func (c *Core) chainOf(g *GuestCoverage, refs map[string][]BackupRef, rots []Rot
 	sort.Slice(usb, func(a, b int) bool { return usb[a].Last > usb[b].Last })
 	ch := &g.Chain
 
-	// 1. backup
-	if len(fixed) > 0 {
+	// 1. backup; a new guest in a job waits for the job's next run
+	waiting := len(fixed) == 0 && g.InJob && g.seen.Due > now.Unix()
+	switch {
+	case len(fixed) > 0:
 		g.LastBackup = fixed[0].Last
 		ch.Backup = Link{State: age(fixed[0].Last, now, 2, 8), Last: fixed[0].Last, Where: fixed[0].ServerName + " / " + fixed[0].Store}
-	} else {
+	case waiting && g.seen.Next > 0:
+		ch.Backup = Link{State: "warn", Note: "neu – erste Sicherung im Lauf am " + time.Unix(g.seen.Next, 0).Format("02.01. um 15:04")}
+	case waiting:
+		ch.Backup = Link{State: "warn", Note: "neu – wartet auf die erste Sicherung"}
+	default:
 		ch.Backup = Link{State: "bad", Note: "noch nie gesichert"}
 	}
 	if !g.InJob {
@@ -336,7 +434,7 @@ func (c *Core) chainOf(g *GuestCoverage, refs map[string][]BackupRef, rots []Rot
 	switch {
 	case !twoServers:
 		ch.Copy = Link{State: "none", Note: "kein zweiter Backup-Server, keine Cloud"}
-	case len(fixed) == 0 && !g.InJob:
+	case len(fixed) == 0 && (!g.InJob || waiting):
 		ch.Copy = Link{State: "none", Note: "—"}
 	case len(fixed) == 0:
 		ch.Copy = Link{State: "bad", Note: "fehlt"}

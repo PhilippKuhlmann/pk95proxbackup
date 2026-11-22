@@ -75,8 +75,15 @@ func (c *Core) RecentDamage(within time.Duration) []VerifyResult {
 	return out
 }
 
-// annotateTasks marks failed verifications the appliance found harmless or damaging.
+// annotateTasks marks failed verifications the appliance found harmless or damaging, and reader
+// errors that were none (see readerOutcome).
 func (c *Core) annotateTasks(tasks []TaskInfo) {
+	now := time.Now()
+	for i, t := range tasks {
+		if state, note := readerOutcome(t, tasks, now); state == "harmless" {
+			tasks[i].Harmless, tasks[i].Note = true, note
+		}
+	}
 	res := c.VerifyResults()
 	if len(res) == 0 {
 		return

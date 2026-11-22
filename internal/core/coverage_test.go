@@ -21,6 +21,45 @@ func guestOf(t *testing.T, gs []core.GuestCoverage, vmid int) core.GuestCoverage
 	return core.GuestCoverage{}
 }
 
+// A guest added to a job waits for the job's next run (yellow); only when that run has passed
+// without a backup it is a gap.
+func TestNewGuestWaitsForFirstBackup(t *testing.T) {
+	c := newCore(t)
+	ctx := context.Background()
+	fake.Current.PVE.AddGuest(140, "pk95-patch", "pve1", "qemu", "running")
+	gs, _ := c.Coverage(ctx)
+	g := guestOf(t, gs, 140)
+	if !g.InJob || g.Chain.State != "warn" || g.Chain.Backup.State != "warn" || !strings.HasPrefix(g.Chain.Backup.Note, "neu – erste Sicherung im Lauf am ") {
+		t.Fatalf("new guest: %+v", g.Chain)
+	}
+	if g.Chain.Copy.State != "none" {
+		t.Fatalf("no copy expected before the first backup: %+v", g.Chain.Copy)
+	}
+	if sum := c.RefreshCoverage(ctx); sum.Bad != 0 {
+		t.Fatalf("new guest counted as a gap: %+v", sum)
+	}
+	if x := guestOf(t, gs, 112); x.Chain.State != "bad" {
+		t.Fatalf("outside every job stays red: %+v", x.Chain)
+	}
+
+	// the run went by without a backup of it: now it is a gap
+	var seen map[string]map[string]any
+	if err := c.St.GetSetting("guest-first-seen", &seen); err != nil || seen["cluster/140"] == nil {
+		t.Fatalf("first sighting not kept: %v %v", seen, err)
+	}
+	seen["cluster/140"]["due"] = time.Now().Add(-time.Hour).Unix()
+	if err := c.St.SetSetting("guest-first-seen", seen); err != nil {
+		t.Fatal(err)
+	}
+	gs, _ = c.Coverage(ctx)
+	if g = guestOf(t, gs, 140); g.Chain.State != "bad" || g.Chain.Backup.Note != "noch nie gesichert" {
+		t.Fatalf("missed first run: %+v", g.Chain)
+	}
+	if sum := c.RefreshCoverage(ctx); sum.Bad != 1 || sum.Names[0] != "140 pk95-patch" {
+		t.Fatalf("summary: %+v", sum)
+	}
+}
+
 func TestCoverage(t *testing.T) {
 	c := newCore(t)
 	ctx := context.Background()

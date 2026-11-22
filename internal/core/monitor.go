@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -403,7 +404,22 @@ func (c *Core) checkFailedTasks(ctx context.Context, cur *Overview) {
 	changed := false
 	keep := map[string]bool{}
 	read := c.VerifyResults()
-	for _, t := range cur.Tasks {
+	// Reader errors held back (readerOutcome) stay here, so they are decided even when the task
+	// has left the list of recent tasks meanwhile.
+	var pending map[string]TaskInfo
+	_ = c.St.GetSetting("pending-readers", &pending)
+	if pending == nil {
+		pending = map[string]TaskInfo{}
+	}
+	pendingBefore := len(pending)
+	tasks := slices.Clone(cur.Tasks)
+	for upid, t := range pending {
+		if !slices.ContainsFunc(cur.Tasks, func(x TaskInfo) bool { return x.UPID == upid }) {
+			tasks = append(tasks, t)
+		}
+	}
+	now := time.Now()
+	for _, t := range tasks {
 		if t.EndTime == 0 || t.Status == "" || t.Status == "OK" || strings.HasPrefix(t.Status, "WARNINGS") {
 			continue
 		}
@@ -422,8 +438,22 @@ func (c *Core) checkFailedTasks(ctx context.Context, cur *Overview) {
 			}
 		}
 		if seen[t.UPID] {
+			delete(pending, t.UPID)
 			continue
 		}
+		// A reader error that may still fix itself: decided at a later check.
+		if !old && t.Type == "reader" {
+			if state, _ := readerOutcome(t, tasks, now); state == "wait" {
+				delete(keep, t.UPID)
+				pending[t.UPID] = t
+				continue
+			} else if state == "harmless" {
+				delete(pending, t.UPID)
+				changed = true
+				continue
+			}
+		}
+		delete(pending, t.UPID)
 		changed = true
 		if old || (t.Type == "vzdump" && strings.HasPrefix(t.Source, "pve:")) {
 			continue
@@ -463,6 +493,9 @@ func (c *Core) checkFailedTasks(ctx context.Context, cur *Overview) {
 			keep["-"] = true
 		}
 		_ = c.St.SetSetting("seen-failed", keep)
+	}
+	if len(pending) != 0 || pendingBefore != 0 {
+		_ = c.St.SetSetting("pending-readers", pending)
 	}
 }
 

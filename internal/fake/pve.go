@@ -149,6 +149,8 @@ func NewPVE(nodes []string) *PVE {
 
 // AddGuest adds a VM (qemu) or container (lxc).
 func (p *PVE) AddGuest(id int, name, node, typ, status string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.guests = append(p.guests, prox.Guest{VMID: id, Name: name, Node: node, Type: typ, Status: status, MaxDisk: 64 * gib, MaxMem: 4 * gib})
 }
 
