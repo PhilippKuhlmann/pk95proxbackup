@@ -310,7 +310,18 @@ func (p *PBS) snapshotsOf(st string) []prox.Snapshot {
 
 // AddJob adds a job with a past run.
 func (p *PBS) AddJob(kind string, params map[string]string, end int64, state string) {
-	p.jobs[kind+"/"+params["id"]] = &job{kind: kind, params: params, end: end, state: state, upid: "UPID:" + p.node + ":seed:" + params["id"]}
+	// The last run took a while, so the time plan has a duration to show.
+	took := map[string]int64{"sync": 14 * 60, "prune": 40, "verify": 38 * 60}[kind]
+	upid := fmt.Sprintf("UPID:%s:00000000:00000000:%08X:%sjob:%s:root@pam:", p.node, end-took, kind, params["id"])
+	p.jobs[kind+"/"+params["id"]] = &job{kind: kind, params: params, end: end, state: state, upid: upid}
+}
+
+// JobUPID is the task of the last run of a job ("" if there is none).
+func (p *PBS) JobUPID(kind, id string) string {
+	if j := p.jobs[kind+"/"+id]; j != nil {
+		return j.upid
+	}
+	return ""
 }
 
 func (p *PBS) updateDatastore(name string, f url.Values) {
@@ -802,6 +813,21 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, o)
 		}
 		sort.Slice(out, func(i, k int) bool { return out[i]["id"].(string) < out[k]["id"].(string) })
+		data(w, out)
+	case len(seg) == 2 && seg[0] == "admin" && seg[1] == "gc":
+		out := []prox.GCJob{}
+		for name, s := range p.stores {
+			gj := prox.GCJob{Store: name, Schedule: s.cfg.GCSchedule}
+			if s.cfg.GCSchedule != "" {
+				// the last run: a few minutes, longer for bigger stores
+				took := 120 + s.total/(4*gib)
+				end := time.Now().Add(-9 * time.Hour).Unix()
+				gj.NextRun, gj.LastRunState, gj.LastRunEnd, gj.Duration = time.Now().Add(15*time.Hour).Unix(), "OK", end, took
+				gj.LastRunUPID = fmt.Sprintf("UPID:%s:00000000:00000000:%08X:garbage_collection:%s:root@pam:", p.node, end-took, name)
+			}
+			out = append(out, gj)
+		}
+		sort.Slice(out, func(i, k int) bool { return out[i].Store < out[k].Store })
 		data(w, out)
 	case len(seg) == 4 && seg[0] == "admin" && seg[3] == "run":
 		j := p.jobs[seg[1]+"/"+seg[2]]

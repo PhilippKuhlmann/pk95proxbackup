@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -178,6 +179,37 @@ func (p *PBS) GCStatus(ctx context.Context, store string) (GCStatus, error) {
 	var out GCStatus
 	err := p.Do(ctx, http.MethodGet, "/admin/datastore/"+url.PathEscape(store)+"/gc", nil, &out)
 	return out, err
+}
+
+// GCJob is the garbage collection plan of a datastore with its last run (GET /admin/gc).
+type GCJob struct {
+	Store        string `json:"store"`
+	Schedule     string `json:"schedule,omitempty"`
+	NextRun      int64  `json:"next-run,omitempty"`
+	LastRunState string `json:"last-run-state,omitempty"`
+	LastRunUPID  string `json:"last-run-upid,omitempty"`
+	LastRunEnd   int64  `json:"last-run-endtime,omitempty"`
+	Duration     int64  `json:"duration,omitempty"` // seconds
+}
+
+// GCJobs lists the garbage collection of every datastore (PBS 3.2 and newer).
+func (p *PBS) GCJobs(ctx context.Context) ([]GCJob, error) {
+	var out []GCJob
+	err := p.Do(ctx, http.MethodGet, "/admin/gc", nil, &out)
+	return out, err
+}
+
+// UPIDStart is the start time a task ID carries (UPID:node:pid:pstart:starttime:…), 0 if none.
+func UPIDStart(upid string) int64 {
+	f := strings.Split(upid, ":")
+	if len(f) < 5 || f[0] != "UPID" {
+		return 0
+	}
+	v, err := strconv.ParseInt(f[4], 16, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // Verify starts a verification of all snapshots.

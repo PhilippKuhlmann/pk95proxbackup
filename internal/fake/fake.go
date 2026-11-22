@@ -551,13 +551,13 @@ func Setup(c *core.Core) (func(), error) {
 			Rhythm: "daily", Time: "22:30", RunOnMount: true, UnmountOnDone: true, KeepLast: 7, KeepWeekly: 4,
 			Disks: []core.RotDisk{{Key: "a1", Store: "usb-a", Label: "Platte A (gerade Tage)", Added: day}, {Key: "b2", Store: "usb-b", Label: "Platte B (ungerade Tage)", Added: day}}})
 	}
-	// The simulated servers start fresh, so the remembered runs must match their seed.
-	{
-		_ = c.St.SetSetting("rt:demo/a1", map[string]any{"seen_upid": "UPID:pbs-appliance:seed:pk95r-demo-a1", "last_ok": now.Add(-26 * time.Hour).Unix(), "done_at": now.Add(-25 * time.Hour).Unix(), "last_gc": now.Add(-48 * time.Hour).Unix()})
-		_ = c.St.SetSetting("rt:demo/b2", map[string]any{"seen_upid": "UPID:pbs-appliance:seed:pk95r-demo-b2", "last_ok": now.Add(-50 * time.Hour).Unix(), "done_at": now.Add(-49 * time.Hour).Unix()})
-	}
 	local.AddJob("sync", map[string]string{"id": "pk95r-demo-a1", "store": "usb-a", "remote-store": "backup", "run-on-mount": "1", "comment": "PK95 Wechselplatte Platte A"}, now.Add(-26*time.Hour).Unix(), "OK")
 	local.AddJob("sync", map[string]string{"id": "pk95r-demo-b2", "store": "usb-b", "remote-store": "backup", "run-on-mount": "1", "comment": "PK95 Wechselplatte Platte B"}, now.Add(-50*time.Hour).Unix(), "OK")
+	// The simulated servers start fresh, so the remembered runs must match their seed.
+	{
+		_ = c.St.SetSetting("rt:demo/a1", map[string]any{"seen_upid": local.JobUPID("sync", "pk95r-demo-a1"), "last_ok": now.Add(-26 * time.Hour).Unix(), "done_at": now.Add(-25 * time.Hour).Unix(), "last_gc": now.Add(-48 * time.Hour).Unix()})
+		_ = c.St.SetSetting("rt:demo/b2", map[string]any{"seen_upid": local.JobUPID("sync", "pk95r-demo-b2"), "last_ok": now.Add(-50 * time.Hour).Unix(), "done_at": now.Add(-49 * time.Hour).Unix()})
+	}
 	local.AddJob("prune", map[string]string{"id": "pk95-prune-backup", "store": "backup", "schedule": "daily", "keep-last": "3", "keep-daily": "14", "keep-weekly": "8", "keep-monthly": "12"}, now.Add(-10*time.Hour).Unix(), "OK")
 	local.AddJob("verify", map[string]string{"id": "pk95-verify-backup", "store": "backup", "schedule": "sat 04:00"}, now.Add(-72*time.Hour).Unix(), "OK")
 	local.AddJob("sync", map[string]string{"id": "pk95-sync-offsite", "store": "backup", "remote-store": "offsite", "remote": "pk95-buero", "schedule": "*-*-* 03:00", "comment": "Kopie ins Büro (Push über Pull)"}, now.Add(-20*time.Hour).Unix(), "OK")

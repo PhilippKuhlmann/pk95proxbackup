@@ -103,6 +103,9 @@ func (s *Server) routes() {
 
 	a("GET /api/overview", s.overview)
 	a("GET /api/overview/jobs", s.overviewJobs)
+	a("GET /api/zeitplan", s.timeline)
+	a("GET /api/zeitplan/preview", s.timelinePreview)
+	a("PUT /api/zeitplan", s.setTimeline)
 	a("GET /api/proof", s.proofDocument)
 	a("GET /api/events", s.events)
 	a("GET /api/running", s.running)

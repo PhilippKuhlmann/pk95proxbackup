@@ -436,6 +436,7 @@ const NAV = [
   { path: "/wiederherstellen", label: "Wiederherstellen", icon: "restore" },
   { path: "/restoretests", label: "Restore-Tests", icon: "shield" },
   { path: "/jobs", label: "Sicherungsjobs", icon: "calendar" },
+  { path: "/zeitplan", label: "Zeitplan", icon: "chart" },
   { path: "/hosts", label: "Proxmox-VE-Hosts", icon: "server" },
   { path: "/aufgaben", label: "Aufgaben", icon: "list" },
   { head: "Speicher" },
@@ -3695,6 +3696,195 @@ function bindPveMail(root, redraw) {
     }
     run(b, async () => { await PUT(`/api/pve/${cid}/mail`, { appliance: on === "1" }); await redraw(); }, on === "1" ? "Umgestellt – die Mails kommen jetzt von der Appliance." : "Zurückgestellt auf Proxmox VE.");
   });
+}
+
+// ---------- time plan ----------
+// What runs when: per job a 24-hour track with its runs on the chosen day, each as long as the
+// last run took. Runs on the same datastore at the same time are marked; administrators move
+// times of Proxmox VE and Backup Server jobs right here.
+const TL_GROUPS = [
+  ["backup", "Sicherungen", "save"], ["copy", "Kopien", "copy"], ["usb", "Wechselplatten", "copy"],
+  ["verify", "Prüfungen", "check"], ["prune", "Aufräumen", "clean"], ["gc", "Speicher freigeben", "clean"],
+  ["restoretest", "Restore-Tests", "check"], ["host", "Host-Sicherungen", "save"], ["update", "Updates", "update"],
+];
+const TL_TONES = [["save", "Sichern"], ["copy", "Kopieren"], ["check", "Prüfen"], ["clean", "Aufräumen"], ["update", "Updates"]];
+const TL_DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const hhmm = (ts) => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+
+PAGES["/zeitplan"] = async (el, token) => {
+  let data = null, day = 0; // 0 = today … 6
+  // view: "one" = everything on a single timeline (overlaps stack), "rows" = one track per job
+  let view = "one";
+  try { view = localStorage.getItem("pk95pb-tl-view") || "one"; } catch (e) { /* ignore */ }
+  const dayStart = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d.getTime() / 1000; };
+  const tone = Object.fromEntries(TL_GROUPS.map(([g, , t]) => [g, t]));
+  // bars of one item on the chosen day: runs that start that day or reach into it
+  const barsOf = (it, from, to) => (it.starts || []).map((s) => ({ s, e: s + Math.max(it.duration, 60) })).filter((b) => b.e > from && b.s < to);
+  const draw = () => {
+    const from = dayStart(day), to = dayStart(day + 1);
+    const items = data.items.filter((it) => !it.problem);
+    // runs at the same time on the same datastore
+    const bars = items.flatMap((it) => barsOf(it, from, to).map((b) => ({ ...b, it })));
+    const clashes = [];
+    const clashAt = new Set();
+    for (let i = 0; i < bars.length; i++) for (let j = i + 1; j < bars.length; j++) {
+      const a = bars[i], b = bars[j];
+      if (a.it.key === b.it.key || a.s >= b.e || b.s >= a.e || !a.it.enabled || !b.it.enabled) continue;
+      const store = (a.it.stores || []).find((x) => (b.it.stores || []).includes(x));
+      if (!store) continue;
+      clashes.push({ a, b, store });
+      clashAt.add(a.it.key + "@" + a.s).add(b.it.key + "@" + b.s);
+    }
+    const storeName = (key) => { const [srv, ...st] = key.split("/"); return `${(state.servers.find((s) => s.id === srv) || {}).name || srv} / ${st.join("/")}`; };
+    const pos = (t) => Math.max(0, Math.min(100, ((t - from) / 864)));
+    const hours = [0, 3, 6, 9, 12, 15, 18, 21];
+    const now = Date.now() / 1000;
+    const nowLine = now >= from && now < to ? `<span class="tl-now" style="left:${pos(now)}%" title="Jetzt ${hhmm(now)}"></span>` : "";
+    const grid = hours.map((h) => `<span class="tl-hour" style="left:${h / 24 * 100}%"></span>`).join("");
+    const row = (it) => {
+      const own = barsOf(it, from, to);
+      const dur = it.estimated ? `geschätzt ${fmtSecs(it.duration)}` : `zuletzt ${fmtSecs(it.duration)}${it.typical && it.runs.length >= 3 && Math.abs(it.typical - it.duration) > 60 ? ` · üblich ${fmtSecs(it.typical)}` : ""}`;
+      return `<div class="tl-row${it.enabled ? "" : " off"}" data-key="${esc(it.key)}">
+        <button class="tl-label" type="button" data-open="${esc(it.key)}"><span class="tl-dot ${tone[it.group]}"></span><span class="grow" style="min-width:0"><b>${esc(it.title)}</b>
+          <small>${esc(it.text || it.schedule)}${it.enabled ? "" : " · ausgeschaltet"} · ${esc(dur)}</small></span></button>
+        <div class="tl-track">${grid}${nowLine}${own.map((b) => {
+          const clash = clashAt.has(it.key + "@" + b.s);
+          const tip = `${it.title}: ${b.s < from ? "seit Vortag " : ""}${hhmm(b.s)}–${hhmm(b.e)} (${it.estimated ? "geschätzt" : "dauerte zuletzt"} ${fmtSecs(it.duration)})${clash ? " – gleichzeitig mit einem anderen Job auf demselben Datastore" : ""}`;
+          const w = pos(b.e) - pos(b.s);
+          return `<button type="button" class="tl-bar ${tone[it.group]}${it.estimated ? " est" : ""}${clash ? " clash" : ""}" data-open="${esc(it.key)}" style="left:${pos(b.s)}%;width:${w}%" title="${esc(tip)}" aria-label="${esc(tip)}">${w > 7 ? `<span>${hhmm(Math.max(b.s, from))}</span>` : ""}</button>`;
+        }).join("")}</div></div>`;
+    };
+    const groups = TL_GROUPS.map(([g, label]) => {
+      const list = items.filter((it) => it.group === g);
+      return list.length ? `<div class="tl-group">${esc(label)}</div>${list.map(row).join("")}` : "";
+    }).join("");
+    // One timeline: every run a bar with its name beside it; runs that overlap (or whose names
+    // would) go to the next lane, so what runs at the same time stands on top of each other.
+    const together = () => {
+      const width = Math.max(300, (el.clientWidth || 800) - 64);
+      const lane = 26;
+      const placed = bars.filter((b) => b.it.enabled).map((b) => {
+        const label = `${hhmm(Math.max(b.s, from))} ${b.it.title}`;
+        const lw = (label.length * 6.4 + 18) / width * 100;
+        const x0 = pos(b.s), x1 = Math.max(pos(b.e), x0 + 0.4);
+        // name right of the bar; left of it when it fits only there; else right and shortened
+        const right = x1 + lw <= 100 || x0 - lw < 0;
+        return { ...b, label, x0, x1, right, from: right ? x0 : x0 - lw, to: right ? Math.min(100, x1 + lw) : x1 };
+      }).sort((a, b) => a.from - b.from);
+      const ends = [];
+      for (const p of placed) {
+        let i = ends.findIndex((e) => e <= p.from - 0.3);
+        if (i < 0) { i = ends.length; ends.push(0); }
+        ends[i] = p.to;
+        p.lane = i;
+      }
+      const h = Math.max(1, ends.length) * lane + 8;
+      return `<div class="tl-one"><div class="tl-track tl-one-axis">${hours.map((hr) => `<span class="tl-tick" style="left:${hr / 24 * 100}%">${String(hr).padStart(2, "0")}:00</span>`).join("")}<span class="tl-tick end">24:00</span></div>
+        <div class="tl-track tl-one-track" style="height:${h}px">${grid}${nowLine}${placed.map((p) => {
+          const clash = clashAt.has(p.it.key + "@" + p.s);
+          const tip = `${p.it.title}: ${p.s < from ? "seit Vortag " : ""}${hhmm(p.s)}–${hhmm(p.e)} (${p.it.estimated ? "geschätzt" : "dauerte zuletzt"} ${fmtSecs(p.it.duration)})${clash ? " – gleichzeitig mit einem anderen Job auf demselben Datastore" : ""}`;
+          const top = p.lane * lane + 4;
+          return `<button type="button" class="tl-bar ${tone[p.it.group]}${p.it.estimated ? " est" : ""}${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" style="left:${p.x0}%;width:${p.x1 - p.x0}%;top:${top}px;bottom:auto;height:${lane - 8}px" title="${esc(tip)}" aria-label="${esc(tip)}"></button>
+            <button type="button" class="tl-tag${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" tabindex="-1" style="${p.right ? `left:calc(${p.x1}% + 7px);max-width:calc(${100 - p.x1}% - 7px)` : `right:calc(${100 - p.x0}% + 7px)`};top:${top}px">${esc(p.label)}</button>`;
+        }).join("")}</div></div>`;
+    };
+    const tabs = Array.from({ length: 7 }, (_, n) => {
+      const d = new Date(dayStart(n) * 1000);
+      const name = n === 0 ? "Heute" : n === 1 ? "Morgen" : `${TL_DAYS[(d.getDay() + 6) % 7]} ${d.getDate()}.${d.getMonth() + 1}.`;
+      return `<button type="button" data-day="${n}" aria-pressed="${n === day}">${name}</button>`;
+    }).join("");
+    const unplanned = data.items.filter((it) => it.problem);
+    el.innerHTML = pageHead("Zeitplan", "Was wann läuft und wie lange es zuletzt gedauert hat. Ein Klick auf einen Eintrag zeigt die letzten Läufe" + (can("admin") ? " und ändert die Uhrzeit." : "."),
+      `<button class="btn gray" type="button" data-reload>${icon("refresh")} Aktualisieren</button>`) +
+      (data.errors.length ? `<div class="panel">${callout("yellow", "Nicht alles erreichbar", esc(data.errors.join(" · ")))}</div>` : "") +
+      `<div class="panel flush"><div class="panel-head"><div class="flex" style="gap:8px;flex-wrap:wrap;min-width:0"><div class="seg tl-days" role="group" aria-label="Tag">${tabs}</div>
+        <div class="seg" role="group" aria-label="Ansicht"><button type="button" data-view="one" aria-pressed="${view === "one"}">Eine Zeitleiste</button><button type="button" data-view="rows" aria-pressed="${view === "rows"}">Je Job</button></div></div>
+        <div class="tl-legend">${TL_TONES.map(([t, l]) => `<span><span class="tl-dot ${t}"></span>${l}</span>`).join("")}<span><span class="tl-dot est"></span>geschätzt</span></div></div>
+        ${clashes.length ? `<div style="padding:0 16px 12px">${callout("yellow", `${clashes.length} ${clashes.length === 1 ? "Überschneidung" : "Überschneidungen"} auf demselben Datastore`,
+          `Das klappt, macht aber beides langsamer. Besser nacheinander legen.<ul class="tl-clashes">${clashes.slice(0, 8).map(({ a, b, store }) =>
+            `<li><b>${esc(a.it.title)}</b> ${hhmm(a.s)}–${hhmm(a.e)} und <b>${esc(b.it.title)}</b> ${hhmm(b.s)}–${hhmm(b.e)} auf ${esc(storeName(store))}</li>`).join("")}</ul>`)}</div>` : ""}
+        ${view === "one" ? (bars.length ? together() : `<div class="row muted" style="padding:0 16px 16px">An diesem Tag ist nichts geplant.</div>`) : `<div class="tl-scroll"><div class="tl">
+          <div class="tl-row tl-axis"><span class="tl-label"></span><div class="tl-track">${hours.map((h) => `<span class="tl-tick" style="left:${h / 24 * 100}%">${String(h).padStart(2, "0")}:00</span>`).join("")}<span class="tl-tick end">24:00</span></div></div>
+          ${groups || `<div class="row muted">Nichts geplant.</div>`}
+        </div></div>`}</div>` +
+      (unplanned.length ? `<div class="panel"><div class="panel-head"><div class="panel-title">Nicht im Plan</div></div>${unplanned.map((it) => `<div class="small">${esc(it.title)}: ${esc(it.problem)}</div>`).join("")}</div>` : "");
+    qsa("[data-day]", el).forEach((b) => b.onclick = () => { day = +b.dataset.day; draw(); });
+    qsa("[data-view]", el).forEach((b) => b.onclick = () => {
+      view = b.dataset.view;
+      try { localStorage.setItem("pk95pb-tl-view", view); } catch (e) { /* ignore */ }
+      draw();
+    });
+    qs("[data-reload]", el).onclick = async () => { await load(); draw(); };
+    qsa("[data-open]", el).forEach((b) => b.onclick = () => timelineDialog(data.items.find((x) => x.key === b.dataset.open), async () => { await load(); if (token === pageToken) draw(); }));
+  };
+  const load = async () => { data = await GET("/api/zeitplan"); };
+  el.innerHTML = pageHead("Zeitplan") + `<div class="panel flex"><span class="spinner"></span> Lade …</div>`;
+  await loadConn();
+  try { await load(); } catch (e) { if (token === pageToken) el.innerHTML = pageHead("Zeitplan") + `<div class="panel"><div class="form-error">${esc(e.message)}</div></div>`; return; }
+  if (token === pageToken) draw();
+};
+
+// timelineDialog shows the last runs of a planned job; administrators change its time (weekdays
+// and time, or a Proxmox calendar event), with the next runs as a preview.
+function timelineDialog(it, saved) {
+  if (!it) return;
+  const runs = (it.runs || []).slice().reverse();
+  const edit = it.editable && can("admin");
+  const simple = it.simple || null;
+  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("clock")}</span><div class="grow"><div class="dlg-title">${esc(it.title)}</div>
+      <p class="dlg-text">${esc(it.sub)} · ${esc(it.text || it.schedule)}</p></div></div>
+    <form class="dlg-body" data-form novalidate>
+      <div class="small">${it.estimated ? `Noch kein Lauf bekannt – im Plan mit geschätzten ${fmtSecs(it.duration)} eingezeichnet.`
+        : `Der letzte Lauf dauerte <b>${fmtSecs(it.duration)}</b>${it.typical && runs.length >= 3 ? `, üblich sind ${fmtSecs(it.typical)} (Mittel der letzten ${runs.length} Läufe)` : ""}.`}</div>
+      ${runs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Start</th><th>Ende</th><th class="num">Dauer</th><th>Ergebnis</th></tr></thead><tbody>
+        ${runs.map((r) => `<tr><td data-l="Start">${fmtTime(r.start)}</td><td data-l="Ende">${fmtTime(r.end)}</td><td data-l="Dauer" class="num">${fmtDur(r.start, r.end)}</td>
+          <td data-l="Ergebnis">${pill(r.status === "ok" ? "OK" : r.status === "warning" ? "Hinweise" : "Fehler", r.status === "ok" ? "green" : r.status === "warning" ? "amber" : "rose")}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${edit ? `<fieldset class="tl-edit"><legend>Uhrzeit ändern</legend>
+        <div data-simple ${simple ? "" : "hidden"}><div class="flex" style="gap:12px;flex-wrap:wrap;align-items:center">
+          <input type="time" data-time value="${esc(simple ? simple.time : "02:00")}" style="width:130px" aria-label="Uhrzeit">
+          <div class="tl-wd" role="group" aria-label="Wochentage">${TL_DAYS.map((d, i) => `<label class="check"><input type="checkbox" data-wd="${i + 1}" ${!simple || simple.weekdays.includes(i + 1) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div></div></div>
+        <div data-cal ${simple ? "hidden" : ""}><input type="text" class="mono" data-spec value="${esc(it.schedule)}" aria-label="Zeitplan im Proxmox-Format" spellcheck="false">
+          <div class="hint small muted" style="margin-top:6px">Proxmox-Format, z. B. <code>mon..fri 21:00</code>, <code>sat 04:00</code> oder <code>*-*-01 03:00</code>.</div></div>
+        <button class="link-btn small" type="button" data-mode>${simple ? "Eigener Zeitplan im Proxmox-Format" : "Einfach: Uhrzeit und Wochentage"}</button>
+        <div class="small" data-preview aria-live="polite"></div></fieldset>`
+      : it.editable ? "" : `<div class="small muted">Diese Zeit wird auf ihrer eigenen Seite eingestellt.</div>`}
+    </form>
+    <div class="dlg-foot"><a class="btn gray" href="${esc(it.link)}" data-go data-close>Zur Seite</a><span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button>${edit ? `<button class="btn" type="button" data-save>Speichern</button>` : ""}</div>`, "wide");
+  qsa("[data-close]", dlg).forEach((b) => b.addEventListener("click", () => dlg.close()));
+  if (!edit) return;
+  let mode = simple ? "simple" : "cal";
+  const body = () => mode === "simple"
+    ? { key: it.key, time: qs("[data-time]", dlg).value, weekdays: qsa("[data-wd]", dlg).filter((c) => c.checked).map((c) => +c.dataset.wd) }
+    : { key: it.key, schedule: qs("[data-spec]", dlg).value };
+  let seq = 0;
+  const preview = async () => {
+    const b = body(), my = ++seq, box = qs("[data-preview]", dlg);
+    const q = b.schedule !== undefined ? `schedule=${enc(b.schedule)}` : `time=${enc(b.time)}&weekdays=${b.weekdays.join(",")}`;
+    try {
+      const r = await GET(`/api/zeitplan/preview?${q}`);
+      if (my === seq) box.innerHTML = `<b>${esc(r.text)}</b> – nächste Läufe: ${r.next.map((t) => { const d = new Date(t * 1000); return `${TL_DAYS[(d.getDay() + 6) % 7]} ${d.getDate()}.${d.getMonth() + 1}. ${hhmm(t)}`; }).join(", ") || "keine"}`;
+    } catch (e) { if (my === seq) box.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  };
+  qs("[data-mode]", dlg).onclick = () => {
+    mode = mode === "simple" ? "cal" : "simple";
+    qs("[data-simple]", dlg).hidden = mode !== "simple";
+    qs("[data-cal]", dlg).hidden = mode !== "cal";
+    qs("[data-mode]", dlg).textContent = mode === "simple" ? "Eigener Zeitplan im Proxmox-Format" : "Einfach: Uhrzeit und Wochentage";
+    preview();
+  };
+  qs("[data-form]", dlg).addEventListener("input", preview);
+  qs("[data-form]", dlg).addEventListener("submit", (e) => e.preventDefault());
+  preview();
+  qs("[data-save]", dlg).onclick = async () => {
+    const btn = qs("[data-save]", dlg);
+    btn.disabled = true;
+    try {
+      const r = await PUT("/api/zeitplan", body());
+      toast(`${it.title} läuft jetzt ${r.text}.`);
+      dlg.close();
+      saved();
+    } catch (e) { btn.disabled = false; qs("[data-preview]", dlg).innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  };
 }
 
 PAGES["/jobs"] = async (el, token) => {
