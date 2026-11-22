@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -115,6 +116,20 @@ func minutesOf(it TimelineItem) int {
 
 func roundUp15(m int) int { return ((m + 14) / 15 * 15) % dayMin }
 
+// workText describes the working time: "Mo–Fr 07:00–18:00".
+func workText(w WorkHours) string {
+	spec, err := SimpleCalendar(w.From, w.Weekdays)
+	if err != nil {
+		return w.From + "–" + w.To
+	}
+	text := CalendarText(spec)
+	text = strings.TrimSuffix(strings.TrimPrefix(text, "täglich "), " "+w.From)
+	if text == w.From {
+		text = "täglich"
+	}
+	return text + " " + w.From + "–" + w.To
+}
+
 func suggestTimeline(tl Timeline, loc *time.Location) TimelineSuggestion {
 	out := TimelineSuggestion{Changes: []ScheduleChange{}, Notes: []string{}}
 	movable := func(it TimelineItem) bool {
@@ -179,6 +194,14 @@ func suggestTimeline(tl Timeline, loc *time.Location) TimelineSuggestion {
 					break
 				}
 			}
+			if reason == "" {
+				for _, s := range cur {
+					if tl.Work.overlaps(s.wd, s.min, dur) {
+						reason = "läuft in der Arbeitszeit (" + workText(tl.Work) + ")"
+						break
+					}
+				}
+			}
 			if reason == "" && it.Group == "gc" && pruneEnd >= 0 && (start-pruneEnd+dayMin)%dayMin > dayMin/2 {
 				reason = "läuft kurz vor dem Aufräumen – was das Aufräumen löscht, gibt sie erst einen Tag später frei"
 			}
@@ -202,7 +225,7 @@ func suggestTimeline(tl Timeline, loc *time.Location) TimelineSuggestion {
 					t := (want + step*15) % dayMin
 					free := true
 					for _, s := range cur {
-						if busy.clash(st, s.wd, t, dur) != "" {
+						if busy.clash(st, s.wd, t, dur) != "" || tl.Work.overlaps(s.wd, t, dur) {
 							free = false
 							break
 						}
@@ -213,7 +236,7 @@ func suggestTimeline(tl Timeline, loc *time.Location) TimelineSuggestion {
 					}
 				}
 				if newStart < 0 {
-					out.Notes = append(out.Notes, fmt.Sprintf("%s: an diesen Tagen ist auf dem Datastore kein freier Platz für %d Minuten", it.Title, dur))
+					out.Notes = append(out.Notes, fmt.Sprintf("%s: an diesen Tagen ist auf dem Datastore außerhalb der Arbeitszeit kein freier Platz für %d Minuten", it.Title, dur))
 					newStart = start
 				}
 			}

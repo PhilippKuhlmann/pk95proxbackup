@@ -25,6 +25,26 @@ func (s *Server) timelineSuggest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.C.SuggestTimeline(ctx, time.Now()))
 }
 
+// setWorkHours stores the working time the time plan keeps housekeeping out of.
+func (s *Server) setWorkHours(w http.ResponseWriter, r *http.Request) {
+	var p core.WorkHours
+	if !decode(w, r, &p) {
+		return
+	}
+	if err := s.C.SetWorkHours(p); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	got := s.C.WorkHours()
+	text := "keine Arbeitszeit mehr berücksichtigt"
+	if got.Enabled {
+		spec, _ := core.SimpleCalendar(got.From, got.Weekdays)
+		text = "Arbeitszeit " + strings.TrimSuffix(core.CalendarText(spec), " "+got.From) + " " + got.From + "–" + got.To
+	}
+	s.C.Event("info", "Zeitplan", "Arbeitszeit geändert", text+" (von "+currentUser(r).Username+").")
+	writeJSON(w, http.StatusOK, got)
+}
+
 // scheduleSpec is a calendar event, given as such or as time and weekdays.
 type scheduleSpec struct {
 	Key      string `json:"key"`

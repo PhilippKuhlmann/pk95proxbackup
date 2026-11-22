@@ -882,3 +882,5 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tl-proposal { border-color: var(--c800); } }
 .tl-change { align-items: flex-start; cursor: pointer; }
 .tl-change small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.tl-work { position: absolute; top: 0; bottom: 0; background: rgba(107, 114, 128, 0.16); pointer-events: none; }
+.tl-dot.work { background: rgba(107, 114, 128, 0.35); }

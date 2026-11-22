@@ -84,6 +84,21 @@ func TestTimeline(t *testing.T) {
 	if code, _ := admin.do("PUT", "/api/zeitplan", map[string]any{"key": "usb:demo", "time": "01:00", "weekdays": []int{1}}, true); code == 200 {
 		t.Fatal("a USB plan is set on its own page")
 	}
+	// working hours: administrators set them, the time plan carries them
+	work := map[string]any{"enabled": true, "weekdays": []int{5, 1, 2, 3, 4}, "from": "07:00", "to": "18:00"}
+	if code, _ := viewer.do("PUT", "/api/zeitplan/arbeitszeit", work, true); code != 403 {
+		t.Fatalf("viewer set working hours: %d", code)
+	}
+	if code, out := admin.do("PUT", "/api/zeitplan/arbeitszeit", map[string]any{"enabled": true, "weekdays": []int{1}, "from": "18:00", "to": "07:00"}, true); code != 422 {
+		t.Fatalf("end before start: %d %v", code, out)
+	}
+	if code, out := admin.do("PUT", "/api/zeitplan/arbeitszeit", work, true); code != 200 {
+		t.Fatalf("working hours: %d %v", code, out)
+	}
+	_, tlOut := admin.do("GET", "/api/zeitplan", nil, false)
+	if w := tlOut["work"].(map[string]any); w["enabled"] != true || w["from"] != "07:00" || len(w["weekdays"].([]any)) != 5 || w["weekdays"].([]any)[0] != float64(1) {
+		t.Fatalf("work in the time plan: %v", tlOut["work"])
+	}
 	code, out = admin.do("GET", "/api/zeitplan/preview?time=02:30&weekdays=1,2,3,4,5", nil, false)
 	if code != 200 || out["text"] != "Mo–Fr 02:30" || len(out["next"].([]any)) != 5 {
 		t.Fatalf("preview: %d %v", code, out)

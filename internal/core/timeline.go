@@ -49,6 +49,86 @@ type Timeline struct {
 	Now    int64          `json:"now"`
 	Items  []TimelineItem `json:"items"`
 	Errors []string       `json:"errors"`
+	Work   WorkHours      `json:"work"`
+}
+
+// WorkHours are the hours people work: cleanup, garbage collection and verification are
+// planned outside of them, and the time plan shades them.
+type WorkHours struct {
+	Enabled  bool   `json:"enabled"`
+	Weekdays []int  `json:"weekdays"` // 1 = Monday … 7 = Sunday
+	From     string `json:"from"`     // "07:00"
+	To       string `json:"to"`       // "18:00"
+}
+
+// minutes is the working time as minutes of the day.
+func (w WorkHours) minutes() (from, to int, ok bool) {
+	a, err1 := time.Parse("15:04", w.From)
+	b, err2 := time.Parse("15:04", w.To)
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	from, to = a.Hour()*60+a.Minute(), b.Hour()*60+b.Minute()
+	return from, to, from < to
+}
+
+// overlaps tells whether something starting on weekday wd (0 = Monday) at minute start and
+// running dur minutes touches the working time.
+func (w WorkHours) overlaps(wd, start, dur int) bool {
+	from, to, ok := w.minutes()
+	if !w.Enabled || !ok {
+		return false
+	}
+	days := map[int]bool{}
+	for _, d := range w.Weekdays {
+		days[d-1] = true
+	}
+	for m := 0; m < dur && m < 7*dayMin; m++ {
+		t := start + m
+		if d, min := (wd+t/dayMin)%7, t%dayMin; days[d] && min >= from && min < to {
+			return true
+		}
+	}
+	return false
+}
+
+// WorkHours returns the working time (default Monday to Friday, 07:00 to 18:00, off).
+func (c *Core) WorkHours() WorkHours {
+	w := WorkHours{Weekdays: []int{1, 2, 3, 4, 5}, From: "07:00", To: "18:00"}
+	_ = c.St.GetSetting("work-hours", &w)
+	if w.Weekdays == nil {
+		w.Weekdays = []int{}
+	}
+	return w
+}
+
+// SetWorkHours stores the working time.
+func (c *Core) SetWorkHours(w WorkHours) error {
+	for _, t := range []string{w.From, w.To} {
+		if _, err := time.Parse("15:04", t); err != nil {
+			return fmt.Errorf("Uhrzeit „%s“: bitte als HH:MM angeben", t)
+		}
+	}
+	if _, _, ok := w.minutes(); !ok {
+		return fmt.Errorf("die Arbeitszeit muss vor %s enden, nicht davor beginnen", w.To)
+	}
+	seen := map[int]bool{}
+	days := []int{}
+	for _, d := range w.Weekdays {
+		if d < 1 || d > 7 {
+			return fmt.Errorf("Wochentag %d gibt es nicht", d)
+		}
+		if !seen[d] {
+			seen[d] = true
+			days = append(days, d)
+		}
+	}
+	sort.Ints(days)
+	if w.Enabled && len(days) == 0 {
+		return fmt.Errorf("mindestens einen Arbeitstag wählen")
+	}
+	w.Weekdays = days
+	return c.St.SetSetting("work-hours", w)
 }
 
 const timelineRuns = 10
@@ -160,7 +240,7 @@ func lastRun(upid string, end int64, state string) []JobRun {
 func (c *Core) Timeline(ctx context.Context, now time.Time) Timeline {
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	from, to := day.AddDate(0, 0, -1), day.AddDate(0, 0, 8)
-	tl := Timeline{From: from.Unix(), To: to.Unix(), Now: now.Unix(), Items: []TimelineItem{}, Errors: []string{}}
+	tl := Timeline{From: from.Unix(), To: to.Unix(), Now: now.Unix(), Items: []TimelineItem{}, Errors: []string{}, Work: c.WorkHours()}
 	runs := c.jobRunsState().Runs
 	add := func(it TimelineItem) { tl.Items = append(tl.Items, it) }
 

@@ -3743,7 +3743,14 @@ PAGES["/zeitplan"] = async (el, token) => {
     const hours = [0, 3, 6, 9, 12, 15, 18, 21];
     const now = Date.now() / 1000;
     const nowLine = now >= from && now < to ? `<span class="tl-now" style="left:${pos(now)}%" title="Jetzt ${hhmm(now)}"></span>` : "";
-    const grid = hours.map((h) => `<span class="tl-hour" style="left:${h / 24 * 100}%"></span>`).join("");
+    // working hours of the chosen day as a band behind the bars
+    const work = data.work || {};
+    const workday = work.enabled && (work.weekdays || []).includes((new Date(from * 1000).getDay() + 6) % 7 + 1);
+    const hm = (x) => { const [h, m] = String(x || "0:0").split(":").map(Number); return h * 60 + m; };
+    const wFrom = from + hm(work.from) * 60, wTo = from + hm(work.to) * 60;
+    const grid = hours.map((h) => `<span class="tl-hour" style="left:${h / 24 * 100}%"></span>`).join("") +
+      (workday ? `<span class="tl-work" style="left:${pos(wFrom)}%;width:${pos(wTo) - pos(wFrom)}%" title="Arbeitszeit ${esc(work.from)}–${esc(work.to)}"></span>` : "");
+    const atWork = workday ? bars.filter((b) => b.it.enabled && b.s < wTo && b.e > wFrom) : [];
     const row = (it) => {
       const own = barsOf(it, from, to);
       const dur = it.estimated ? `geschätzt ${fmtSecs(it.duration)}` : `zuletzt ${fmtSecs(it.duration)}${it.typical && it.runs.length >= 3 && Math.abs(it.typical - it.duration) > 60 ? ` · üblich ${fmtSecs(it.typical)}` : ""}`;
@@ -3807,15 +3814,18 @@ PAGES["/zeitplan"] = async (el, token) => {
       <div class="flex mt" style="gap:8px;flex-wrap:wrap">${can("admin") ? `<button class="btn" type="button" data-apply ${picked.size ? "" : "disabled"}>${picked.size === 1 ? "1 Änderung übernehmen" : `${picked.size} Änderungen übernehmen`}</button>` : `<span class="small muted">Übernehmen kann ein Administrator.</span>`}
         <button class="btn gray" type="button" data-discard>Verwerfen</button></div></div>` : "";
     el.innerHTML = pageHead("Zeitplan", "Was wann läuft und wie lange es zuletzt gedauert hat. Ein Klick auf einen Eintrag zeigt die letzten Läufe" + (can("admin") ? " und ändert die Uhrzeit." : "."),
+      (can("admin") ? `<button class="btn gray" type="button" data-work>${icon("clock")} Arbeitszeit</button>` : "") +
       `<button class="btn gray" type="button" data-suggest>${icon("sparkles")} Plan vorschlagen</button><button class="btn gray" type="button" data-reload>${icon("refresh")} Aktualisieren</button>`) +
       proposal +
       (data.errors.length ? `<div class="panel">${callout("yellow", "Nicht alles erreichbar", esc(data.errors.join(" · ")))}</div>` : "") +
       `<div class="panel flush"><div class="panel-head"><div class="flex" style="gap:8px;flex-wrap:wrap;min-width:0"><div class="seg tl-days" role="group" aria-label="Tag">${tabs}</div>
         <div class="seg" role="group" aria-label="Ansicht"><button type="button" data-view="one" aria-pressed="${view === "one"}">Eine Zeitleiste</button><button type="button" data-view="rows" aria-pressed="${view === "rows"}">Je Job</button></div></div>
-        <div class="tl-legend">${TL_TONES.map(([t, l]) => `<span><span class="tl-dot ${t}"></span>${l}</span>`).join("")}<span><span class="tl-dot est"></span>geschätzt</span></div></div>
+        <div class="tl-legend">${TL_TONES.map(([t, l]) => `<span><span class="tl-dot ${t}"></span>${l}</span>`).join("")}<span><span class="tl-dot est"></span>geschätzt</span>${work.enabled ? `<span><span class="tl-dot work"></span>Arbeitszeit</span>` : ""}</div></div>
         ${clashes.length ? `<div style="padding:0 16px 12px">${callout("yellow", `${clashes.length} ${clashes.length === 1 ? "Überschneidung" : "Überschneidungen"} auf demselben Datastore`,
           `Das klappt, macht aber beides langsamer. Besser nacheinander legen.<ul class="tl-clashes">${clashes.slice(0, 8).map(({ a, b, store }) =>
             `<li><b>${esc(a.it.title)}</b> ${hhmm(a.s)}–${hhmm(a.e)} und <b>${esc(b.it.title)}</b> ${hhmm(b.s)}–${hhmm(b.e)} auf ${esc(storeName(store))}</li>`).join("")}</ul>`)}</div>` : ""}
+        ${atWork.length ? `<div style="padding:0 16px 12px">${callout("", `${atWork.length === 1 ? "1 Job läuft" : `${atWork.length} Jobs laufen`} in der Arbeitszeit (${esc(work.from)}–${esc(work.to)})`,
+          `${atWork.slice(0, 8).map((b) => `<b>${esc(b.it.title)}</b> ${hhmm(b.s)}–${hhmm(b.e)}`).join(" · ")}. Sicherungen dürfen das, sie stören kaum; Aufräumen, Freigeben und Prüfen legt „Plan vorschlagen“ davor oder dahinter.`)}</div>` : ""}
         ${view === "one" ? (bars.length ? together() : `<div class="row muted" style="padding:0 16px 16px">An diesem Tag ist nichts geplant.</div>`) : `<div class="tl-scroll"><div class="tl">
           <div class="tl-row tl-axis"><span class="tl-label"></span><div class="tl-track">${hours.map((h) => `<span class="tl-tick" style="left:${h / 24 * 100}%">${String(h).padStart(2, "0")}:00</span>`).join("")}<span class="tl-tick end">24:00</span></div></div>
           ${groups || `<div class="row muted">Nichts geplant.</div>`}
@@ -3828,6 +3838,8 @@ PAGES["/zeitplan"] = async (el, token) => {
       draw();
     });
     qs("[data-reload]", el).onclick = async () => { await load(); draw(); };
+    const wbtn = qs("[data-work]", el);
+    if (wbtn) wbtn.onclick = () => workHoursDialog(work, async () => { await load(); if (token === pageToken) draw(); });
     qs("[data-suggest]", el).onclick = async (e) => {
       e.currentTarget.disabled = true;
       try {
@@ -3868,6 +3880,34 @@ PAGES["/zeitplan"] = async (el, token) => {
   try { await load(); } catch (e) { if (token === pageToken) el.innerHTML = pageHead("Zeitplan") + `<div class="panel"><div class="form-error">${esc(e.message)}</div></div>`; return; }
   if (token === pageToken) draw();
 };
+
+// workHoursDialog sets the working hours the time plan keeps housekeeping out of.
+function workHoursDialog(work, saved) {
+  const days = work.weekdays || [1, 2, 3, 4, 5];
+  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("clock")}</span><div class="grow"><div class="dlg-title">Arbeitszeit</div>
+      <p class="dlg-text">Wann bei euch gearbeitet wird. Der Zeitplan zeigt sie grau, und „Plan vorschlagen“ legt Aufräumen, Speicher freigeben und Prüfen außerhalb davon.</p></div></div>
+    <form class="dlg-body" data-form novalidate>
+      <label class="check"><input type="checkbox" data-on ${work.enabled ? "checked" : ""}><span>Arbeitszeit bei der Planung berücksichtigen</span></label>
+      <div class="flex" style="gap:12px;flex-wrap:wrap;align-items:center"><span class="small">von</span><input type="time" data-from value="${esc(work.from || "07:00")}" style="width:130px" aria-label="Beginn">
+        <span class="small">bis</span><input type="time" data-to value="${esc(work.to || "18:00")}" style="width:130px" aria-label="Ende"></div>
+      <div class="tl-wd" role="group" aria-label="Arbeitstage">${TL_DAYS.map((d, i) => `<label class="check"><input type="checkbox" data-wd="${i + 1}" ${days.includes(i + 1) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div>
+      <div class="small" data-err aria-live="polite"></div>
+    </form>
+    <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-close>Abbrechen</button><button class="btn" type="button" data-save>Speichern</button></div>`, "wide");
+  qs("[data-close]", dlg).onclick = () => dlg.close();
+  qs("[data-form]", dlg).addEventListener("submit", (e) => e.preventDefault());
+  qs("[data-save]", dlg).onclick = async () => {
+    const btn = qs("[data-save]", dlg);
+    btn.disabled = true;
+    try {
+      await PUT("/api/zeitplan/arbeitszeit", { enabled: qs("[data-on]", dlg).checked, from: qs("[data-from]", dlg).value, to: qs("[data-to]", dlg).value,
+        weekdays: qsa("[data-wd]", dlg).filter((c) => c.checked).map((c) => +c.dataset.wd) });
+      toast("Arbeitszeit gespeichert.");
+      dlg.close();
+      saved();
+    } catch (e) { btn.disabled = false; qs("[data-err]", dlg).innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  };
+}
 
 // timelineDialog shows the last runs of a planned job; administrators change its time (weekdays
 // and time, or a Proxmox calendar event), with the next runs as a preview.

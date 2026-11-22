@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,5 +52,25 @@ func TestSuggestTimeline(t *testing.T) {
 	// a plan without problems stays as it is
 	if again := suggestTimeline(s.After, loc); len(again.Changes) != 0 {
 		t.Fatalf("the proposal is not stable: %+v", again.Changes)
+	}
+}
+
+// With working hours the housekeeping goes outside of them, even when nothing else runs.
+func TestSuggestTimelineWorkHours(t *testing.T) {
+	loc := time.UTC
+	from := time.Date(2026, 11, 22, 0, 0, 0, 0, loc)
+	tl := Timeline{From: from.Unix(), To: from.AddDate(0, 0, 9).Unix(),
+		Work: WorkHours{Enabled: true, Weekdays: []int{1, 2, 3, 4, 5}, From: "07:00", To: "18:00"},
+		Items: []TimelineItem{
+			planned("daily", "backup", "s/a", "12:00", []int{1, 2, 3, 4, 5, 6, 7}, 20*60),
+			planned("prune-a", "prune", "s/a", "12:30", []int{1, 2, 3, 4, 5, 6, 7}, 60), // after the backup, but at work
+			planned("verify-a", "verify", "s/a", "09:00", []int{6}, 3600),               // Saturday: no work then
+		}}
+	s := suggestTimeline(tl, loc)
+	if len(s.Changes) != 1 || s.Changes[0].Key != "prune-a" || s.Changes[0].To != "18:00" {
+		t.Fatalf("changes: %+v", s.Changes)
+	}
+	if !strings.Contains(s.Changes[0].Reason, "Arbeitszeit (Mo–Fr 07:00–18:00)") {
+		t.Fatalf("reason: %s", s.Changes[0].Reason)
 	}
 }
