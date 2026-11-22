@@ -17,6 +17,14 @@ func (s *Server) timeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.C.Timeline(ctx, time.Now()))
 }
 
+// timelineSuggest proposes times for cleanup, garbage collection and verification, with the
+// time plan as it would look (nothing is changed).
+func (s *Server) timelineSuggest(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, s.C.SuggestTimeline(ctx, time.Now()))
+}
+
 // scheduleSpec is a calendar event, given as such or as time and weekdays.
 type scheduleSpec struct {
 	Key      string `json:"key"`

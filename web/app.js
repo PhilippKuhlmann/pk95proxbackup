@@ -3704,10 +3704,10 @@ function bindPveMail(root, redraw) {
 // times of Proxmox VE and Backup Server jobs right here.
 const TL_GROUPS = [
   ["backup", "Sicherungen", "save"], ["copy", "Kopien", "copy"], ["usb", "Wechselplatten", "copy"],
-  ["verify", "Prüfungen", "check"], ["prune", "Aufräumen", "clean"], ["gc", "Speicher freigeben", "clean"],
-  ["restoretest", "Restore-Tests", "check"], ["host", "Host-Sicherungen", "save"], ["update", "Updates", "update"],
+  ["verify", "Prüfungen", "verify"], ["prune", "Aufräumen", "clean"], ["gc", "Speicher freigeben", "clean"],
+  ["restoretest", "Restore-Tests", "verify"], ["host", "Host-Sicherungen", "save"], ["update", "Updates", "update"],
 ];
-const TL_TONES = [["save", "Sichern"], ["copy", "Kopieren"], ["check", "Prüfen"], ["clean", "Aufräumen"], ["update", "Updates"]];
+const TL_TONES = [["save", "Sichern"], ["copy", "Kopieren"], ["verify", "Prüfen"], ["clean", "Aufräumen"], ["update", "Updates"]];
 const TL_DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const hhmm = (ts) => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 
@@ -3715,6 +3715,8 @@ PAGES["/zeitplan"] = async (el, token) => {
   let data = null, day = 0; // 0 = today … 6
   // view: "one" = everything on a single timeline (overlaps stack), "rows" = one track per job
   let view = "one";
+  // a proposal shown as preview: changes the user keeps ticked replace the current items
+  let suggestion = null, picked = new Set();
   try { view = localStorage.getItem("pk95pb-tl-view") || "one"; } catch (e) { /* ignore */ }
   const dayStart = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d.getTime() / 1000; };
   const tone = Object.fromEntries(TL_GROUPS.map(([g, , t]) => [g, t]));
@@ -3722,7 +3724,8 @@ PAGES["/zeitplan"] = async (el, token) => {
   const barsOf = (it, from, to) => (it.starts || []).map((s) => ({ s, e: s + Math.max(it.duration, 60) })).filter((b) => b.e > from && b.s < to);
   const draw = () => {
     const from = dayStart(day), to = dayStart(day + 1);
-    const items = data.items.filter((it) => !it.problem);
+    const after = suggestion ? Object.fromEntries(suggestion.after.items.map((it) => [it.key, it])) : {};
+    const items = data.items.map((it) => picked.has(it.key) && after[it.key] ? after[it.key] : it).filter((it) => !it.problem);
     // runs at the same time on the same datastore
     const bars = items.flatMap((it) => barsOf(it, from, to).map((b) => ({ ...b, it })));
     const clashes = [];
@@ -3796,8 +3799,16 @@ PAGES["/zeitplan"] = async (el, token) => {
       return `<button type="button" data-day="${n}" aria-pressed="${n === day}">${name}</button>`;
     }).join("");
     const unplanned = data.items.filter((it) => it.problem);
+    const proposal = suggestion ? `<div class="panel tl-proposal"><div class="panel-head"><div><div class="panel-title">Vorschlag – noch nicht gespeichert</div>
+        <div class="muted small">Sicherungen, Kopien und Wechselplatten bleiben, wo sie sind. Aufräumen, Speicher freigeben und Prüfen rücken je Datastore dahinter – darunter siehst du den Plan, wie er dann aussieht.</div></div></div>
+      <div class="rows">${suggestion.changes.map((c) => `<label class="row check tl-change"><input type="checkbox" data-pick="${esc(c.key)}" ${picked.has(c.key) ? "checked" : ""}>
+        <span class="grow"><b>${esc(c.title)}</b>: ${esc(c.from)} → <b>${esc(c.to_text)}</b><small>${esc(c.reason)}</small></span></label>`).join("")}</div>
+      ${suggestion.notes.length ? `<div class="mt">${callout("yellow", "Nicht alles passt", esc(suggestion.notes.join(" · ")))}</div>` : ""}
+      <div class="flex mt" style="gap:8px;flex-wrap:wrap">${can("admin") ? `<button class="btn" type="button" data-apply ${picked.size ? "" : "disabled"}>${picked.size === 1 ? "1 Änderung übernehmen" : `${picked.size} Änderungen übernehmen`}</button>` : `<span class="small muted">Übernehmen kann ein Administrator.</span>`}
+        <button class="btn gray" type="button" data-discard>Verwerfen</button></div></div>` : "";
     el.innerHTML = pageHead("Zeitplan", "Was wann läuft und wie lange es zuletzt gedauert hat. Ein Klick auf einen Eintrag zeigt die letzten Läufe" + (can("admin") ? " und ändert die Uhrzeit." : "."),
-      `<button class="btn gray" type="button" data-reload>${icon("refresh")} Aktualisieren</button>`) +
+      `<button class="btn gray" type="button" data-suggest>${icon("sparkles")} Plan vorschlagen</button><button class="btn gray" type="button" data-reload>${icon("refresh")} Aktualisieren</button>`) +
+      proposal +
       (data.errors.length ? `<div class="panel">${callout("yellow", "Nicht alles erreichbar", esc(data.errors.join(" · ")))}</div>` : "") +
       `<div class="panel flush"><div class="panel-head"><div class="flex" style="gap:8px;flex-wrap:wrap;min-width:0"><div class="seg tl-days" role="group" aria-label="Tag">${tabs}</div>
         <div class="seg" role="group" aria-label="Ansicht"><button type="button" data-view="one" aria-pressed="${view === "one"}">Eine Zeitleiste</button><button type="button" data-view="rows" aria-pressed="${view === "rows"}">Je Job</button></div></div>
@@ -3817,6 +3828,38 @@ PAGES["/zeitplan"] = async (el, token) => {
       draw();
     });
     qs("[data-reload]", el).onclick = async () => { await load(); draw(); };
+    qs("[data-suggest]", el).onclick = async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        const r = await GET("/api/zeitplan/vorschlag");
+        if (!r.changes.length) {
+          suggestion = null;
+          toast(r.notes.length ? r.notes.join(" · ") : "Der Plan passt: keine Überschneidungen auf einem Datastore, Aufräumen vor dem Freigeben.");
+        } else {
+          suggestion = r;
+          picked = new Set(r.changes.map((c) => c.key));
+        }
+      } catch (err) { toastErr(err); }
+      draw();
+    };
+    qsa("[data-pick]", el).forEach((c) => c.onchange = () => { c.checked ? picked.add(c.dataset.pick) : picked.delete(c.dataset.pick); draw(); });
+    const discard = qs("[data-discard]", el);
+    if (discard) discard.onclick = () => { suggestion = null; picked = new Set(); draw(); };
+    const apply = qs("[data-apply]", el);
+    if (apply) apply.onclick = async () => {
+      apply.disabled = true;
+      const chosen = suggestion.changes.filter((c) => picked.has(c.key));
+      const failed = [];
+      for (const c of chosen) {
+        try { await PUT("/api/zeitplan", { key: c.key, schedule: c.to }); }
+        catch (err) { failed.push(`${c.title}: ${err.message}`); }
+      }
+      if (failed.length) toast(failed.join(" · "), "error");
+      else toast(chosen.length === 1 ? `${chosen[0].title} läuft jetzt ${chosen[0].to_text}.` : `${chosen.length} Zeiten geändert.`);
+      suggestion = null; picked = new Set();
+      await load();
+      if (token === pageToken) draw();
+    };
     qsa("[data-open]", el).forEach((b) => b.onclick = () => timelineDialog(data.items.find((x) => x.key === b.dataset.open), async () => { await load(); if (token === pageToken) draw(); }));
   };
   const load = async () => { data = await GET("/api/zeitplan"); };

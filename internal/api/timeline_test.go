@@ -50,6 +50,16 @@ func TestTimeline(t *testing.T) {
 		t.Error("editable wrong")
 	}
 
+	// the proposal: in the demo the garbage collection of "backup" runs with its cleanup at 00:00
+	code, out := admin.do("GET", "/api/zeitplan/vorschlag", nil, false)
+	if code != 200 {
+		t.Fatalf("proposal: %d %v", code, out)
+	}
+	changes := out["changes"].([]any)
+	if len(changes) != 1 || changes[0].(map[string]any)["key"] != "gc:local:backup" || changes[0].(map[string]any)["to"] != "00:30" {
+		t.Fatalf("proposal: %v", changes)
+	}
+
 	viewer := account(t, admin, "leser", "viewer")
 	if code, _ := viewer.do("GET", "/api/zeitplan", nil, false); code != 200 {
 		t.Fatalf("viewer cannot read: %d", code)
@@ -74,7 +84,7 @@ func TestTimeline(t *testing.T) {
 	if code, _ := admin.do("PUT", "/api/zeitplan", map[string]any{"key": "usb:demo", "time": "01:00", "weekdays": []int{1}}, true); code == 200 {
 		t.Fatal("a USB plan is set on its own page")
 	}
-	code, out := admin.do("GET", "/api/zeitplan/preview?time=02:30&weekdays=1,2,3,4,5", nil, false)
+	code, out = admin.do("GET", "/api/zeitplan/preview?time=02:30&weekdays=1,2,3,4,5", nil, false)
 	if code != 200 || out["text"] != "Mo–Fr 02:30" || len(out["next"].([]any)) != 5 {
 		t.Fatalf("preview: %d %v", code, out)
 	}
