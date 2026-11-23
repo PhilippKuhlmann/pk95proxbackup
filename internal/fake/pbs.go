@@ -759,6 +759,24 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				apiErr(w, 400, "no such file")
 			}
 		case "groups":
+			if m == "DELETE" {
+				keep, kept := s.snaps[:0], 0
+				for _, sn := range s.snaps {
+					if sn.Type != f.Get("backup-type") || sn.ID != f.Get("backup-id") {
+						keep = append(keep, sn)
+					} else if sn.Protected {
+						keep = append(keep, sn)
+						kept++
+					}
+				}
+				s.snaps = keep
+				if kept > 0 {
+					apiErr(w, 400, "removing backup group failed - group only partially deleted due to protected snapshots")
+					return
+				}
+				data(w, nil)
+				return
+			}
 			if !s.mounted {
 				apiErr(w, 400, "datastore '"+seg[2]+"' is not mounted")
 				return

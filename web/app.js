@@ -1731,7 +1731,7 @@ async function snapshotsDialog(srv, store) {
   const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("archive")}</span><div class="grow"><div class="dlg-title">Sicherungen in ${esc(store)}</div><p class="dlg-text">${esc(srv.name)}</p></div>
     <input type="search" placeholder="Filtern: ID, Typ …" data-filter style="max-width:220px"></div>
     <div class="dlg-body" data-body><div class="flex"><span class="spinner"></span> Lade …</div></div>
-    <div class="dlg-foot"><span class="muted small" data-count></span><span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button></div>`, "xwide");
+    <div class="dlg-foot"><span class="muted small" data-count></span><span class="spacer"></span><span data-delgroup></span><button class="btn gray" type="button" data-close>Schließen</button></div>`, "xwide");
   qs("[data-close]", d).onclick = () => d.close();
   let snaps = [];
   const body = qs("[data-body]", d);
@@ -1739,6 +1739,13 @@ async function snapshotsDialog(srv, store) {
     const f = qs("[data-filter]", d).value.trim().toLowerCase();
     const list = snaps.filter((s) => !f || `${s["backup-type"]}/${s["backup-id"]} ${s.comment || ""}`.toLowerCase().includes(f));
     qs("[data-count]", d).textContent = `${list.length} von ${snaps.length} Sicherungen`;
+    // filtered down to one guest: offer to delete all of its backups
+    const groups = [...new Set(list.map((s) => s["backup-type"] + "/" + s["backup-id"]))];
+    const one = f && groups.length === 1 && can("admin") && groups[0].match(/^(vm|ct)\/(\d+)$/);
+    qs("[data-delgroup]", d).innerHTML = one ? `<button class="btn red" type="button">${icon("trash")} Alle Sicherungen von ${one[1].toUpperCase()} ${esc(one[2])} …</button>` : "";
+    if (one) qs("[data-delgroup] button", d).onclick = () => deleteGuestDialog(one[1], one[2], (list[0] || {}).comment || "", async () => {
+      snaps = (await GET(`/api/pbs/${srv.id}/datastores/${enc(store)}/snapshots`)).snapshots; draw();
+    });
     body.innerHTML = list.length ? `<div class="table-wrap" style="max-height:60dvh;overflow:auto"><table class="resp"><thead><tr><th>Gast</th><th>Zeitpunkt</th><th class="num">Größe</th><th>Geprüft</th><th></th></tr></thead><tbody>
       ${list.slice(0, 500).map((s) => `<tr><td data-l="Gast"><span class="tag mono">${esc(s["backup-type"])}</span> <b>${esc(s["backup-id"])}</b>${s.comment ? `<div class="t-sub">${esc(s.comment)}</div>` : ""}</td>
         <td data-l="Zeitpunkt" class="nowrap">${fmtTime(s["backup-time"], true)}</td><td class="num" data-l="Größe">${fmtBytes(s.size)}</td>
@@ -2983,6 +2990,61 @@ async function restoreSourceList(el, token, x) {
     </tbody></table></div></div>` : empty("Auf dieser Quelle liegen keine Sicherungen", "", "", "archive");
 }
 
+// deleteGuestDialog deletes all backups of a guest: it shows where they lie (all Backup Servers
+// and datastores), warns while a backup job still saves the guest, and wants the ID typed.
+// Protected backups stay; disks that are not plugged in are listed but cannot be cleaned now.
+async function deleteGuestDialog(typ, id, name, done) {
+  const kind = typ === "ct" ? "Container" : "VM";
+  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic red">${icon("trash")}</span><div class="grow"><div class="dlg-title">Alle Sicherungen von ${kind} ${esc(id)}${name ? " " + esc(name) : ""} löschen</div>
+      <p class="dlg-text">Gelöschte Sicherungen lassen sich nicht zurückholen. Der Platz wird beim nächsten „Speicher freigeben“ frei.</p></div></div>
+    <form class="dlg-body" data-form novalidate><div data-body><div class="flex"><span class="spinner"></span> Suche auf allen Backup-Servern …</div></div></form>
+    <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-close>Abbrechen</button><button class="btn red" type="button" data-go-del disabled>Löschen</button></div>`, "wide");
+  qs("[data-close]", d).onclick = () => d.close();
+  qs("[data-form]", d).addEventListener("submit", (e) => e.preventDefault());
+  let r;
+  try { r = await GET(`/api/guests/backups?type=${typ}&bid=${enc(id)}`); }
+  catch (e) { qs("[data-body]", d).innerHTML = `<div class="form-error">${esc(e.message)}</div>`; return; }
+  const kindName = { fixed: "", cloud: "Cloud", usb: "Wechselplatte", archive: "Archiv-Platte" };
+  const body = qs("[data-body]", d);
+  body.innerHTML = (r.in_job.length ? callout("yellow", `Noch im Sicherungsjob (${esc(r.in_job.join(", "))})`,
+      `Der nächste Lauf legt wieder eine Sicherung an. Erst unter <a href="/jobs" data-go>Sicherungsjobs</a> herausnehmen oder in Proxmox VE ausschließen.`) : "") +
+    (r.errors.length ? callout("yellow", "Nicht alles erreichbar", esc(r.errors.join(" · "))) : "") +
+    (r.places.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th></th><th>Wo</th><th class="num">Stände</th><th>Neueste</th></tr></thead><tbody>
+      ${r.places.map((p, i) => `<tr><td><input type="checkbox" data-place="${i}" ${p.mounted ? "checked" : "disabled"} aria-label="${esc(p.server_name)} / ${esc(p.store)}"></td>
+        <td data-l="Wo"><b>${esc(p.server_name)} / ${esc(p.store)}</b>${kindName[p.kind] ? ` ${pill(kindName[p.kind], "blue")}` : ""}${p.label ? `<div class="t-sub">${esc(p.label)}</div>` : ""}
+          ${p.mounted ? "" : `<div class="t-sub">nicht angesteckt – beim nächsten Anstecken hier löschen</div>`}</td>
+        <td data-l="Stände" class="num">${p.count}${p.protected ? `<div class="t-sub">${p.protected} geschützt, bleib${p.protected === 1 ? "t" : "en"}</div>` : ""}</td>
+        <td data-l="Neueste">${fmtTime(p.last, true)}</td></tr>`).join("")}</tbody></table></div>
+      <div class="field"><label class="fl" for="del-confirm">Zur Bestätigung die ID <b class="mono">${esc(id)}</b> eintippen</label><input type="text" id="del-confirm" class="mono" data-confirm autocomplete="off" inputmode="numeric"></div>`
+    : empty("Keine Sicherungen gefunden", "Auf keinem verbundenen Backup-Server liegt eine Sicherung davon.", "", "archive"));
+  qsa("a[data-go]", body).forEach((a) => a.addEventListener("click", () => d.close()));
+  const btn = qs("[data-go-del]", d);
+  const chosen = () => qsa("[data-place]", d).filter((c) => c.checked).map((c) => r.places[+c.dataset.place]);
+  const update = () => {
+    const list = chosen();
+    const n = list.reduce((a, p) => a + p.count - p.protected, 0);
+    btn.textContent = n === 1 ? "1 Sicherung löschen" : `${n} Sicherungen löschen`;
+    btn.disabled = !n || (qs("[data-confirm]", d) || {}).value !== id;
+  };
+  body.addEventListener("input", update);
+  body.addEventListener("change", update);
+  update();
+  btn.onclick = async () => {
+    btn.disabled = true;
+    d.dataset.busy = "1";
+    btn.innerHTML = `<span class="spinner"></span> Löscht …`;
+    try {
+      const places = chosen().map((p) => `${p.server}/${p.store}`).join(",");
+      const res = await DEL(`/api/guests/backups?type=${typ}&bid=${enc(id)}&confirm=${enc(qs("[data-confirm]", d).value)}&places=${enc(places)}`);
+      delete d.dataset.busy;
+      d.close();
+      const extra = [res.kept.length ? `Geschützt geblieben: ${res.kept.join(", ")}` : "", res.failed.length ? `Nicht gelöscht: ${res.failed.join("; ")}` : ""].filter(Boolean).join(" · ");
+      toast(`${res.deleted} ${res.deleted === 1 ? "Sicherung" : "Sicherungen"} von ${kind} ${id} gelöscht.${extra ? " " + extra : ""}`, res.failed.length ? "error" : "ok");
+      done();
+    } catch (e) { delete d.dataset.busy; toastErr(e); update(); }
+  };
+}
+
 // Step 2 and 3: which backup, then files or the whole guest.
 async function restoreGuest(el, token, g, source) {
   const typ = g.type === "lxc" ? "ct" : "vm";
@@ -2993,12 +3055,14 @@ async function restoreGuest(el, token, g, source) {
   el.innerHTML = pageHead(`${g.vmid} ${esc(g.name || "")} wiederherstellen`, where + (source ? ` · Quelle: ${esc(source.label)}` : ""), "",
     source ? [srcHref(source), "Zurück zu „" + source.label + "“"] : ["/wiederherstellen", "Anderen Server wählen"]) +
     `<div class="grid grid-restore">
-      <div class="panel flush"><div class="panel-head"><div class="panel-title">1. Stand wählen</div></div>
+      <div class="panel flush"><div class="panel-head"><div class="panel-title">1. Stand wählen</div>${can("admin") ? `<button class="link-btn small" type="button" data-delall>Alle Sicherungen löschen …</button>` : ""}</div>
         ${g.backups.length > 1 ? `<div style="padding:0 16px 12px">${field({ name: "src", label: "Sicherungen auf", type: "select", options: g.backups.map((b, i) => [i, `${b.server_name} / ${b.store} (${b.count})`]) })}</div>` : `<p class="panel-intro">${esc(g.backups[0].server_name)} / ${esc(g.backups[0].store)}</p>`}
         <div data-snaps><div class="row flex"><span class="spinner"></span> Lade …</div></div></div>
       <div data-right></div></div>`;
   const srcSel = qs('[name="src"]', el);
   if (srcSel) srcSel.onchange = () => { src = +srcSel.value; loadSnaps(); };
+  const delAll = qs("[data-delall]", el);
+  if (delAll) delAll.onclick = () => deleteGuestDialog(typ, String(g.vmid), g.name, () => go("/wiederherstellen"));
   const queryAt = (t) => { const b = g.backups[src]; return `cluster=${enc(g.cluster)}&pbs=${enc(b.server)}&store=${enc(b.store)}&type=${typ}&bid=${g.vmid}&time=${t}`; };
   const query = () => queryAt(sel);
   // ver lets the file browser look at the other backups: versions of a file, open one of them.

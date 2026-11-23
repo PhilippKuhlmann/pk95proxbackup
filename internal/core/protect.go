@@ -670,6 +670,14 @@ func (c *Core) judgeDeletions(ctx context.Context, srv PBSServer, store string, 
 
 // ForgetSnapshot notes a deletion the appliance made itself, so it raises no alarm.
 func (c *Core) ForgetSnapshot(srvID, store, typ, id string) {
+	c.forgetSnapshots(srvID, store, typ, id, 1)
+}
+
+// forgetSnapshots notes that n backups of a group were deleted on purpose.
+func (c *Core) forgetSnapshots(srvID, store, typ, id string, n int) {
+	if n <= 0 {
+		return
+	}
 	deletionMu.Lock()
 	defer deletionMu.Unlock()
 	key := "inventory:" + srvID + "|" + store
@@ -679,8 +687,8 @@ func (c *Core) ForgetSnapshot(srvID, store, typ, id string) {
 	}
 	g := typ + "/" + id
 	if inv.Groups[g] > 0 {
-		inv.Groups[g]--
-		if inv.Groups[g] == 0 {
+		inv.Groups[g] -= n
+		if inv.Groups[g] <= 0 {
 			delete(inv.Groups, g)
 		}
 		_ = c.St.SetSetting(key, inv)

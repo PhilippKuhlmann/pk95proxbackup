@@ -267,6 +267,13 @@ func (p *PBS) DeleteSnapshot(ctx context.Context, store, ns, typ, id string, t i
 		Params{"ns": emptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t}, nil)
 }
 
+// DeleteGroup removes all snapshots of a guest from a datastore. With protected snapshots the
+// Backup Server removes the others and fails.
+func (p *PBS) DeleteGroup(ctx context.Context, store, ns, typ, id string) error {
+	return p.Do(ctx, http.MethodDelete, "/admin/datastore/"+url.PathEscape(store)+"/groups",
+		Params{"ns": emptyNil(ns), "backup-type": typ, "backup-id": id}, nil)
+}
+
 // Group is an entry of /admin/datastore/{store}/groups.
 type Group struct {
 	Type       string `json:"backup-type"`
