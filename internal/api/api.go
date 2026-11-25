@@ -183,6 +183,7 @@ func (s *Server) routes() {
 	a("POST /api/pbs/{id}/datastores/{store}/{action}", s.datastoreAction)
 	a("GET /api/pbs/{id}/datastores/{store}/snapshots", s.snapshots)
 	a("DELETE /api/pbs/{id}/datastores/{store}/snapshots", s.deleteSnapshot)
+	a("POST /api/pbs/{id}/datastores/{store}/prune-preview", s.prunePreview)
 	a("PUT /api/pbs/{id}/datastores/{store}/protected", s.protectSnapshot)
 	a("GET /api/protect", s.getProtect)
 	a("PUT /api/protect", s.putProtect)

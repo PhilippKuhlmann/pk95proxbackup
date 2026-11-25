@@ -687,6 +687,32 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				return "OK", nil
 			}))
+		case "prune":
+			// one group, with the rules of the Backup Server; dry-run only reports
+			var group []prox.Snapshot
+			for _, sn := range s.snaps {
+				if sn.Type == f.Get("backup-type") && sn.ID == f.Get("backup-id") {
+					group = append(group, sn)
+				}
+			}
+			k := prox.Keep{Last: atoi(f.Get("keep-last")), Hourly: atoi(f.Get("keep-hourly")), Daily: atoi(f.Get("keep-daily")),
+				Weekly: atoi(f.Get("keep-weekly")), Monthly: atoi(f.Get("keep-monthly")), Yearly: atoi(f.Get("keep-yearly"))}
+			marks := prox.PruneSelect(group, k, time.Local)
+			out := []prox.PruneItem{}
+			for _, sn := range group {
+				out = append(out, prox.PruneItem{Type: sn.Type, ID: sn.ID, Time: sn.Time, Keep: marks[sn.Time], Protected: sn.Protected})
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].Time > out[j].Time })
+			if !boolv(f.Get("dry-run")) {
+				keep := s.snaps[:0]
+				for _, sn := range s.snaps {
+					if sn.Type != f.Get("backup-type") || sn.ID != f.Get("backup-id") || marks[sn.Time] {
+						keep = append(keep, sn)
+					}
+				}
+				s.snaps = keep
+			}
+			data(w, out)
 		case "prune-datastore":
 			// keep-last only (enough for the demo and the tests)
 			if n := atoi(f.Get("keep-last")); n > 0 && f.Get("keep-daily")+f.Get("keep-weekly")+f.Get("keep-monthly") == "" {

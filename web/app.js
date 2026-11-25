@@ -1740,7 +1740,52 @@ function datastoreSettings(srv, d, done) {
       { name: "verify_schedule", label: "Prüfen um", value: d.verify?.schedule || "", mono: true, hint: "Leer = nie automatisch" },
       ...retentionFields(d.prune || { schedule: "daily" }),
     ],
+    extra: `<div class="prune-prev" data-pp><div class="flex" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <div><div class="section-title">Vorschau</div><div class="hint">Was das Aufräumen mit diesen Werten behalten würde – der Backup-Server rechnet es durch, gelöscht wird nichts.</div></div>
+      <button class="btn gray sm" type="button" data-pp-run>${icon("eye")} Vorschau berechnen</button></div><div data-pp-out></div></div>`,
+    onMount: (dlg) => prunePreview(dlg, srv, d.name),
     submit: async (v) => { await PUT(`/api/pbs/${srv.id}/datastores/${enc(d.name)}`, v); toast("Gespeichert."); done(); },
+  });
+}
+
+// prunePreview fills the preview of a datastore dialog: per guest which backups the cleanup
+// with the entered retention would keep (green), delete (red) or leave protected (blue).
+// Once shown, it follows changes of the numbers.
+function prunePreview(dlg, srv, store) {
+  const out = qs("[data-pp-out]", dlg), btn = qs("[data-pp-run]", dlg), form = qs("form", dlg);
+  let shown = false, seq = 0, timer = null;
+  const run = async () => {
+    const v = formValues(form);
+    const body = Object.fromEntries(["keep_last", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"].map((k) => [k, +v[k] || 0]));
+    const my = ++seq;
+    btn.disabled = true;
+    out.innerHTML = `<div class="flex small muted" style="margin-top:10px"><span class="spinner"></span> Der Backup-Server rechnet …</div>`;
+    let r;
+    try { r = await POST(`/api/pbs/${srv.id}/datastores/${enc(store)}/prune-preview`, body); }
+    catch (e) { if (my === seq) { out.innerHTML = `<div class="form-error" style="margin-top:10px">${esc(e.message)}</div>`; btn.disabled = false; } return; }
+    if (my !== seq) return;
+    btn.disabled = false;
+    shown = true;
+    const none = !Object.values(body).some((x) => x > 0);
+    const head = r.remove
+      ? `<div class="pp-sum"><b>${r.keep + r.protected}</b> bleiben · <b class="bad">${r.remove}</b> ${r.remove === 1 ? "würde" : "würden"} gelöscht${r.protected ? ` · ${r.protected} geschützt` : ""}</div>
+        <div class="hint">In den gelöschten Ständen stecken ${fmtBytes(r.remove_bytes)}. Frei wird davon nur, was keine andere Sicherung mehr nutzt – beim nächsten „Speicher freigeben“.</div>`
+      : callout("green", none ? "Ohne Regel wird nichts gelöscht" : "Mit diesen Werten wird nichts gelöscht", none ? "Alle Stände bleiben, der Datastore wächst weiter." : `Alle ${r.keep + r.protected} Stände bleiben.`);
+    const list = r.groups.slice(0, 40);
+    out.innerHTML = `<div style="margin-top:10px">${head}</div>
+      ${r.errors.length ? callout("yellow", "Nicht alles ließ sich durchrechnen", esc(r.errors.join(" · "))) : ""}
+      ${r.remove ? `<div class="pp-list">${list.map((g) => `<div class="pp-row"><div class="pp-name"><b>${g.type === "ct" ? "CT" : g.type.toUpperCase()} ${esc(g.bid)}</b> ${esc(g.name || "")}
+          <div class="t-sub">${g.keep + g.protected} bleiben${g.remove ? ` · <span class="bad">${g.remove} weg</span>` : ""}</div></div>
+        <div class="run-strip pp-strip" aria-label="${g.keep + g.protected} bleiben, ${g.remove} weg">${g.items.map((it) => `<span class="run-sq ${it.protected ? "prot" : it.keep ? "ok" : "error"}" title="${fmtTime(it.time, true)} – ${it.protected ? "geschützt" : it.keep ? "bleibt" : "wird gelöscht"}"></span>`).join("")}</div></div>`).join("")}
+        ${r.groups.length > list.length ? `<div class="small muted">… und ${r.groups.length - list.length} weitere</div>` : ""}</div>
+        <div class="small muted pp-legend"><span class="run-sq ok"></span> bleibt <span class="run-sq error"></span> wird gelöscht <span class="run-sq prot"></span> geschützt · neueste links</div>` : ""}`;
+  };
+  btn.onclick = run;
+  // after the first preview: follow the numbers
+  form.addEventListener("input", (e) => {
+    if (!shown || !/^keep_/.test(e.target.name || "")) return;
+    clearTimeout(timer);
+    timer = setTimeout(run, 600);
   });
 }
 

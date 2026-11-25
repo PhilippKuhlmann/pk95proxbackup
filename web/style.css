@@ -884,3 +884,16 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .tl-change small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
 .tl-work { position: absolute; top: 0; bottom: 0; background: rgba(107, 114, 128, 0.16); pointer-events: none; }
 .tl-dot.work { background: rgba(107, 114, 128, 0.35); }
+
+/* Aufbewahrung: Vorschau des Aufräumens */
+.prune-prev { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.pp-sum { font-size: 14px; }
+.pp-list { display: grid; gap: 2px; margin-top: 10px; max-height: 320px; overflow: auto; }
+.pp-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.pp-row:first-child { border-top: 0; }
+.pp-name { width: 200px; flex: none; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-strip { flex-wrap: wrap; flex: 1; min-width: 0; }
+.run-sq.prot { background: var(--c500); }
+.pp-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.pp-legend .run-sq { display: inline-block; }
+@media (max-width: 560px) { .pp-row { flex-wrap: wrap; } .pp-name { width: 100%; } }
