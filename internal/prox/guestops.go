@@ -76,6 +76,45 @@ func (p *PVE) AgentPing(ctx context.Context, node string, vmid int) error {
 	return p.Do(ctx, http.MethodPost, guestPath(node, "qemu", vmid)+"/agent/ping", nil, nil)
 }
 
+// AgentFileRead reads a (small) file inside a VM through the guest agent.
+func (p *PVE) AgentFileRead(ctx context.Context, node string, vmid int, file string) (string, error) {
+	var out struct {
+		Content string `json:"content"`
+	}
+	err := p.Do(ctx, http.MethodGet, guestPath(node, "qemu", vmid)+"/agent/file-read", Params{"file": file}, &out)
+	return out.Content, err
+}
+
+// AgentExec runs a program inside a VM through the guest agent and waits for it (at most until
+// ctx ends). It returns what the program wrote and its exit code.
+func (p *PVE) AgentExec(ctx context.Context, node string, vmid int, command []string) (string, int, error) {
+	var started struct {
+		PID int `json:"pid"`
+	}
+	if err := p.Do(ctx, http.MethodPost, guestPath(node, "qemu", vmid)+"/agent/exec", Params{"command": command}, &started); err != nil {
+		return "", 0, err
+	}
+	for {
+		var st struct {
+			Exited   int    `json:"exited"`
+			ExitCode int    `json:"exitcode"`
+			Out      string `json:"out-data"`
+			Err      string `json:"err-data"`
+		}
+		if err := p.Do(ctx, http.MethodGet, guestPath(node, "qemu", vmid)+"/agent/exec-status", Params{"pid": started.PID}, &st); err != nil {
+			return "", 0, err
+		}
+		if st.Exited != 0 {
+			return st.Out + st.Err, st.ExitCode, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // AgentOSInfo returns the pretty name of the guest OS (via the agent).
 func (p *PVE) AgentOSInfo(ctx context.Context, node string, vmid int) (string, string) {
 	var os struct {

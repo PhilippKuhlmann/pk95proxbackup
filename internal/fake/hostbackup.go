@@ -46,6 +46,10 @@ func (n *NodeShell) Run(ctx context.Context, name string, args ...string) (strin
 	if name == "bash" && len(args) == 2 && args[0] == "-c" {
 		script = args[1]
 	}
+	// service check of a restore test: the listening ports inside a container
+	if name == "pct" && len(args) > 1 && args[0] == "exec" {
+		return procNetTCP([]int{22, 53, 80}), nil
+	}
 	switch {
 	case strings.HasPrefix(script, "# pk95-hostcheck"):
 		return "pve-manager/9.0.10/a2f1c0de (running kernel: 6.14.11-2-pve)\n", nil

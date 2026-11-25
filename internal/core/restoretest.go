@@ -58,6 +58,14 @@ type RestoreTestPlan struct {
 	Limit        int    `json:"time_limit"` // minutes per guest for the restore
 	IDBase       int    `json:"id_base"`    // first VMID for test guests
 	KeepFail     bool   `json:"keep_failed"`
+	// Services the test guests must offer: "100: 443, 3306" per line (see servicecheck.go).
+	Services string `json:"services,omitempty"`
+}
+
+// servicePorts are the ports to check per guest ID.
+func (p RestoreTestPlan) servicePorts() map[string][]int {
+	m, _ := ParseServices(p.Services)
+	return m
 }
 
 // RestoreTestResult is the outcome for one guest.
@@ -76,10 +84,13 @@ type RestoreTestResult struct {
 	Hostname   string `json:"hostname,omitempty"`
 	Screenshot string `json:"screenshot,omitempty"`
 	Info       string `json:"info,omitempty"`
-	Notes      string `json:"notes,omitempty"`   // what was changed for isolation
-	Started    int64  `json:"started,omitempty"` // restore began
-	RestoreEnd int64  `json:"restore_end,omitempty"`
-	Finished   int64  `json:"finished,omitempty"` // test guest removed again
+	// checked services (ports the plan names) and why they could not be checked
+	Services    []ServiceResult `json:"services,omitempty"`
+	ServiceNote string          `json:"service_note,omitempty"`
+	Notes       string          `json:"notes,omitempty"`   // what was changed for isolation
+	Started     int64           `json:"started,omitempty"` // restore began
+	RestoreEnd  int64           `json:"restore_end,omitempty"`
+	Finished    int64           `json:"finished,omitempty"` // test guest removed again
 }
 
 // RestoreTestRun is one run of a plan.
@@ -133,6 +144,9 @@ func (p *RestoreTestPlan) Normalize() map[string]string {
 	}
 	if p.Enabled && p.Repeat == "weekly" && len(p.Weekdays) == 0 {
 		errs["weekdays"] = "Mindestens einen Wochentag wählen."
+	}
+	if _, err := ParseServices(p.Services); err != nil {
+		errs["services"] = err.Error()
 	}
 	if p.BootWait <= 0 {
 		p.BootWait = 180
@@ -624,6 +638,46 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 			}
 		}
 	}
+	// the services the plan names: listening inside the guest? (they may take a while to start)
+	var svcFail []int
+	svcNote := ""
+	if want := plan.servicePorts()[snap.ID]; len(want) > 0 {
+		set(func(r *RestoreTestResult) { r.Phase = "prüft Dienste" })
+		cl, _ := c.Cluster(plan.Cluster)
+		var have map[int]bool
+		var err error
+		until := time.Now().Add(ServiceWait)
+		for {
+			sctx, scancel := context.WithTimeout(ctx, 30*time.Second)
+			have, err = c.listeningPorts(sctx, pve, cl, plan.Node, typ, testID, agentOK)
+			scancel()
+			missing := 0
+			for _, p := range want {
+				if !have[p] {
+					missing++
+				}
+			}
+			if err != nil || missing == 0 || !time.Now().Before(until) || ctx.Err() != nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+			}
+		}
+		results := []ServiceResult{}
+		if err != nil {
+			svcNote = "Dienste nicht prüfbar: " + err.Error()
+		} else {
+			for _, p := range want {
+				results = append(results, ServiceResult{Port: p, OK: have[p]})
+				if !have[p] {
+					svcFail = append(svcFail, p)
+				}
+			}
+		}
+		set(func(r *RestoreTestResult) { r.Services, r.ServiceNote = results, svcNote })
+	}
 	var shot, blank = "", false
 	if typ == "qemu" {
 		set(func(r *RestoreTestResult) { r.Phase = "macht einen Screenshot" })
@@ -670,7 +724,47 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 		default:
 			r.Status, r.Info = "ok", "Gestartet und stabil gelaufen (ohne Gast-Agent, kein Screenshot)"
 		}
+		switch {
+		case len(svcFail) > 0:
+			if r.Status == "ok" {
+				r.Status = "warning"
+			}
+			failed = true
+			r.Info += " – " + portsText(svcFail, false)
+		case svcNote != "":
+			if r.Status == "ok" {
+				r.Status = "warning"
+			}
+			r.Info += " – " + svcNote
+		case len(r.Services) > 0:
+			ports := make([]int, len(r.Services))
+			for i, x := range r.Services {
+				ports[i] = x.Port
+			}
+			r.Info += " – " + portsText(ports, true)
+		}
 	})
+}
+
+// ServiceWait is how long a restore test waits for the services to listen.
+var ServiceWait = 90 * time.Second
+
+// portsText: "Port 3306 lauscht nicht", "Dienste antworten (Ports 53, 389)".
+func portsText(ports []int, ok bool) string {
+	list := make([]string, len(ports))
+	for i, p := range ports {
+		list[i] = strconv.Itoa(p)
+	}
+	switch {
+	case ok:
+		if len(ports) == 1 {
+			return "Dienst antwortet (Port " + list[0] + ")"
+		}
+		return "Dienste antworten (Ports " + strings.Join(list, ", ") + ")"
+	case len(ports) == 1:
+		return "Port " + list[0] + " lauscht nicht"
+	}
+	return "Ports " + strings.Join(list, ", ") + " lauschen nicht"
 }
 
 // Config keys a test guest keeps (everything else is removed: an allowlist, so options

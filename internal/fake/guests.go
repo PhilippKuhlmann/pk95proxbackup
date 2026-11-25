@@ -1,6 +1,7 @@
 package fake
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -42,6 +43,21 @@ func backupConfig(archive, kind string, id int) map[string]string {
 		c["usb0"] = "host=2-1"
 	}
 	return c
+}
+
+// DemoPorts are the TCP ports the demo VMs listen on, by original ID (a test guest is named
+// restoretest-<ID>); 112 is the Windows VM. Containers listen on 22, 53 and 80.
+var DemoPorts = map[string][]int{
+	"100": {22, 53, 88, 389, 636}, "102": {22, 80, 443, 3306}, "112": {135, 445, 3389},
+}
+
+// procNetTCP writes /proc/net/tcp with these ports listening (state 0A) and one connection.
+func procNetTCP(ports []int) string {
+	out := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+	for i, p := range ports {
+		out += fmt.Sprintf("%4d: 00000000:%04X 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 %d 1 0000000000000000 100 0 0 10 0\n", i, p, 10000+i)
+	}
+	return out + "  99: 0100007F:9C40 0100007F:0016 01 00000000:00000000 00:00000000 00000000     0        0 9999 1 0000000000000000 20 4 30 10 -1\n"
 }
 
 // guestOp answers config, status and agent calls of a guest.
@@ -132,6 +148,26 @@ func (p *PVE) guestOp(w http.ResponseWriter, m string, seg []string, f url.Value
 		data(w, map[string]any{"result": map[string]string{"pretty-name": "Debian GNU/Linux 13 (trixie)", "name": "Debian GNU/Linux"}})
 	case op == "agent/get-host-name":
 		data(w, map[string]any{"result": map[string]string{"host-name": cfg["name"]}})
+	case op == "agent/file-read":
+		// Linux guests: their listening ports; the Windows VM has no /proc
+		orig := strings.TrimPrefix(cfg["name"], "restoretest-")
+		if orig == "112" || f.Get("file") != "/proc/net/tcp" && f.Get("file") != "/proc/net/tcp6" {
+			apiErr(w, 500, "guest-file-open failed: No such file or directory")
+			return
+		}
+		if f.Get("file") == "/proc/net/tcp6" {
+			data(w, map[string]any{"content": procNetTCP(nil)})
+			return
+		}
+		data(w, map[string]any{"content": procNetTCP(DemoPorts[orig])})
+	case op == "agent/exec":
+		data(w, map[string]any{"pid": 4711})
+	case op == "agent/exec-status":
+		out := "\r\nAktive Verbindungen\r\n\r\n  Proto  Lokale Adresse         Remoteadresse          Status\r\n"
+		for _, port := range DemoPorts[strings.TrimPrefix(cfg["name"], "restoretest-")] {
+			out += fmt.Sprintf("  TCP    0.0.0.0:%d            0.0.0.0:0              LISTENING\r\n", port)
+		}
+		data(w, map[string]any{"exited": 1, "exitcode": 0, "out-data": out})
 	case op == "vncproxy":
 		apiErr(w, 501, "VNC ist im Demo-Modus nicht verfügbar")
 	default:

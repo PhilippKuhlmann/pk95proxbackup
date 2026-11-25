@@ -3739,7 +3739,8 @@ function rtTable(x, live) {
       <td data-l="Status">${rtPill(r.status)}${r.phase ? `<div class="t-sub">${esc(r.phase)} …</div>` : ""}</td>
       <td data-l="Sicherung vom" class="small nowrap">${fmtTime(r.backup_time, true)}</td>
       <td data-l="Dauer" class="small nowrap">${r.restore_secs ? "Restore " + fmtSecs(r.restore_secs) : ""}${r.boot_secs ? "<br>Start " + fmtSecs(r.boot_secs) : ""}</td>
-      <td data-l="Ergebnis" class="small"><div class="${r.status === "error" ? "bad" : ""}">${esc(r.info || "")}</div>${r.hostname ? `<div class="t-sub">Hostname ${esc(r.hostname)}</div>` : ""}${r.notes ? `<div class="t-sub">Isoliert: ${esc(r.notes)}</div>` : ""}</td>
+      <td data-l="Ergebnis" class="small"><div class="${r.status === "error" ? "bad" : ""}">${esc(r.info || "")}</div>${r.hostname ? `<div class="t-sub">Hostname ${esc(r.hostname)}</div>` : ""}
+        ${(r.services || []).length ? `<div class="t-sub svc-pills">Dienste: ${r.services.map((s) => `<span title="Port ${s.port} ${s.ok ? "lauscht" : "lauscht nicht"}">${pill(String(s.port), s.ok ? "green" : "rose")}</span>`).join(" ")}</div>` : ""}${r.notes ? `<div class="t-sub">Isoliert: ${esc(r.notes)}</div>` : ""}</td>
       ${live ? "" : `<td data-l="Bild">${r.screenshot ? `<a href="/api/restoretests/screenshot?run=${enc(x.id)}&file=${enc(r.screenshot)}" target="_blank" rel="noopener"><img src="/api/restoretests/screenshot?run=${enc(x.id)}&file=${enc(r.screenshot)}" alt="Screenshot ${esc(r.vmid)}" style="width:160px;border:1px solid var(--line);border-radius:var(--r)"></a>` : '<span class="muted small">—</span>'}</td>`}</tr>`).join("") || `<tr><td colspan="6" class="muted">Noch keine Server.</td></tr>`}
   </tbody></table></div>`;
 }
@@ -3774,6 +3775,8 @@ function rtPlanForm(p, done, preset = {}) {
       { name: "time", label: "Uhrzeit", type: "time", value: p.time },
       { type: "html", wide: true, name: "sched_preview", html: `<div class="sched-preview" data-sched></div>` },
       { name: "enabled", label: "Zeitplan aktiv", type: "checkbox", value: p.enabled },
+      { type: "html", wide: true, html: `<div class="section-title">Dienste prüfen</div><div class="hint">Nach dem Start schaut die Appliance im Test-Gast nach, ob diese Dienste lauschen – je Zeile die ID und die Ports. Bei VMs über den Gast-Agenten, bei Containern über den SSH-Zugang zu den Knoten (wie die Host-Sicherung). Leer = nur Start prüfen.</div>` },
+      { name: "services", label: "Ports je Server", type: "textarea", value: p.services || "", wide: true, mono: true, placeholder: "100: 443, 3306\n110: 53" },
       { type: "html", wide: true, html: `<div class="section-title">Grenzen</div>` },
       { name: "max_cores", label: "Höchstens CPU-Kerne", type: "number", min: 0, value: p.max_cores, hint: "0 = wie das Original" },
       { name: "max_memory", label: "Höchstens RAM (MiB)", type: "number", min: 0, value: p.max_memory, hint: "0 = wie das Original" },
