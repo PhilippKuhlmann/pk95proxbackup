@@ -1748,16 +1748,25 @@ async function datastoreDelete(srv, name, done) {
   const d = openDialog(`<form method="dialog"><div class="dlg-head"><span class="dlg-ic red">${icon("trash")}</span><div class="grow"><div class="dlg-title">Datastore ${esc(name)} entfernen?</div>
     <p class="dlg-text">Standard: Der Backup-Server vergisst den Datastore, die Dateien bleiben liegen und lassen sich später wieder einbinden.</p></div></div>
     <div class="dlg-body"><label class="check"><input type="checkbox" name="destroy"><span class="ct"><span><b>Auch alle Sicherungen darin löschen</b></span><small>Kann nicht rückgängig gemacht werden.</small></span></label>
-    <div class="field" data-field="confirm" hidden><label class="fl">Zur Bestätigung den Namen eintippen</label><input type="text" name="confirm" class="mono" autocomplete="off"></div></div>
-    <div class="dlg-foot"><button class="btn gray" type="button" data-cancel>Abbrechen</button><button class="btn red" type="submit">Entfernen</button></div></form>`);
+    <div class="field" data-field="confirm" hidden><label class="fl">Zur Bestätigung den Namen eintippen</label><input type="text" name="confirm" class="mono" autocomplete="off"></div>
+    <div class="field" data-field="pw" hidden><label class="fl" for="ds-pw">Und dein Passwort</label><input type="password" id="ds-pw" name="pw" autocomplete="current-password"><span class="err" data-err hidden></span></div></div>
+    <div class="dlg-foot"><button class="btn gray" type="button" data-cancel>Abbrechen</button><button class="btn red" type="submit" data-ok>Entfernen</button></div></form>`);
   const cb = qs('[name="destroy"]', d);
-  cb.onchange = () => { qs('[data-field="confirm"]', d).hidden = !cb.checked; };
+  cb.onchange = () => { qs('[data-field="confirm"]', d).hidden = !cb.checked; qs('[data-field="pw"]', d).hidden = !cb.checked; };
   qs("[data-cancel]", d).onclick = () => d.close();
   qs("form", d).onsubmit = async (e) => {
     e.preventDefault();
-    if (cb.checked && qs('[name="confirm"]', d).value !== name) { toast("Name stimmt nicht.", "error"); return; }
+    let hdr;
+    if (cb.checked) {
+      if (qs('[name="confirm"]', d).value !== name) { toast("Name stimmt nicht.", "error"); return; }
+      // the backups go too: only with the password (a wrong one keeps the dialog open)
+      const ok = qs("[data-ok]", d), err = qs("[data-err]", d);
+      ok.disabled = true;
+      try { hdr = confirmHeader((await POST("/api/account/confirm", { password: qs('[name="pw"]', d).value })).token); }
+      catch (e2) { ok.disabled = false; err.hidden = false; err.textContent = e2.message; qs('[name="pw"]', d).select(); return; }
+    }
     d.close();
-    await run(null, async () => { await DEL(`/api/pbs/${srv.id}/datastores/${enc(name)}${cb.checked ? "?destroy=1" : ""}`); done(); }, "Datastore entfernt.");
+    await run(null, async () => { await DEL(`/api/pbs/${srv.id}/datastores/${enc(name)}${cb.checked ? "?destroy=1" : ""}`, hdr); done(); }, "Datastore entfernt.");
   };
 }
 

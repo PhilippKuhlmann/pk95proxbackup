@@ -605,6 +605,10 @@ func (s *Server) deleteDatastore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	destroy := r.URL.Query().Get("destroy") == "1"
+	// with all backups in it: only after the password was given again
+	if destroy && !s.takeConfirm(w, r) {
+		return
+	}
 	ctx := context.WithoutCancel(r.Context())
 	for _, kind := range []string{"prune", "verify"} {
 		id := pruneJobID(name)

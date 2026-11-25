@@ -56,4 +56,13 @@ func TestDeleteNeedsPassword(t *testing.T) {
 	if tok2 := confirmToken(t, other, "0123456789"); tok2 != "" {
 		t.Fatal("the password of another account gave a token")
 	}
+
+	// a datastore removed together with its backups: the password as well
+	if code, out := admin.do("DELETE", "/api/pbs/local/datastores/nas-backup?destroy=1", nil, true); code != 403 || out["confirm_required"] != true {
+		t.Fatalf("datastore destroyed without password: %d %v", code, out)
+	}
+	hdr = map[string]string{"X-PK95-Confirm": confirmToken(t, admin, "0123456789")}
+	if code, out := admin.doWith("DELETE", "/api/pbs/local/datastores/nas-backup?destroy=1", nil, true, hdr); code != 200 {
+		t.Fatalf("destroy with password: %d %v", code, out)
+	}
 }
