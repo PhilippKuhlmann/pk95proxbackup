@@ -691,6 +691,9 @@ func (s *Server) snapshots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.takeConfirm(w, r) {
+		return
+	}
 	pbs, srv, err := s.C.PBS(r.PathValue("id"))
 	if err != nil {
 		fail(w, err)

@@ -35,15 +35,16 @@ type Server struct {
 	Secure bool // cookies only over HTTPS
 	mux    *http.ServeMux
 
-	limMu   sync.Mutex
-	fails   map[string][]time.Time
-	granted map[string]bool         // read access given to PVE storages (see readAccess)
-	tickets map[string]*loginTicket // password checked, TOTP code still missing
+	limMu    sync.Mutex
+	fails    map[string][]time.Time
+	granted  map[string]bool           // read access given to PVE storages (see readAccess)
+	tickets  map[string]*loginTicket   // password checked, TOTP code still missing
+	confirms map[string]*confirmTicket // password given again (to delete backups)
 }
 
 // New builds the handler.
 func New(c *core.Core, web fs.FS, secure bool) *Server {
-	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}, tickets: map[string]*loginTicket{}}
+	s := &Server{C: c, Web: web, Secure: secure, mux: http.NewServeMux(), fails: map[string][]time.Time{}, granted: map[string]bool{}, tickets: map[string]*loginTicket{}, confirms: map[string]*confirmTicket{}}
 	s.routes()
 	c.EnsureStorage = s.ensurePVEStorage
 	c.MonthlyHTML = func(rep core.MonthlyReport) []byte { return s.renderMonthly(rep, false) }
@@ -233,6 +234,7 @@ func (s *Server) routes() {
 	a("POST /api/guests/backup", s.backupGuest)
 	a("GET /api/guests/snapshots", s.guestSnapshots)
 	a("GET /api/guests/backups", s.guestBackups)
+	a("POST /api/account/confirm", s.confirmPassword)
 	a("DELETE /api/guests/backups", s.deleteGuestBackups)
 	a("POST /api/restore", s.restore)
 	a("GET /api/restore/files", s.restoreFiles)

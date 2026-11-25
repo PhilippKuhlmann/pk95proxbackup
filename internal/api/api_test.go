@@ -31,6 +31,12 @@ type client struct {
 
 func (c *client) do(method, path string, body any, csrf bool) (int, map[string]any) {
 	c.t.Helper()
+	return c.doWith(method, path, body, csrf, nil)
+}
+
+// doWith is do with extra request headers.
+func (c *client) doWith(method, path string, body any, csrf bool, hdr map[string]string) (int, map[string]any) {
+	c.t.Helper()
 	var rd *bytes.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -42,6 +48,9 @@ func (c *client) do(method, path string, body any, csrf bool) (int, map[string]a
 	req.Header.Set("Content-Type", "application/json")
 	if csrf {
 		req.Header.Set("X-PK95", "1")
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

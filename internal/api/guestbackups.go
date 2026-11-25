@@ -40,6 +40,9 @@ func (s *Server) deleteGuestBackups(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, "Keinen Datastore gewählt.")
 		return
 	}
+	if !s.takeConfirm(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
 	res, err := s.C.DeleteGuestBackups(ctx, typ, id, places)

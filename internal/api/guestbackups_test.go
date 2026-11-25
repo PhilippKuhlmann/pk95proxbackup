@@ -25,7 +25,7 @@ func TestDeleteGuestBackups(t *testing.T) {
 	}
 	del := func(cl *client, typ, id, confirm string, where ...string) (int, map[string]any) {
 		q := url.Values{"type": {typ}, "bid": {id}, "confirm": {confirm}, "places": {strings.Join(where, ",")}}
-		return cl.do("DELETE", "/api/guests/backups?"+q.Encode(), nil, true)
+		return cl.doWith("DELETE", "/api/guests/backups?"+q.Encode(), nil, true, map[string]string{"X-PK95-Confirm": confirmToken(t, cl, "0123456789")})
 	}
 
 	// a guest no connected Proxmox VE knows any more

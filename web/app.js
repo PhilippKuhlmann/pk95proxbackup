@@ -124,8 +124,8 @@ const TASK_LABELS = {
 const taskLabel = (t) => TASK_LABELS[t] || t;
 
 // ---------- API ----------
-async function api(method, path, body) {
-  const opt = { method, headers: { "X-PK95": "1" }, credentials: "same-origin" };
+async function api(method, path, body, headers = {}) {
+  const opt = { method, headers: { "X-PK95": "1", ...headers }, credentials: "same-origin" };
   if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   let res;
   try { res = await fetch(path, opt); } catch (e) { throw Object.assign(new Error("Appliance nicht erreichbar."), { network: true }); }
@@ -141,7 +141,9 @@ async function api(method, path, body) {
 const GET = (p) => api("GET", p);
 const POST = (p, b) => api("POST", p, b ?? {});
 const PUT = (p, b) => api("PUT", p, b ?? {});
-const DEL = (p) => api("DELETE", p);
+const DEL = (p, h) => api("DELETE", p, undefined, h);
+// confirmHeader is the header a delete route wants after askPassword.
+const confirmHeader = (token) => ({ "X-PK95-Confirm": token });
 const enc = encodeURIComponent;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -276,6 +278,38 @@ const tip = (() => {
   window.addEventListener("resize", hide);
   return { hide };
 })();
+
+// askPassword asks for the own password once more before deleting backups and returns a token
+// for one delete request (null when cancelled). A wrong password keeps the dialog open.
+function askPassword({ title, text = "", button = "Löschen" }) {
+  return new Promise((resolve) => {
+    const d = openDialog(`<form method="dialog" novalidate>
+      <div class="dlg-head"><span class="dlg-ic red">${icon("trash")}</span>
+        <div class="grow"><div class="dlg-title">${esc(title)}</div>${text ? `<p class="dlg-text">${text}</p>` : ""}</div></div>
+      <div class="dlg-body"><div class="field"><label class="fl" for="ask-pw">Zur Bestätigung dein Passwort</label>
+        <input type="password" id="ask-pw" data-pw autocomplete="current-password" required><span class="err" data-err hidden></span></div></div>
+      <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-cancel>Abbrechen</button><button class="btn red" type="submit" data-ok>${esc(button)}</button></div></form>`);
+    let token = null;
+    d.addEventListener("close", () => resolve(token));
+    qs("[data-cancel]", d).onclick = () => d.close();
+    const pw = qs("[data-pw]", d), err = qs("[data-err]", d), ok = qs("[data-ok]", d);
+    pw.focus();
+    qs("form", d).onsubmit = async (e) => {
+      e.preventDefault();
+      if (!pw.value) { pw.focus(); return; }
+      ok.disabled = true;
+      try {
+        token = (await POST("/api/account/confirm", { password: pw.value })).token;
+        d.close();
+      } catch (e2) {
+        ok.disabled = false;
+        err.hidden = false;
+        err.textContent = e2.message;
+        pw.select();
+      }
+    };
+  });
+}
 
 function confirmDialog({ title, text = "", button = "Löschen", tone = "red", ic }) {
   return new Promise((resolve) => {
@@ -1764,8 +1798,9 @@ async function snapshotsDialog(srv, store) {
     });
     qsa("[data-del]", body).forEach((b) => b.onclick = async () => {
       const [t, id, time] = b.dataset.del.split("|");
-      if (!(await confirmDialog({ title: `Sicherung ${t}/${id} vom ${fmtTime(+time, true)} löschen?`, text: "Der Platz wird beim nächsten „Speicher freigeben“ frei.", button: "Löschen" }))) return;
-      await run(b, async () => { await DEL(`/api/pbs/${srv.id}/datastores/${enc(store)}/snapshots?type=${enc(t)}&bid=${enc(id)}&time=${time}`); snaps = snaps.filter((s) => !(s["backup-type"] === t && s["backup-id"] === id && s["backup-time"] === +time)); draw(); }, "Gelöscht.");
+      const token = await askPassword({ title: `Sicherung ${t}/${id} vom ${fmtTime(+time, true)} löschen?`, text: "Das lässt sich nicht rückgängig machen. Der Platz wird beim nächsten „Speicher freigeben“ frei.", button: "Löschen" });
+      if (!token) return;
+      await run(b, async () => { await DEL(`/api/pbs/${srv.id}/datastores/${enc(store)}/snapshots?type=${enc(t)}&bid=${enc(id)}&time=${time}`, confirmHeader(token)); snaps = snaps.filter((s) => !(s["backup-type"] === t && s["backup-id"] === id && s["backup-time"] === +time)); draw(); }, "Gelöscht.");
     });
   };
   qs("[data-filter]", d).oninput = draw;
@@ -3015,7 +3050,8 @@ async function deleteGuestDialog(typ, id, name, done) {
           ${p.mounted ? "" : `<div class="t-sub">nicht angesteckt – beim nächsten Anstecken hier löschen</div>`}</td>
         <td data-l="Stände" class="num">${p.count}${p.protected ? `<div class="t-sub">${p.protected} geschützt, bleib${p.protected === 1 ? "t" : "en"}</div>` : ""}</td>
         <td data-l="Neueste">${fmtTime(p.last, true)}</td></tr>`).join("")}</tbody></table></div>
-      <div class="field"><label class="fl" for="del-confirm">Zur Bestätigung die ID <b class="mono">${esc(id)}</b> eintippen</label><input type="text" id="del-confirm" class="mono" data-confirm autocomplete="off" inputmode="numeric"></div>`
+      <div class="field"><label class="fl" for="del-confirm">Zur Bestätigung die ID <b class="mono">${esc(id)}</b> eintippen</label><input type="text" id="del-confirm" class="mono" data-confirm autocomplete="off" inputmode="numeric"></div>
+      <div class="field"><label class="fl" for="del-pw">Und dein Passwort</label><input type="password" id="del-pw" data-pw autocomplete="current-password"><span class="err" data-err hidden></span></div>`
     : empty("Keine Sicherungen gefunden", "Auf keinem verbundenen Backup-Server liegt eine Sicherung davon.", "", "archive"));
   qsa("a[data-go]", body).forEach((a) => a.addEventListener("click", () => d.close()));
   const btn = qs("[data-go-del]", d);
@@ -3024,7 +3060,7 @@ async function deleteGuestDialog(typ, id, name, done) {
     const list = chosen();
     const n = list.reduce((a, p) => a + p.count - p.protected, 0);
     btn.textContent = n === 1 ? "1 Sicherung löschen" : `${n} Sicherungen löschen`;
-    btn.disabled = !n || (qs("[data-confirm]", d) || {}).value !== id;
+    btn.disabled = !n || (qs("[data-confirm]", d) || {}).value !== id || !(qs("[data-pw]", d) || {}).value;
   };
   body.addEventListener("input", update);
   body.addEventListener("change", update);
@@ -3033,9 +3069,21 @@ async function deleteGuestDialog(typ, id, name, done) {
     btn.disabled = true;
     d.dataset.busy = "1";
     btn.innerHTML = `<span class="spinner"></span> Löscht …`;
+    const errBox = qs("[data-err]", d);
+    errBox.hidden = true;
+    let token;
+    try { token = (await POST("/api/account/confirm", { password: qs("[data-pw]", d).value })).token; }
+    catch (e) {
+      delete d.dataset.busy;
+      errBox.hidden = false;
+      errBox.textContent = e.message;
+      qs("[data-pw]", d).select();
+      update();
+      return;
+    }
     try {
       const places = chosen().map((p) => `${p.server}/${p.store}`).join(",");
-      const res = await DEL(`/api/guests/backups?type=${typ}&bid=${enc(id)}&confirm=${enc(qs("[data-confirm]", d).value)}&places=${enc(places)}`);
+      const res = await DEL(`/api/guests/backups?type=${typ}&bid=${enc(id)}&confirm=${enc(qs("[data-confirm]", d).value)}&places=${enc(places)}`, confirmHeader(token));
       delete d.dataset.busy;
       d.close();
       const extra = [res.kept.length ? `Geschützt geblieben: ${res.kept.join(", ")}` : "", res.failed.length ? `Nicht gelöscht: ${res.failed.join("; ")}` : ""].filter(Boolean).join(" · ");
@@ -3112,8 +3160,22 @@ async function restoreGuest(el, token, g, source) {
         <div class="grow"><div class="title"><b>${fmtTime(sn["backup-time"], true)}</b> ${i === 0 ? pill("neueste", "blue") : ""}</div>
         <div class="t-sub">${fmtAgo(sn["backup-time"])} · ${fmtBytes(sn.size)}${sn.comment ? " · " + esc(sn.comment) : ""}</div></div>
         ${odd.has(sn["backup-time"]) ? `<span title="Ungewöhnlich viele neue Daten oder viel kleiner als sonst – siehe VMs &amp; Container">${pill("auffällig", "amber")}</span>` : ""} ${sn.protected ? pill("geschützt", "blue") : ""}
-        ${keyPill(sn.fingerprint)} ${sn.verification ? (sn.verification.state === "ok" ? pill("geprüft", "green") : pill("defekt", "rose")) : ""}</label>`).join("") || `<div class="row muted">Keine Stände.</div>`}</div>`;
+        ${keyPill(sn.fingerprint)} ${sn.verification ? (sn.verification.state === "ok" ? pill("geprüft", "green") : pill("defekt", "rose")) : ""}
+        ${can("admin") ? `<button class="ib red" type="button" data-delsnap="${sn["backup-time"]}" ${sn.protected ? "disabled" : ""}
+          title="${sn.protected ? "Geschützt – erst unter Datastores → Sicherungen den Schutz aufheben" : "Diesen Stand löschen"}" aria-label="Stand vom ${fmtTime(sn["backup-time"], true)} löschen">${icon("trash")}</button>` : ""}</label>`).join("") || `<div class="row muted">Keine Stände.</div>`}</div>`;
     qsa('[name="snap"]', box).forEach((r) => r.onchange = () => { sel = +r.value; drawRight(); });
+    qsa("[data-delsnap]", box).forEach((btn) => btn.onclick = async (e) => {
+      e.preventDefault(); // the button sits in the label of the radio
+      e.stopPropagation();
+      const t = +btn.dataset.delsnap;
+      const token = await askPassword({ title: `Stand vom ${fmtTime(t, true)} löschen?`, button: "Löschen",
+        text: `Nur dieser Stand von ${kind} ${g.vmid} auf ${esc(b.server_name)} / ${esc(b.store)} – die anderen bleiben. Das lässt sich nicht rückgängig machen; der Platz wird beim nächsten „Speicher freigeben“ frei.` });
+      if (!token) return;
+      await run(btn, async () => {
+        await DEL(`/api/pbs/${enc(b.server)}/datastores/${enc(b.store)}/snapshots?type=${typ}&bid=${g.vmid}&time=${t}`, confirmHeader(token));
+        await loadSnaps();
+      }, "Stand gelöscht.");
+    });
     drawRight();
   };
   await loadSnaps();
