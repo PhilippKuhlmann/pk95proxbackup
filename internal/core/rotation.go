@@ -239,6 +239,8 @@ type diskRuntime struct {
 	VerifyUPID   string `json:"verify_upid,omitempty"`   // the check running on the server
 	UnpluggedAt  int64  `json:"unplugged_at,omitempty"`
 	Saved        string `json:"saved,omitempty"` // direct: what the last backup wrote
+	// Owner the backup groups on the disk were last handed to (see handOver; "" never).
+	Owner string `json:"owner,omitempty"`
 }
 
 func rtKey(r Rotation, d RotDisk) string { return r.ID + "/" + d.Key }
@@ -863,6 +865,7 @@ func (c *Core) RunRotationDisk(ctx context.Context, r Rotation, d RotDisk) error
 			return nil
 		}
 	}
+	c.handOverForCopy(ctx, pbs, r, d)
 	err = pbs.RunJob(ctx, "sync", r.SyncJobID(d))
 	c.RequestRefresh()
 	return err
@@ -903,6 +906,15 @@ func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, no
 						"Um "+r.Time+" Uhr sollte auf die Festplatte „"+d.Label+"“ gesichert werden, das hat nicht geklappt. "+
 							"Bitte prüfen Sie, ob die Festplatte richtig angeschlossen ist. Hilft das nicht, leiten Sie diese Nachricht an Ihren IT-Betreuer weiter.",
 						&notify.Details{Status: "warning", Link: "/wechselplatten", Log: []string{err.Error()}})
+				}
+			}
+		}
+		if !r.Direct() {
+			if pbs, _, err := c.PBS(r.ServerID); err == nil {
+				for _, d := range st.Disks {
+					if d.Mounted && !d.Running && d.Phase == "" {
+						c.handOverForCopy(ctx, pbs, r, d.RotDisk)
+					}
 				}
 			}
 		}

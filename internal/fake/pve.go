@@ -45,7 +45,7 @@ type PVE struct {
 	layout  map[string]NodeLayout
 	// OnBackup writes a backup onto a datastore of a Backup Server (nil: backups go nowhere).
 	// It fails when the datastore cannot take it (a USB disk that is not mounted).
-	OnBackup func(datastore, typ, id string, t time.Time, size int64) error
+	OnBackup func(datastore, owner, typ, id string, t time.Time, size int64) error
 }
 
 // NodeLayout is what lies on the disks of a node: LVM volume groups and ZFS pools with their
@@ -470,7 +470,7 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			gb := 8 + atoi(id)%7*9
 			if target != nil && target.Type == "pbs" && p.OnBackup != nil {
-				if err := p.OnBackup(target.Datastore, map[string]string{"qemu": "vm", "lxc": "ct"}[typ], id, time.Now(), int64(gb)*gib); err != nil {
+				if err := p.OnBackup(target.Datastore, target.Username, map[string]string{"qemu": "vm", "lxc": "ct"}[typ], id, time.Now(), int64(gb)*gib); err != nil {
 					rest = append(rest, "INFO: "+label+name, "ERROR: Backup of VM "+id+" failed - "+err.Error(), "INFO: Failed at "+time.Now().Format("2006-01-02 15:04:05"))
 					failed = true
 					continue

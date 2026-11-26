@@ -193,7 +193,17 @@ func (c *Core) scheduleDirect(ctx context.Context, ov *Overview, now time.Time) 
 			continue
 		}
 		// The storages of the disks that are away are switched off, the others on.
-		if storages, err := pve.Storages(ctx); err == nil {
+		storages, serr := pve.Storages(ctx)
+		if pbs, _, err := c.PBS(r.ServerID); err == nil && serr == nil {
+			for _, d := range st.Disks {
+				if d.Mounted && d.Storage != "" && d.Phase == "" && !running[r.Cluster] {
+					if err := c.handOver(ctx, pbs, r, d.RotDisk, storageOwner(storages, d.Storage)); err != nil {
+						c.directProblem(r, "Sicherungen auf „"+d.Label+"“ nicht übergeben", err)
+					}
+				}
+			}
+		}
+		if serr == nil {
 			off := map[string]bool{}
 			for _, s := range storages {
 				off[s.Storage] = s.Disable != 0
@@ -244,6 +254,70 @@ func (c *Core) scheduleDirect(ctx context.Context, ov *Overview, now time.Time) 
 	c.mu.Lock()
 	c.directBusy = busy
 	c.mu.Unlock()
+}
+
+// copyOwner owns what the copy jobs of the sets write (PBS default of a sync job).
+const copyOwner = "root@pam"
+
+// handOver gives the backup groups on a mounted disk to owner: only the owner of a group may add
+// backups to it. When a set switches between copying and backing up directly, the groups on its
+// disks still belong to the previous writer. It runs once per disk and owner.
+func (c *Core) handOver(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDisk, owner string) error {
+	key := rtKey(r, d)
+	rt := c.runtime(key)
+	c.mu.Lock()
+	done := rt.Owner == owner
+	c.mu.Unlock()
+	if done || owner == "" {
+		return nil
+	}
+	groups, err := pbs.Groups(ctx, d.Store)
+	if err != nil {
+		return err
+	}
+	moved := 0
+	for _, g := range groups {
+		if g.Owner == owner {
+			continue
+		}
+		if err := pbs.ChangeOwner(ctx, d.Store, g.Type, g.ID, owner); err != nil {
+			return fmt.Errorf("Sicherungen von %s/%s übergeben: %w", g.Type, g.ID, err)
+		}
+		moved++
+	}
+	c.mu.Lock()
+	rt.Owner = owner
+	c.mu.Unlock()
+	c.saveRuntime(key, rt)
+	if moved > 0 {
+		c.Event("info", rotationSource, fmt.Sprintf("Sicherungen auf „%s“ übergeben", d.Label),
+			fmt.Sprintf("%d Server-Gruppen auf der Platte gehören jetzt %s, damit dort weiter gesichert werden kann. Die vorhandenen Stände bleiben erhalten.", moved, owner))
+	}
+	return nil
+}
+
+// handOverForCopy gives the groups on a disk back to the copy job when the set backed up
+// directly before (a disk that never left the copy set is not touched).
+func (c *Core) handOverForCopy(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDisk) {
+	rt := c.runtime(rtKey(r, d))
+	c.mu.Lock()
+	pending := rt.Owner != "" && rt.Owner != copyOwner
+	c.mu.Unlock()
+	if pending {
+		if err := c.handOver(ctx, pbs, r, d, copyOwner); err != nil {
+			c.directProblem(r, "Sicherungen auf „"+d.Label+"“ nicht übergeben", err)
+		}
+	}
+}
+
+// storageOwner is the PBS user or token Proxmox VE writes with through a storage.
+func storageOwner(storages []prox.Storage, name string) string {
+	for _, s := range storages {
+		if s.Storage == name {
+			return s.Username
+		}
+	}
+	return ""
 }
 
 // directNext is the next start of a backup job (zero when the schedule is not understood).
@@ -434,6 +508,11 @@ func (c *Core) runDirect(ctx context.Context, r Rotation, d RotDisk) error {
 		return err
 	}
 	_ = pve.SetStorageDisabled(ctx, d.Storage, false)
+	if storages, err := pve.Storages(ctx); err == nil {
+		if err := c.handOver(ctx, pbs, r, d, storageOwner(storages, d.Storage)); err != nil {
+			return err
+		}
+	}
 	if err := pve.UpdateBackupJob(ctx, r.BackupJobID(), prox.Params{"storage": d.Storage}); err != nil {
 		// The job may be gone (removed in Proxmox VE): set it up again first.
 		if err := c.applyDirect(ctx, r); err != nil {

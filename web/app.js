@@ -2395,13 +2395,13 @@ function rotationForm(x, done) {
   const edit = !!x;
   const local = state.servers.find((s) => s.local)?.id || state.servers[0]?.id;
   x = x || { mode: "", rhythm: "daily", swap_day: 5, time: "22:30", run_on_mount: true, unmount_on_done: true, transfer_last: 1, keep_last: 1, keep_weekly: 0, keep_monthly: 0, keep_daily: 0, server_id: local, source_server: local, cluster: state.clusters[0]?.id || "" };
-  const fixedMode = edit && x.disks.length > 0;
+  const hasDisks = edit && x.disks.length > 0;
   formDialog({
     title: edit ? `${x.name} bearbeiten` : "Wechselplatten-Satz anlegen", ic: "disk",
     fields: [
       { name: "name", label: "Name", value: x.name, required: true, placeholder: "USB täglich", wide: true },
       { name: "mode", type: "radio", label: "Was kommt auf die Platten?", value: x.mode || "", options: [["", "Kopie der Sicherungen", "Proxmox VE sichert auf einen Datastore, die Platte bekommt eine Kopie davon"], ["direct", "Direkt auf die Platte", "Proxmox VE sichert direkt auf die angesteckte Platte – ohne Datastore dazwischen. Für kleine Umgebungen mit ein, zwei Servern."]],
-        hint: fixedMode ? "Lässt sich nur ändern, solange keine Platte im Satz ist." : "" },
+        hint: hasDisks ? "Umstellen geht jederzeit: Die Sicherungen auf den Platten bleiben erhalten und gehören danach dem neuen Schreiber." : "" },
       { type: "html", name: "direct_note", wide: true, html: `<div class="callout yellow" style="margin:0"><div class="ct"><div class="ch">Jede Sicherung liegt nur auf ihrer Platte</div><div class="cb">Es gibt keine zweite Kopie auf dem Backup-Server. Geht eine Platte kaputt oder verloren, fehlen ihre Stände – mit zwei oder mehr Platten im Wechsel bleibt immer die andere. Steckt zur Sicherungszeit keine Platte, fällt die Sicherung aus; die Appliance warnt drei Stunden vorher.</div></div></div>` },
       { name: "cluster", label: "Wer sichert", type: "select", value: x.cluster, options: state.clusters.map((c) => [c.id, c.name]), hint: "Proxmox VE, das direkt auf die Platten sichert." },
       { name: "guests", label: "Welche Server", value: x.guests || "", mono: true, placeholder: "alle", hint: "Leer = alle VMs und Container. Sonst die IDs mit Komma, z. B. 100,101." },
@@ -2455,16 +2455,16 @@ function rotationForm(x, done) {
       qsa('[name="rhythm"]', d).forEach((r) => r.onchange = show);
       qsa('[name="mode"]', d).forEach((r) => r.onchange = () => {
         // A direct set keeps history on the disk itself: start from a useful retention.
-        if (r.value === "direct" && !edit) {
+        if (r.value === "direct" && !(x.mode === "direct")) {
           const set = (n, v) => { qs(`[name="${n}"]`, d).value = v; };
           set("keep_last", 0); set("keep_daily", 7); set("keep_weekly", 4); set("keep_monthly", 3);
-          if (qs('[name="time"]', d).value === "22:30") set("time", "21:00");
+          if (!edit && qs('[name="time"]', d).value === "22:30") set("time", "21:00");
         }
         show();
       });
       show();
       if (edit && x.disks.length) qs('[name="server_id"]', d).disabled = true;
-      if (fixedMode) { qsa('[name="mode"]', d).forEach((r) => { r.disabled = true; }); qs('[name="cluster"]', d).disabled = true; }
+
       const ss = qs('[name="source_server"]', d), st = qs('[name="source_store"]', d);
       const fill = async (val) => {
         st.innerHTML = `<option value="">Lade …</option>`;
@@ -2477,7 +2477,11 @@ function rotationForm(x, done) {
     submit: async (v) => {
       v.swap_day = Number(v.swap_day);
       v.transfer_last = Number(v.transfer_last);
-      if (fixedMode) { v.mode = x.mode || ""; v.cluster = x.cluster || ""; }
+      const switching = hasDisks && ((v.mode || "") !== (x.mode || "") || (v.mode === "direct" && v.cluster !== x.cluster));
+      if (switching && !(await confirmDialog({ title: `„${x.name}“ umstellen?`, ic: "refresh", button: "Umstellen",
+        text: v.mode === "direct"
+          ? `Die Kopierjobs der Platten werden gelöscht. Danach sichert Proxmox VE täglich um ${esc(v.time)} direkt auf die Platte, die gerade steckt. Die Stände auf den Platten bleiben erhalten; sobald eine Platte eingehängt ist, übergibt die Appliance sie an Proxmox VE, damit dort weiter gesichert werden kann.`
+          : "Der Sicherungsjob in Proxmox VE wird gelöscht. Danach bekommen die Platten wieder eine Kopie der Sicherungen vom gewählten Datastore. Die Stände auf den Platten bleiben erhalten und werden an den Kopierjob übergeben." }))) return false;
       if (edit) { if (x.disks.length) v.server_id = x.server_id; await PUT(`/api/rotations/${x.id}`, v); }
       else await POST("/api/rotations", v);
       toast("Gespeichert."); done();

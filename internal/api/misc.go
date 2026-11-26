@@ -627,8 +627,10 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	var cur core.Rotation
 	if id != "" {
-		cur, err := s.C.Rotation(id)
+		var err error
+		cur, err = s.C.Rotation(id)
 		if err != nil {
 			fail(w, err)
 			return
@@ -638,10 +640,7 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 			fieldErrs(w, map[string]string{"server_id": "Der Server lässt sich nur ändern, solange keine Platte im Satz ist."})
 			return
 		}
-		if len(cur.Disks) > 0 && (req.Mode != cur.Mode || req.Direct() && req.Cluster != cur.Cluster) {
-			fieldErrs(w, map[string]string{"mode": "Art und Proxmox VE lassen sich nur ändern, solange keine Platte im Satz ist."})
-			return
-		}
+
 	} else {
 		req.ID = core.NewID(3)
 		req.Disks = []core.RotDisk{}
@@ -656,6 +655,29 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 	if fieldErrs(w, errs) {
 		return
 	}
+	// Switching what goes onto the disks: the old jobs go, the backups on the disks stay (the
+	// monitor hands their groups to the new writer once a disk is mounted).
+	switched := id != "" && (cur.Direct() != req.Direct() || cur.Direct() && req.Cluster != cur.Cluster)
+	if switched {
+		if cur.Direct() {
+			if err := s.C.RemoveDirect(r.Context(), cur); err != nil {
+				fail(w, err)
+				return
+			}
+			if req.Direct() { // another Proxmox VE: its own storages
+				for i := range req.Disks {
+					req.Disks[i].Storage = ""
+				}
+			}
+		} else {
+			for _, d := range cur.Disks {
+				if err := s.C.RemoveRotationDisk(r.Context(), cur, d); err != nil {
+					fail(w, err)
+					return
+				}
+			}
+		}
+	}
 	if req.Direct() {
 		if err := s.directStorages(r.Context(), &req); err != nil {
 			fail(w, err)
@@ -665,6 +687,13 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 	if err := s.C.ApplyRotation(r.Context(), req); err != nil {
 		fail(w, err)
 		return
+	}
+	if switched && len(req.Disks) > 0 {
+		what := "Die Platten bekommen wieder eine Kopie der Sicherungen von einem Datastore."
+		if req.Direct() {
+			what = "Proxmox VE sichert jetzt direkt auf die angesteckte Platte."
+		}
+		s.C.Event("info", "Wechselplatten", "Satz „"+req.Name+"“ umgestellt", what+" Die Sicherungen auf den Platten bleiben erhalten; sobald eine Platte eingehängt ist, übergibt die Appliance sie an den neuen Schreiber.")
 	}
 	if err := s.C.St.Put(core.KindRotation, req.ID, req); err != nil {
 		fail(w, err)

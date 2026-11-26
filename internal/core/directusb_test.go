@@ -208,3 +208,89 @@ func TestDirectUSBFollowsDisk(t *testing.T) {
 		t.Fatalf("validation: %v", errs)
 	}
 }
+
+// The demo's copy set switched to backing up directly: the copied groups on the disk are handed
+// to Proxmox VE's token first (else PBS refuses: owner check), and back when switched again.
+func TestDirectUSBSwitchHandsOver(t *testing.T) {
+	vd := fake.VzdumpDuration
+	fake.VzdumpDuration = time.Second
+	t.Cleanup(func() { fake.VzdumpDuration = vd })
+	c := newCore(t)
+	ctx := context.Background()
+	rot, _ := c.Rotation("demo")
+	for _, d := range rot.Disks {
+		if err := c.RemoveRotationDisk(ctx, rot, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pve, _, _ := c.PVE("cluster")
+	if err := pve.AddPBSStorage(ctx, "pk95-usb-a", "10.0.0.1", 8007, "usb-a", "pk95-pve@pbs!usb", "secret", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	rot.Mode, rot.Cluster, rot.Guests, rot.Time = "direct", "cluster", "100", "21:00"
+	rot.Disks[0].Storage = "pk95-usb-a"
+	if errs := rot.Validate(); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if err := c.ApplyRotation(ctx, rot); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.St.Put(core.KindRotation, rot.ID, rot)
+	pbs, _, _ := c.PBS("local")
+	owners := func() map[string]bool {
+		gs, err := pbs.Groups(ctx, "usb-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, g := range gs {
+			out[g.Owner] = true
+		}
+		return out
+	}
+	if o := owners(); o["pk95-pve@pbs!usb"] || len(o) == 0 {
+		t.Fatalf("before: %v", o)
+	}
+	ov := c.BuildOverview(ctx)
+	c.ScheduleDirectForTest(ctx, &ov, time.Now())
+	if o := owners(); !o["pk95-pve@pbs!usb"] || len(o) != 1 {
+		t.Fatalf("not handed over: %v", o)
+	}
+	if !strings.Contains(eventTitles(t, c), "Sicherungen auf „Platte A (gerade Tage)“ übergeben") {
+		t.Fatalf("hand-over not reported:\n%s", eventTitles(t, c))
+	}
+	// Now Proxmox VE may add to the groups.
+	start := time.Now().Unix()
+	if err := c.RunRotationDisk(ctx, rot, rot.Disks[0]); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	ov = c.BuildOverview(ctx)
+	c.RecordJobRunsForTest(ctx, &ov, time.Now().Add(time.Hour))
+	if d := directDisk(t, c, rot.Disks[0].Key); d.LastOK < start || d.LastFail >= start {
+		t.Fatalf("backup after the hand-over: %+v\n%s", d, eventTitles(t, c))
+	}
+
+	// And back to copying: the groups go back to the copy job.
+	deadline := time.Now().Add(20 * time.Second)
+	for directDisk(t, c, rot.Disks[0].Key).Phase != "" || directDisk(t, c, rot.Disks[0].Key).State == "running" {
+		if time.Now().After(deadline) {
+			t.Fatal("aftercare did not end")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	fake.Current.Local.SetMounted("usb-a", true)
+	_ = c.RemoveDirect(ctx, rot)
+	rot.Mode, rot.SourceServer, rot.SourceStore = "", "local", "backup"
+	if errs := rot.Validate(); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	_ = c.St.Put(core.KindRotation, rot.ID, rot)
+	if err := c.ApplyRotation(ctx, rot); err != nil {
+		t.Fatal(err)
+	}
+	c.ScheduleRotationsForTest(ctx, c.RotationStates(ctx), time.Now())
+	if o := owners(); !o["root@pam"] || len(o) != 1 {
+		t.Fatalf("not handed back: %v", o)
+	}
+}

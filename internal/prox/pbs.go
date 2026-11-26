@@ -274,6 +274,13 @@ func (p *PBS) DeleteGroup(ctx context.Context, store, ns, typ, id string) error 
 		Params{"ns": emptyNil(ns), "backup-type": typ, "backup-id": id}, nil)
 }
 
+// ChangeOwner hands a backup group to another user or token: only its owner may add backups
+// to a group.
+func (p *PBS) ChangeOwner(ctx context.Context, store, typ, id, owner string) error {
+	return p.Do(ctx, http.MethodPost, "/admin/datastore/"+url.PathEscape(store)+"/change-owner",
+		Params{"backup-type": typ, "backup-id": id, "new-owner": owner}, nil)
+}
+
 // Group is an entry of /admin/datastore/{store}/groups.
 type Group struct {
 	Type       string `json:"backup-type"`

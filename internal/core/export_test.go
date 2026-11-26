@@ -96,3 +96,8 @@ var MatchBackupJobForTest = matchBackupJob
 func (c *Core) ScheduleDirectForTest(ctx context.Context, ov *Overview, now time.Time) {
 	c.scheduleDirect(ctx, ov, now)
 }
+
+// ScheduleRotationsForTest exposes scheduleRotations.
+func (c *Core) ScheduleRotationsForTest(ctx context.Context, states []RotationState, now time.Time) {
+	c.scheduleRotations(ctx, states, now)
+}

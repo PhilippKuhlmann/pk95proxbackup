@@ -266,7 +266,8 @@ func (p *PBS) AddBackupTask(store, typ, id string, t time.Time, size, upload int
 
 // BackupOnto takes a backup from Proxmox VE onto a USB disk (see PVE.OnBackup): only when it
 // is mounted. Backups onto other datastores are not simulated (the demo keeps its seed).
-func (p *PBS) BackupOnto(st, typ, id string, t time.Time, size int64) error {
+// Like PBS it refuses to add to a group that belongs to someone else (owner check).
+func (p *PBS) BackupOnto(st, owner, typ, id string, t time.Time, size int64) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.stores[st]
@@ -276,7 +277,13 @@ func (p *PBS) BackupOnto(st, typ, id string, t time.Time, size int64) error {
 	if !s.mounted {
 		return fmt.Errorf("datastore '%s' is not mounted", st)
 	}
+	for _, sn := range s.snaps {
+		if sn.Type == typ && sn.ID == id && sn.Owner != owner {
+			return fmt.Errorf("backup owner check failed (%s != %s)", owner, sn.Owner)
+		}
+	}
 	p.AddSnapshot(st, typ, id, t.Unix(), size)
+	s.snaps[len(s.snaps)-1].Owner = owner
 	return nil
 }
 
@@ -800,6 +807,17 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			default:
 				apiErr(w, 400, "no such file")
 			}
+		case "change-owner":
+			if !s.mounted {
+				apiErr(w, 400, "datastore '"+seg[2]+"' is not mounted")
+				return
+			}
+			for i := range s.snaps {
+				if s.snaps[i].Type == f.Get("backup-type") && s.snaps[i].ID == f.Get("backup-id") {
+					s.snaps[i].Owner = f.Get("new-owner")
+				}
+			}
+			data(w, nil)
 		case "groups":
 			if m == "DELETE" {
 				keep, kept := s.snaps[:0], 0
