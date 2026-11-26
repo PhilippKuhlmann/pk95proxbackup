@@ -908,3 +908,11 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .space-line .space-ic { color: var(--accent); margin-top: 2px; }
 .space-line .okc { color: var(--green-dot); font-weight: 600; }
 .space-preview { padding: 2px 0; }
+
+/* maintenance mode in the top bar */
+.maint-btn { gap: 6px; }
+.maint-btn.on, .maint-btn.on:hover { color: var(--amber-ink); background: var(--amber-bg); font-weight: 600; font-size: 13px; padding: 6px 10px; }
+.maint-btn.on .icon { width: 18px; height: 18px; }
+@media (max-width: 640px) { .maint-btn .maint-text { display: none; } }
+.dlg-ic.yellow { background: var(--amber-bg); color: var(--amber-ink); }
+.plain-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; }

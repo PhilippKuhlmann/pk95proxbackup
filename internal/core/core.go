@@ -105,6 +105,7 @@ type Core struct {
 	rotRT   map[string]*diskRuntime
 	// directBusy: disks of direct sets that Proxmox VE is backing up onto right now
 	directBusy map[string]bool
+	maint      *Maintenance // cached setting "maintenance"
 	// sync tasks seen running at the last RunningTasks call
 	runningSync map[string]bool
 	ov          Overview
@@ -357,7 +358,7 @@ func (c *Core) event(severity, source, title, body string, d *notify.Details, fi
 		log.Printf("event: %v", err)
 	}
 	log.Printf("[%s] %s: %s %s", severity, source, title, strings.ReplaceAll(body, "\n", " "))
-	if !send {
+	if !send || c.muteNotice() {
 		return
 	}
 	ns := c.NotifySettings()

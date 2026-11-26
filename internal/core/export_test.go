@@ -106,3 +106,8 @@ func (c *Core) ScheduleRotationsForTest(ctx context.Context, states []RotationSt
 func (c *Core) CheckSpaceForTest(ctx context.Context, r Rotation, st RotationState, now time.Time) {
 	c.checkRotationSpace(ctx, r, st, now)
 }
+
+// CheckMaintenanceForTest exposes checkMaintenance.
+func (c *Core) CheckMaintenanceForTest(ctx context.Context, now time.Time) {
+	c.checkMaintenance(ctx, now)
+}

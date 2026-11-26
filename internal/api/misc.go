@@ -112,7 +112,52 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) running(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.C.RunningTasks(r.Context()), "time": time.Now().Unix()})
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.C.RunningTasks(r.Context()), "time": time.Now().Unix(), "maintenance": s.C.MaintenanceState()})
+}
+
+// ---- maintenance mode ----
+
+func (s *Server) getMaintenance(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.C.MaintenanceState())
+}
+
+func (s *Server) startMaintenance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Until     int64  `json:"until"`
+		Reason    string `json:"reason"`
+		PauseJobs bool   `json:"pause_jobs"`
+		Mute      bool   `json:"mute"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if len([]rune(req.Reason)) > 200 {
+		fieldErrs(w, map[string]string{"reason": "Höchstens 200 Zeichen."})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Minute)
+	defer cancel()
+	m, err := s.C.StartMaintenance(ctx, time.Unix(req.Until, 0), req.Reason, currentUser(r).Username, req.PauseJobs, req.Mute)
+	if err != nil {
+		fieldErrs(w, map[string]string{"until": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) endMaintenance(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Minute)
+	defer cancel()
+	m, err := s.C.EndMaintenance(ctx, "von "+currentUser(r).Username+" beendet")
+	if err != nil && !m.Active && len(m.Paused) == 0 {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {

@@ -268,6 +268,8 @@ func (c *Core) Run(ctx context.Context) {
 				log.Printf("local pbs: %v", err)
 			}
 		}
+		c.checkMaintenance(ctx, time.Now())
+		hold := c.InMaintenance() // no work of its own during a maintenance
 		ov := c.BuildOverview(ctx)
 		c.check(ctx, prev, &ov)
 		c.followRestarts(&ov, time.Now())
@@ -275,25 +277,37 @@ func (c *Core) Run(ctx context.Context) {
 		c.RecordUsage(&ov)
 		c.reportBackups(ctx, &ov)
 		c.scanForeignDisks(ctx, time.Now())
-		c.scheduleRotations(ctx, ov.Rotations, time.Now())
-		c.scheduleDirect(ctx, &ov, time.Now())
+		if !hold {
+			c.scheduleRotations(ctx, ov.Rotations, time.Now())
+			c.scheduleDirect(ctx, &ov, time.Now())
+		}
 		c.checkArchivesUnplugged(ctx, time.Now())
-		c.scheduleRestoreTests(time.Now())
+		if !hold {
+			c.scheduleRestoreTests(time.Now())
+		}
 		c.scheduleDiskHealth(time.Now())
 		c.scheduleServerHealth(time.Now())
-		c.scheduleAutoUpdates(time.Now())
+		if !hold {
+			c.scheduleAutoUpdates(time.Now())
+		}
 		c.scheduleAnomalies(time.Now())
-		c.scheduleSelfUpdate(time.Now())
+		if !hold {
+			c.scheduleSelfUpdate(time.Now())
+		}
 		c.scheduleMonthly(time.Now())
 		c.enforcePVEMail(time.Now())
 		c.scheduleUpdateCheck(time.Now())
-		c.scheduleSelfBackup(time.Now())
-		c.scheduleHostBackups(time.Now())
+		if !hold {
+			c.scheduleSelfBackup(time.Now())
+			c.scheduleHostBackups(time.Now())
+		}
 		c.scheduleHandbook(time.Now())
-		c.scheduleSpace(ctx, time.Now())
+		if !hold {
+			c.scheduleSpace(ctx, time.Now())
+			c.scheduleContentScan(time.Now())
+		}
 		c.scheduleAutoProtect(time.Now())
 		c.scheduleDeletionWatch(time.Now())
-		c.scheduleContentScan(time.Now())
 		c.enforceCopyWindows(ctx, time.Now())
 		prev = &ov
 		_ = c.St.PruneSessions()

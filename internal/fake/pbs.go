@@ -872,7 +872,7 @@ func (p *PBS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for k, v := range j.params {
 				if n, err := strconv.Atoi(v); err == nil && (strings.HasPrefix(k, "keep-") || k == "transfer-last") {
 					o[k] = n
-				} else if k == "run-on-mount" || k == "remove-vanished" {
+				} else if k == "run-on-mount" || k == "remove-vanished" || k == "disable" {
 					o[k] = boolv(v)
 				} else {
 					o[k] = v

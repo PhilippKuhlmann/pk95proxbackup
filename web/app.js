@@ -56,7 +56,8 @@ const ICONS = {
 "sun": "M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z",
 "usb": "M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 002.25-2.25V6.75a2.25 2.25 0 00-2.25-2.25H6.75A2.25 2.25 0 004.5 6.75v10.5a2.25 2.25 0 002.25 2.25zm.75-12h9v9h-9v-9z",
 "heart": "M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z",
-"disk": "M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"
+"disk": "M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z",
+"wrench": "M21.75 6.75a4.5 4.5 0 01-4.884 4.484c-1.076-.091-2.264.071-2.95.904l-7.152 8.684a2.548 2.548 0 11-3.586-3.586l8.684-7.152c.833-.686.995-1.874.904-2.95a4.5 4.5 0 016.336-4.486l-3.276 3.276a3.004 3.004 0 002.25 2.25l3.276-3.276c.256.565.398 1.192.398 1.852zM4.867 19.125h.008v.008h-.008v-.008z"
 };
 
 // ---------- helpers ----------
@@ -531,6 +532,7 @@ function shell() {
         <a href="/" data-go class="brand"><img src="/logo.svg" alt=""><span>PK95 ProxBackup</span></a>
       </div>
       <div class="right">
+        <button class="bar-btn maint-btn" type="button" data-maint title="Wartungsmodus" aria-label="Wartungsmodus" ${state.role === "admin" ? "" : "hidden"}>${icon("wrench")}<span class="maint-text" hidden></span></button>
         <div class="run-wrap"><button class="bar-btn run-btn" type="button" data-run-toggle aria-expanded="false" aria-haspopup="true" title="Laufende Aufgaben">${icon("refresh")}<span class="run-text" hidden></span><span class="run-count" hidden></span></button>
           <div class="run-panel" data-run-panel hidden></div></div>
         <button class="bar-btn" type="button" data-theme-icon title="Zwischen hellem und dunklem Erscheinungsbild wechseln" aria-label="Erscheinungsbild wechseln">${themeIcon()}</button>
@@ -555,9 +557,111 @@ function shell() {
     try { localStorage.setItem("pk95pb-menu", c ? "zu" : "auf"); } catch (e) { /* ignore */ }
   };
   qs("[data-theme-icon]").onclick = setTheme;
+  qs("[data-maint]").onclick = maintDialog;
+  drawMaint();
   bindRunning();
   qs("[data-logout]").onclick = async () => { await POST("/api/logout").catch(() => {}); state.user = null; render(); };
   void failing;
+}
+
+// ---------- maintenance mode (top bar) ----------
+// "bis 14:30", "bis morgen 08:00", "bis Mo., 01.12. 08:00"
+function untilText(ts) {
+  const d = new Date(ts * 1000), now = new Date();
+  const hm = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return hm;
+  const tom = new Date(now); tom.setDate(now.getDate() + 1);
+  if (d.toDateString() === tom.toDateString()) return "morgen " + hm;
+  return d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" }) + " " + hm;
+}
+
+function drawMaint() {
+  const b = qs("[data-maint]");
+  if (!b) return;
+  const m = state.maint, on = !!m?.active;
+  b.classList.toggle("on", on);
+  b.hidden = !on && state.role !== "admin";
+  const t = qs(".maint-text", b);
+  t.hidden = !on;
+  t.textContent = on ? "Wartung bis " + untilText(m.until) : "";
+  b.title = on ? `Wartungsmodus bis ${untilText(m.until)}${m.reason ? " – " + m.reason : ""}` : "Wartungsmodus starten";
+}
+
+// maintOptions: ends to choose from (unix seconds).
+function maintOptions() {
+  const now = new Date(), at = (d, h) => { const x = new Date(d); x.setHours(h, 0, 0, 0); return x; };
+  const opts = [[1, "1 Stunde"], [2, "2 Stunden"], [4, "4 Stunden"]].map(([h, l]) => [Math.round(Date.now() / 1000) + h * 3600, l]);
+  if (now.getHours() < 17) opts.push([at(now, 18) / 1000, "bis heute 18:00"]);
+  const tom = new Date(now); tom.setDate(now.getDate() + 1);
+  opts.push([at(tom, 8) / 1000, "bis morgen 08:00"]);
+  const mon = new Date(now); mon.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7));
+  opts.push([at(mon, 8) / 1000, `bis Montag, ${mon.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })} 08:00`]);
+  opts.push(["custom", "Eigenes Ende …"]);
+  return opts;
+}
+
+function maintDialog() {
+  const m = state.maint;
+  if (m?.active) return maintActiveDialog(m);
+  if (!can("admin")) return;
+  formDialog({
+    title: "Wartungsmodus starten", ic: "wrench", button: "Wartung starten",
+    text: "Für einen Umbau am Host, einen Betriebsurlaub oder Arbeiten an den Backup-Servern: Die Appliance hält still und meldet sich danach mit einer Zusammenfassung. Laufende Sicherungen laufen zu Ende.",
+    fields: [
+      { name: "until", label: "Dauer", type: "select", value: maintOptions()[1][0], options: maintOptions() },
+      { name: "custom", label: "Ende", type: "datetime-local" },
+      { name: "reason", label: "Grund", placeholder: "z. B. Umbau pve1, neue Platten", wide: true },
+      { name: "pause_jobs", label: "Sicherungen und Jobs aussetzen", type: "checkbox", value: true, wide: true,
+        hint: "Schaltet die Sicherungsjobs in Proxmox VE und die Kopier-, Prüf- und Aufräumjobs der Backup-Server ab – nur die, die gerade an sind. USB-Kopien, Restore-Tests und Updates starten nicht. Am Ende wird genau das wieder eingeschaltet." },
+      { name: "mute", label: "Keine Benachrichtigungen", type: "checkbox", value: true, wide: true,
+        hint: "Mails, Telegram und Push bleiben aus, die Ereignisse werden trotzdem notiert. Am Ende kommt eine Zusammenfassung mit allen Warnungen und Fehlern aus der Zeit." },
+    ],
+    onMount: (d) => {
+      const sel = qs('[name="until"]', d), custom = qs('[data-field="custom"]', d);
+      const show = () => { custom.hidden = sel.value !== "custom"; };
+      sel.onchange = show; show();
+    },
+    submit: async (v) => {
+      let until = Number(v.until);
+      if (v.until === "custom") {
+        until = Math.round(new Date(v.custom).getTime() / 1000);
+        if (!v.custom || !until) throw Object.assign(new Error("Ende angeben."), { fields: { custom: "Ende angeben." } });
+      }
+      state.maint = await POST("/api/maintenance", { until, reason: v.reason, pause_jobs: v.pause_jobs, mute: v.mute });
+      drawMaint();
+      toast("Wartung läuft bis " + untilText(state.maint.until) + ".");
+      if (location.pathname === "/") render();
+    },
+  });
+}
+
+function maintActiveDialog(m) {
+  const admin = can("admin");
+  const paused = m.paused || [];
+  const d = openDialog(`
+    <div class="dlg-head"><span class="dlg-ic yellow">${icon("wrench")}</span><div class="grow"><div class="dlg-title">Wartung bis ${esc(untilText(m.until))}</div>
+      <p class="dlg-text">${m.reason ? esc(m.reason) + " · " : ""}seit ${esc(fmtTime(m.start))} · von ${esc(m.by)}</p></div></div>
+    <div class="dlg-body">
+      <ul class="plain-list small">
+        <li>${m.pause_jobs ? `${paused.length} Jobs ausgesetzt; USB-Kopien, Restore-Tests und Updates starten nicht.` : "Jobs laufen normal weiter."}</li>
+        <li>${m.mute ? `Benachrichtigungen sind aus${m.muted ? ` – ${m.muted} zurückgehalten` : ""}.` : "Benachrichtigungen gehen normal raus."}</li>
+      </ul>
+      ${paused.length ? `<details class="mt"><summary class="small">Ausgesetzte Jobs</summary><ul class="plain-list small muted">${paused.map((p) => `<li>${esc(p.name)}</li>`).join("")}</ul></details>` : ""}
+      ${(m.problems || []).length ? callout("yellow", "Nicht ausgesetzt", m.problems.map(esc).join("<br>")) : ""}
+      ${admin ? `<div class="field mt" data-field="until"><label class="fl" for="f-ext">Ende ändern</label><div class="inline"><select id="f-ext">${maintOptions().filter(([v]) => v !== "custom").map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join("")}</select><button class="btn gray" type="button" data-extend>Übernehmen</button></div></div>` : ""}
+    </div>
+    <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button>${admin ? `<button class="btn" type="button" data-end>${icon("play")} Wartung beenden</button>` : ""}</div>`, "wide");
+  qs("[data-close]", d).onclick = () => d.close();
+  if (!admin) return;
+  qs("[data-extend]", d).onclick = (e) => run(e.currentTarget, async () => {
+    state.maint = await POST("/api/maintenance", { until: Number(qs("#f-ext", d).value), reason: "", pause_jobs: m.pause_jobs, mute: m.mute });
+    drawMaint(); d.close();
+  }, "Ende geändert.");
+  qs("[data-end]", d).onclick = (e) => run(e.currentTarget, async () => {
+    state.maint = await DEL("/api/maintenance");
+    drawMaint(); d.close();
+    if (location.pathname === "/") render();
+  }, "Wartung beendet – die Jobs sind wieder eingeschaltet.");
 }
 
 // ---------- running tasks (top bar) ----------
@@ -622,6 +726,7 @@ async function pollRunning() {
     running.first = false;
     running.known = now;
     running.tasks = r.tasks;
+    if (JSON.stringify(r.maintenance || null) !== JSON.stringify(state.maint || null)) { state.maint = r.maintenance; drawMaint(); }
     drawRunning();
   } catch (e) { /* keep last state */ }
   running.timer = setTimeout(pollRunning, running.tasks.length || running.open ? 3000 : 12000);
@@ -840,8 +945,9 @@ function jobRows(cards) {
 
 PAGES["/"] = async (el, token) => {
   const draw = async (fresh) => {
-    const [r, jr] = await Promise.all([GET("/api/overview" + (fresh ? "?fresh=1" : "")), GET("/api/overview/jobs").catch(() => ({ jobs: [] }))]);
+    const [r, jr, mt] = await Promise.all([GET("/api/overview" + (fresh ? "?fresh=1" : "")), GET("/api/overview/jobs").catch(() => ({ jobs: [] })), GET("/api/maintenance").catch(() => null)]);
     if (token !== pageToken) return;
+    if (mt) { state.maint = mt; drawMaint(); }
     const ov = r.overview;
     state.ov = r;
     const servers = ov.servers || [], clusters = ov.clusters || [], shares = ov.shares || [], rots = ov.rotations || [], tasks = ov.tasks || [];
@@ -854,6 +960,10 @@ PAGES["/"] = async (el, token) => {
     const disksIn = rots.flatMap((x) => x.disks).filter((d) => d.present).length;
 
     let callouts = "";
+    if (mt?.active) {
+      callouts += callout("yellow", `Wartungsmodus bis ${untilText(mt.until)}`, `${mt.reason ? esc(mt.reason) + " – " : ""}${mt.pause_jobs ? `${(mt.paused || []).length} Jobs ausgesetzt, die Appliance startet nichts von sich aus` : "Jobs laufen weiter"}${mt.mute ? `; Benachrichtigungen aus${mt.muted ? ` (${mt.muted} zurückgehalten)` : ""}` : ""}. Am Ende kommt eine Zusammenfassung.`,
+        `<button class="btn sm" type="button" data-maint-open>${icon("wrench")} Ansehen</button>`);
+    }
     if (!servers.length || !clusters.length) {
       callouts += `<div class="panel"><div class="panel-head"><div class="panel-title">Erste Schritte</div></div><ol class="steps">
         <li><span><b>Proxmox VE verbinden</b> – API-Token anlegen und unter <a href="/verbindungen" data-go>Verbindungen</a> eintragen. ${clusters.length ? pill("erledigt", "green") : ""}</span></li>
@@ -968,6 +1078,7 @@ PAGES["/"] = async (el, token) => {
           </div>
         </div>
       </div></div>`;
+    qsa("[data-maint-open]", el).forEach((b) => b.onclick = maintDialog);
     qs("[data-refresh]", el).onclick = (e) => run(e.currentTarget, () => draw(true));
     qsa("[data-task]", el).forEach((row) => row.onclick = () => { const [s, u] = row.dataset.task.split("|"); showTask(s, u, "Aufgabe"); });
   };

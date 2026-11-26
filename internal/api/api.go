@@ -263,6 +263,9 @@ func (s *Server) routes() {
 	a("POST /api/shares/{id}/{action}", s.shareAction)
 
 	// Rotation
+	a("GET /api/maintenance", s.getMaintenance)
+	a("POST /api/maintenance", s.startMaintenance)
+	a("DELETE /api/maintenance", s.endMaintenance)
 	a("GET /api/rotations", s.listRotations)
 	a("GET /api/rotations/{id}/space", s.rotationSpace)
 	a("POST /api/rotations/space", s.rotationSpacePreview)
