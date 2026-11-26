@@ -902,3 +902,9 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .speed-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--accent); font-size: 13px; }
 .speed-cell span { color: var(--ink); }
 .speed-cell.slow { color: var(--amber-dot); }
+
+/* space per disk of a rotation set */
+.space-line { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 16px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); font-size: 14px; }
+.space-line .space-ic { color: var(--accent); margin-top: 2px; }
+.space-line .okc { color: var(--green-dot); font-weight: 600; }
+.space-preview { padding: 2px 0; }

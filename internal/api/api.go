@@ -264,6 +264,8 @@ func (s *Server) routes() {
 
 	// Rotation
 	a("GET /api/rotations", s.listRotations)
+	a("GET /api/rotations/{id}/space", s.rotationSpace)
+	a("POST /api/rotations/space", s.rotationSpacePreview)
 	a("POST /api/rotations", s.saveRotation)
 	a("PUT /api/rotations/{id}", s.saveRotation)
 	a("DELETE /api/rotations/{id}", s.deleteRotation)

@@ -919,6 +919,7 @@ func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, no
 			}
 		}
 		c.checkPlan(r, st, now)
+		c.checkRotationSpace(ctx, r, st, now)
 		c.checkUnplugged(ctx, r, st, now)
 		c.remind(r, st, now)
 	}

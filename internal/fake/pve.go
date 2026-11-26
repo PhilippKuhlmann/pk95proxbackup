@@ -479,6 +479,7 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rest = append(rest, "INFO: "+label+name,
 				"INFO: creating Proxmox Backup Server archive '"+map[string]string{"qemu": "vm", "lxc": "ct"}[typ]+"/"+id+"/"+time.Now().UTC().Format("2006-01-02T15:04:05Z")+"'",
 				"INFO: backup was done incrementally, reused "+strconv.Itoa(gb-1)+".40 GiB (9"+strconv.Itoa(atoi(id)%9)+"%)",
+				"INFO: using fast incremental mode (dirty-bitmap), "+strconv.Itoa(gb)+".00 GiB dirty of 64.0 GiB total",
 				"INFO: transferred "+strconv.Itoa(gb)+".00 GiB in 42 seconds (512.0 MiB/s)",
 				"INFO: Finished Backup of VM "+id+" (00:00:"+strconv.Itoa(20+atoi(id)%40)+")")
 		}

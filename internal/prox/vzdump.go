@@ -19,6 +19,9 @@ type GuestBackup struct {
 	Reused      string // incremental: reused part, e.g. "94%"
 	Archive     string // PBS snapshot, e.g. vm/100/2026-11-09T20:00:02Z
 	Error       string
+	// VM: size of all disks and what changed since the last backup (dirty bitmap), e.g.
+	// "32.0 GiB" and "1.2 GiB"; Zero is the part that holds only zeros (read in full only).
+	Total, Dirty, Zero string
 }
 
 // VzdumpResult is the parsed log of a backup task.
@@ -43,6 +46,8 @@ var (
 	vzJob      = regexp.MustCompile(`starting new backup job: vzdump .*`)
 	vzStorage  = regexp.MustCompile(`--storage (\S+)`)
 	vzMode     = regexp.MustCompile(`--mode (\S+)`)
+	vzDirty    = regexp.MustCompile(`using fast incremental mode \(dirty-bitmap\), ([\d.]+ \w+) dirty of ([\d.]+ \w+) total`)
+	vzSparse   = regexp.MustCompile(`backup is sparse: ([\d.]+ \w+) \(\d+%\) total zero data`)
 )
 
 // ParseVzdump reads which guests a backup task saved and how it went.
@@ -93,6 +98,10 @@ func ParseVzdump(lines []TaskLine) VzdumpResult {
 			g := &r.Guests[cur]
 			if m := vzName.FindStringSubmatch(t); m != nil {
 				g.Name = strings.TrimSpace(m[1])
+			} else if m := vzDirty.FindStringSubmatch(t); m != nil && strings.HasPrefix(t, "INFO:") {
+				g.Dirty, g.Total = m[1], m[2]
+			} else if m := vzSparse.FindStringSubmatch(t); m != nil && strings.HasPrefix(t, "INFO:") {
+				g.Zero = m[1]
 			} else if m := vzReused.FindStringSubmatch(t); m != nil {
 				g.Reused = m[2]
 			} else if m := vzTransfer.FindStringSubmatch(t); m != nil && strings.HasPrefix(t, "INFO: transferred") {
@@ -134,6 +143,31 @@ func (g GuestBackup) ReadBytes() int64 {
 		return ParseSize(g.Scanned)
 	}
 	return ParseSize(g.Transferred)
+}
+
+// DataBytes is how much data the guest holds, without zeros and before compression (0 when the
+// log does not tell): all a container read; the disks of a VM less their zeros.
+func (g GuestBackup) DataBytes() int64 {
+	if g.Scanned != "" {
+		return ParseSize(g.Scanned)
+	}
+	total := ParseSize(g.Total)
+	if total == 0 && g.Dirty == "" {
+		total = ParseSize(g.Transferred) // read in full
+	}
+	return max(total-ParseSize(g.Zero), 0)
+}
+
+// ChangedBytes is what changed since the previous backup (ok false when unknown, e.g. a VM read
+// in full after a restart).
+func (g GuestBackup) ChangedBytes() (int64, bool) {
+	switch {
+	case g.Scanned != "":
+		return ParseSize(g.Transferred), true
+	case g.Dirty != "":
+		return ParseSize(g.Dirty), true
+	}
+	return 0, false
 }
 
 // VzdumpJob is the command line of a backup task: which job and which guests.

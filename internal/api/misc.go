@@ -621,6 +621,60 @@ func (s *Server) listRotations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rotations": s.C.RotationStates(r.Context())})
 }
 
+// rotationSpace estimates what one disk of a set needs and whether its disks hold that.
+func (s *Server) rotationSpace(w http.ResponseWriter, r *http.Request) {
+	rot, err := s.C.Rotation(r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	var st *core.RotationState
+	for _, x := range s.C.RotationStates(r.Context()) {
+		if x.ID == rot.ID {
+			st = &x
+		}
+	}
+	e, err := s.C.RotationSpace(r.Context(), rot, st)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, e)
+}
+
+// rotationSpacePreview estimates for a set as entered in the form (not saved yet); a known set
+// keeps its disks.
+func (s *Server) rotationSpacePreview(w http.ResponseWriter, r *http.Request) {
+	var req core.Rotation
+	if !decode(w, r, &req) {
+		return
+	}
+	req.Disks = nil
+	if req.ID != "" {
+		if cur, err := s.C.Rotation(req.ID); err == nil {
+			req.Disks = cur.Disks
+		}
+	}
+	assumed := len(req.Disks) == 0
+	if assumed { // a new set: as with two disks
+		req.Disks = []core.RotDisk{{Key: "1"}, {Key: "2"}}
+	}
+	_ = req.Validate()
+	if req.Direct() && req.Cluster == "" || !req.Direct() && (req.SourceServer == "" || req.SourceStore == "") {
+		writeJSON(w, http.StatusOK, core.SpaceEstimate{Fits: "unknown"})
+		return
+	}
+	e, err := s.C.RotationSpace(r.Context(), req, nil)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if assumed {
+		e.Note = "Gerechnet mit zwei Platten im Wechsel."
+	}
+	writeJSON(w, http.StatusOK, e)
+}
+
 func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 	var req core.Rotation
 	if !decode(w, r, &req) {

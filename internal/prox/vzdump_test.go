@@ -66,3 +66,37 @@ func TestParseVzdumpForgedOutcome(t *testing.T) {
 		t.Fatalf("vm 102 was never backed up: %+v", g)
 	}
 }
+
+func TestVzdumpSizes(t *testing.T) {
+	lines := func(s ...string) []TaskLine {
+		var out []TaskLine
+		for _, x := range s {
+			out = append(out, TaskLine{T: x})
+		}
+		return out
+	}
+	r := ParseVzdump(lines("INFO: Starting Backup of VM 100 (qemu)",
+		"INFO: scsi0: dirty-bitmap status: OK (1.2 GiB of 32.0 GiB dirty)",
+		"INFO: using fast incremental mode (dirty-bitmap), 1.2 GiB dirty of 32.0 GiB total",
+		"INFO: backup was done incrementally, reused 30.80 GiB (96%)",
+		"INFO: transferred 1.20 GiB in 5 seconds (245.6 MiB/s)",
+		"INFO: Finished Backup of VM 100 (00:00:09)",
+		"INFO: Starting Backup of VM 101 (qemu)",
+		"INFO: scsi0: dirty-bitmap status: created new",
+		"INFO: backup is sparse: 20.00 GiB (62%) total zero data",
+		"INFO: transferred 32.00 GiB in 75 seconds (436.9 MiB/s)",
+		"INFO: Finished Backup of VM 101 (00:01:20)",
+		"INFO: Starting Backup of VM 110 (lxc)",
+		"INFO: root.pxar: had to backup 312.0 MiB of 4.0 GiB (compressed 120.1 MiB) in 9.20s",
+		"INFO: Finished Backup of VM 110 (00:00:12)"))
+	g := r.Guests
+	if d, ok := g[0].ChangedBytes(); !ok || d != ParseSize("1.2 GiB") || g[0].DataBytes() != 32<<30 {
+		t.Fatalf("incremental VM: %+v", g[0])
+	}
+	if _, ok := g[1].ChangedBytes(); ok || g[1].DataBytes() != 12<<30 {
+		t.Fatalf("VM read in full: %+v %d", g[1], g[1].DataBytes())
+	}
+	if d, ok := g[2].ChangedBytes(); !ok || d != 312<<20 || g[2].DataBytes() != 4<<30 {
+		t.Fatalf("container: %+v", g[2])
+	}
+}

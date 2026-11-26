@@ -2212,6 +2212,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
           `<button class="btn sm" type="button" data-autounmount="${x.id}">Einschalten</button>`) : ""}
         ${planCallout(x)}
         ${foreignCallouts(x)}
+        <div data-space="${x.id}">${x.disks.length ? spaceBlock(x, spaceCache[x.id]?.e) : ""}</div>
         ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : `<div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
           <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte ${x.mode === "direct" ? "Sicherung" : "Kopie"}: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? ` · Platten werden nach der ${x.mode === "direct" ? "Sicherung" : "Kopie"} ausgehängt` : ""}</div></div></div>`}
         ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte ${x.mode === "direct" ? "Sicherung" : "Kopie"}</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
@@ -2243,6 +2244,18 @@ PAGES["/wechselplatten"] = async (el, token) => {
        <div class="panel"><div class="panel-head"><div class="panel-title">Platte an dieser VM</div></div><p class="muted" style="font-size:14px">Steckt die Platte am Proxmox-Host, reicht die Appliance den <b>USB-Anschluss</b> an diese VM durch (nicht das Gerät). So erscheint jede Platte, die später in diesem Anschluss steckt, automatisch – ideal zum Wechseln. Voraussetzung: Proxmox VE ist unter Verbindungen eingetragen.</p>
         <div class="mt"><button class="btn gray" type="button" data-usb2>${icon("usb")} USB-Anschluss durchreichen</button></div></div></div>`;
     drawRunning();
+    // Space per disk: estimated by the appliance, fetched once in a few minutes per set.
+    for (const x of rots.filter((y) => y.disks.length)) {
+      const c = spaceCache[x.id];
+      if (c && Date.now() - c.at < 300000) continue;
+      spaceCache[x.id] = { at: Date.now(), e: c?.e };
+      GET(`/api/rotations/${x.id}/space`).then((e) => {
+        spaceCache[x.id] = { at: Date.now(), e };
+        const box = qs(`[data-space="${x.id}"]`, el);
+        if (box && token === pageToken) { box.innerHTML = spaceBlock(x, e); bindSpace(box, rots, draw); }
+      }).catch(() => {});
+    }
+    qsa("[data-space]", el).forEach((box) => bindSpace(box, rots, draw));
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => rotationForm(null, draw));
     qsa("[data-usb], [data-usb2]", el).forEach((b) => b.onclick = passthroughDialog);
     bindArchives(el, archives, draw);
@@ -2290,6 +2303,38 @@ PAGES["/wechselplatten"] = async (el, token) => {
   await draw();
   every(3000, token, () => (document.hidden ? null : draw(false)));
 };
+
+const spaceCache = {};
+
+// spaceText: one line on what one disk of a set needs.
+function spaceText(e) {
+  const parts = [`${e.guests} Server`, `je ${e.keep} ${e.keep === 1 ? "Stand" : "Stände"}${e.span_days ? ` über ${e.span_days} Tage` : ""}`,
+    `Grundbestand ${fmtBytes(e.base)}`];
+  if (e.per_day) parts.push(`Änderungen ca. ${fmtBytes(e.per_day)} am Tag`);
+  return parts.join(" · ");
+}
+
+// spaceBlock: does one disk of the set hold what it is meant to hold?
+function spaceBlock(x, e) {
+  if (!e || !e.guests) return "";
+  const rough = e.rough?.length ? `<div class="t-sub">Noch ohne Sicherungsprotokoll, mit der Größe ihrer Platten gerechnet (eher zu hoch): ${esc(e.rough.join(", "))}</div>` : "";
+  const edit = can("admin") ? `<button class="btn sm" type="button" data-spaceedit="${x.id}">${icon("pencil")} Aufbewahrung ändern</button>` : "";
+  if (e.fits === "no") {
+    const fix = [e.suggest ? `Aufbewahrung auf <b>${esc(e.suggest)}</b> verringern` : "", e.min_disk ? `Platten mit mindestens <b>${esc(fmtDisk(e.min_disk))}</b> verwenden` : ""].filter(Boolean).join(" oder ");
+    const head = e.keep_all ? `Nichts wird gelöscht – „${esc(e.label)}“ ist in etwa ${esc(fmtDays(e.lasts_days))} voll` : "Platten zu klein für die Aufbewahrung";
+    return callout("yellow", head, `Auf jede Platte kommen voraussichtlich <b>${esc(fmtBytes(e.need))}</b> (mit 20 % Reserve), die kleinste („${esc(e.label)}“) hat ${esc(fmtBytes(e.smallest))}. ${fix ? "Abhilfe: " + fix + "." : ""}<div class="t-sub">${esc(spaceText(e))}</div>${rough}`, edit);
+  }
+  const verdict = e.fits === "yes" ? ` – kleinste Platte ${esc(fmtBytes(e.smallest))}, <span class="okc">passt</span>` : "";
+  return `<div class="space-line"><span class="space-ic">${icon("disk", "sm")}</span><div>Platzbedarf je Platte: ca. <b>${esc(fmtBytes(e.need))}</b>${verdict}<div class="t-sub">${esc(spaceText(e))}${e.keep_all && e.lasts_days ? ` · nichts wird gelöscht: voll in etwa ${esc(fmtDays(e.lasts_days))}` : ""}</div>${rough}</div></div>`;
+}
+
+function bindSpace(box, rots, draw) {
+  qsa("[data-spaceedit]", box).forEach((b) => b.onclick = () => rotationForm(rots.find((r1) => r1.id === b.dataset.spaceedit), draw));
+}
+
+// fmtDisk: a disk size as sold ("2 TB").
+const fmtDisk = (n) => (n >= 1e12 ? `${String(+(n / 1e12).toFixed(1)).replace(".", ",")} TB` : `${Math.round(n / 1e9)} GB`);
+const fmtDays = (d) => (d >= 60 ? `${Math.round(d / 30)} Monaten` : d >= 14 ? `${Math.round(d / 7)} Wochen` : `${d} Tagen`);
 
 const foreignName = (f) => [f.vendor, f.model].filter(Boolean).join(" ").replace(/_/g, " ") || "Unbekannte Platte";
 
@@ -2420,6 +2465,7 @@ function rotationForm(x, done) {
       { name: "keep_daily", label: "Täglich", type: "number", min: 0, value: x.keep_daily },
       { name: "keep_weekly", label: "Wöchentlich", type: "number", min: 0, value: x.keep_weekly },
       { name: "keep_monthly", label: "Monatlich", type: "number", min: 0, value: x.keep_monthly },
+      { type: "html", name: "space_preview", wide: true, html: `<div data-spacepreview class="space-preview muted small">Platzbedarf wird berechnet …</div>` },
       { name: "auto_repair", label: "Beschädigte Platte automatisch neu aufsetzen und die Kopie wiederholen", type: "checkbox", value: x.auto_repair, wide: true,
         hint: "Lässt sich eine Platte nicht mehr lesen (Dateisystem beschädigt), formatiert die Appliance sie neu, kopiert erneut und liest danach alles zurück. Nur möglich, wenn auf der Platte nur die neueste Sicherung liegt – dann geht dabei nichts verloren." },
     ],
@@ -2452,6 +2498,28 @@ function rotationForm(x, done) {
         set("keep_last", 1); set("keep_daily", 0); set("keep_weekly", 0); set("keep_monthly", 0);
         show();
       });
+      // Space per disk for what is entered right now.
+      let spaceTimer = 0, spaceSeq = 0;
+      const preview = () => {
+        clearTimeout(spaceTimer);
+        spaceTimer = setTimeout(async () => {
+          const seq = ++spaceSeq, box = qs("[data-spacepreview]", d);
+          const v = formValues(form);
+          ["swap_day", "transfer_last", "keep_last", "keep_daily", "keep_weekly", "keep_monthly"].forEach((n) => { v[n] = Number(v[n]) || 0; });
+          if (edit) v.id = x.id;
+          try {
+            const e = await POST("/api/rotations/space", v);
+            if (seq !== spaceSeq) return;
+            if (!e.guests) { box.textContent = "Platzbedarf: noch nichts zu rechnen."; return; }
+            const verdict = e.fits === "yes" ? `, kleinste Platte ${fmtBytes(e.smallest)} – passt` : e.fits === "no" ? `, kleinste Platte nur ${fmtBytes(e.smallest)} – zu klein${e.suggest ? " (passen würde: " + e.suggest + ")" : ""}` : "";
+            box.className = "space-preview small " + (e.fits === "no" ? "warnc" : "muted");
+            box.textContent = `Platzbedarf je Platte: ca. ${fmtBytes(e.need)}${verdict}. ${spaceText(e)}.${e.note ? " " + e.note : ""}`;
+          } catch { if (seq === spaceSeq) box.textContent = ""; }
+        }, 400);
+      };
+      form.addEventListener("input", preview);
+      form.addEventListener("change", preview);
+      preview();
       qsa('[name="rhythm"]', d).forEach((r) => r.onchange = show);
       qsa('[name="mode"]', d).forEach((r) => r.onchange = () => {
         // A direct set keeps history on the disk itself: start from a useful retention.
@@ -2529,7 +2597,10 @@ function addDiskForm(x, done) {
           const [disks, stores] = await Promise.all([GET(`/api/pbs/${x.server_id}/disks`), storesOf(x.server_id)]);
           const usedStores = new Set(x.disks.map((y) => y.store));
           const cand = freeDisks(disks.disks, stores);
-          qs('[name="disk"]', d).innerHTML = cand.length ? cand.map(diskOption).join("") : `<option value="">Keine freie Platte gefunden – anstecken und neu einlesen</option>`;
+          const need = spaceCache[x.id]?.e?.need || 0;
+          qs('[name="disk"]', d).innerHTML = cand.length ? cand.map((k) => (need && k.size < need ? diskOption(k).replace("</option>", ` – zu klein, Bedarf ca. ${fmtBytes(need)}</option>`) : diskOption(k))).join("") : `<option value="">Keine freie Platte gefunden – anstecken und neu einlesen</option>`;
+          const nh = qs("[data-needhint]", d);
+          if (need && !nh) qs('[data-field="disk"]', d).insertAdjacentHTML("beforeend", `<span class="hint" data-needhint>Jede Platte braucht nach der Aufbewahrung des Satzes ca. ${esc(fmtBytes(need))}.</span>`);
           const rem = stores.filter((s) => s.removable && !usedStores.has(s.name));
           qs('[name="existing"]', d).innerHTML = rem.length ? rem.map((s) => `<option value="${esc(s.name)}">${esc(s.name)}${s.rotation ? " (in " + esc(s.rotation) + ")" : ""}</option>`).join("") : `<option value="">Kein freier Wechsel-Datastore</option>`;
         } catch (e) { toastErr(e); }

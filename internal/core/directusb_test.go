@@ -294,3 +294,42 @@ func TestDirectUSBSwitchHandsOver(t *testing.T) {
 		t.Fatalf("not handed back: %v", o)
 	}
 }
+
+// The demo's copy set: the logs of the backups tell data and change of every server.
+func TestRotationSpace(t *testing.T) {
+	c := newCore(t)
+	ctx := context.Background()
+	ov := c.BuildOverview(ctx)
+	c.RecordJobRunsForTest(ctx, &ov, time.Now())
+	rot, _ := c.Rotation("demo")
+	var st *core.RotationState
+	for _, x := range c.RotationStates(ctx) {
+		if x.ID == "demo" {
+			st = &x
+		}
+	}
+	e, err := c.RotationSpace(ctx, rot, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("demo set: %+v", e)
+	// VM 100: 64 GiB disks, 46 % zeros; changes about 8 GiB a day
+	if e.Guests < 4 || e.Base < 50<<30 || e.Base > 200<<30 || e.PerDay < 10<<30 || e.PerDay > 40<<30 {
+		t.Fatalf("estimate: %+v", e)
+	}
+	if e.Keep < 7 || e.SpanDays < 14 || e.Smallest == 0 || e.Fits != "yes" || e.Need > e.Smallest {
+		t.Fatalf("demo set should fit: %+v", e)
+	}
+	// Keeping everything: the disk only fills up.
+	rot.KeepLast, rot.KeepWeekly = 0, 0
+	e, _ = c.RotationSpace(ctx, rot, st)
+	if !e.KeepAll || e.Fits != "no" || e.LastsDay <= 0 || e.LastsDay > 365 || e.Suggest == "" || e.MinDisk <= e.Smallest {
+		t.Fatalf("keep all: %+v", e)
+	}
+	// Reported once a week, not every day.
+	c.CheckSpaceForTest(ctx, rot, *st, time.Now().Add(12*time.Hour).Truncate(24*time.Hour).Add(10*time.Hour))
+	c.CheckSpaceForTest(ctx, rot, *st, time.Now().Add(36*time.Hour).Truncate(24*time.Hour).Add(10*time.Hour))
+	if n := strings.Count(eventTitles(t, c), "werden zu klein"); n != 1 {
+		t.Fatalf("warned %d times:\n%s", n, eventTitles(t, c))
+	}
+}

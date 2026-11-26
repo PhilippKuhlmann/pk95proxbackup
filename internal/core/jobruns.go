@@ -181,6 +181,7 @@ func (c *Core) recordBackupRuns(ctx context.Context, ov *Overview, s *jobRunsSta
 			if cl, err := c.Cluster(clusterID); err == nil {
 				c.recordSpeeds(cl, t.EndTime, parsed)
 			}
+			c.recordSizes(clusterID, t.EndTime, parsed)
 			for _, gb := range parsed {
 				if gb.OK {
 					run.OK++

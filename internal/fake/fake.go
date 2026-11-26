@@ -354,8 +354,14 @@ func Setup(c *core.Core) (func(), error) {
 				if g[1] == "lxc" {
 					lines = append(lines, fmt.Sprintf("INFO: root.pxar: had to backup 312.4 MiB of %.1f GiB (compressed 120.1 MiB) in %d.20s", gib, secs),
 						fmt.Sprintf("INFO: root.pxar: average backup speed: %.2f MiB/s", speed))
+				} else if i == 12 {
+					// the oldest night read the disks in full (new dirty bitmap): zeros are known
+					secs = int(64*1024/speed) + 1
+					lines = append(lines, "INFO: backup is sparse: 29.50 GiB (46%) total zero data",
+						fmt.Sprintf("INFO: transferred 64.00 GiB in %d seconds (%.1f MiB/s)", secs, speed))
 				} else {
-					lines = append(lines, fmt.Sprintf("INFO: transferred %.2f GiB in %d seconds (%.1f MiB/s)", gib, secs, speed))
+					lines = append(lines, fmt.Sprintf("INFO: using fast incremental mode (dirty-bitmap), %.2f GiB dirty of 64.0 GiB total", gib),
+						fmt.Sprintf("INFO: transferred %.2f GiB in %d seconds (%.1f MiB/s)", gib, secs, speed))
 				}
 				d := secs + 8 + k
 				lines = append(lines, fmt.Sprintf("INFO: Finished Backup of VM %s (%02d:%02d:%02d)", g[0], d/3600, d%3600/60, d%60))

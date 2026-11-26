@@ -101,3 +101,8 @@ func (c *Core) ScheduleDirectForTest(ctx context.Context, ov *Overview, now time
 func (c *Core) ScheduleRotationsForTest(ctx context.Context, states []RotationState, now time.Time) {
 	c.scheduleRotations(ctx, states, now)
 }
+
+// CheckSpaceForTest exposes checkRotationSpace.
+func (c *Core) CheckSpaceForTest(ctx context.Context, r Rotation, st RotationState, now time.Time) {
+	c.checkRotationSpace(ctx, r, st, now)
+}
