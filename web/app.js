@@ -2195,15 +2195,17 @@ PAGES["/wechselplatten"] = async (el, token) => {
       (rots.length ? rots.map((x) => `
       <div class="panel">
         <div class="panel-head"><div><div class="panel-title">${esc(x.name)}</div>
-          <div class="muted small">${x.rhythm === "weekly" ? `Wechsel wöchentlich am ${["", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][x.swap_day]}` : "Wechsel täglich"}
-          · Quelle <b>${esc(x.source_name)}</b> / ${esc(x.source_store)} · Platten an <b>${esc(x.server_name)}</b>
+          <div class="muted small">${x.mode === "direct" ? `<span class="pill blue">Direkt auf USB</span> ` : ""}${x.rhythm === "weekly" ? `Wechsel wöchentlich am ${["", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][x.swap_day]}` : "Wechsel täglich"}
+          ${x.mode === "direct" ? `· <b>${esc(x.source_name || x.cluster)}</b> sichert ${x.guests ? "die Server " + esc(x.guests.split(",").join(", ")) : "alle VMs und Container"} täglich um ${esc(x.time)} direkt auf die angesteckte Platte · Platten an <b>${esc(x.server_name)}</b>
+          · auf jeder Platte bleiben ${esc(diskKeepText(x))}` : `· Quelle <b>${esc(x.source_name)}</b> / ${esc(x.source_store)} · Platten an <b>${esc(x.server_name)}</b>
           · ${x.time ? "Kopie täglich um " + esc(x.time) : ""}${x.time && x.run_on_mount ? " und " : ""}${x.run_on_mount ? "beim Anstecken" : ""}
-          · kopiert ${transferText(x.transfer_last)} je VM/CT${x.keep_last === 1 && !x.keep_daily && !x.keep_weekly && !x.keep_monthly ? ", auf der Platte bleibt nur die neueste" : ""}</div></div>
+          · kopiert ${transferText(x.transfer_last)} je VM/CT${x.keep_last === 1 && !x.keep_daily && !x.keep_weekly && !x.keep_monthly ? ", auf der Platte bleibt nur die neueste" : ""}`}</div></div>
           <div class="actions"><button class="btn gray sm" type="button" data-plan="${x.id}">${icon("calendar")} Wechselplan</button><button class="btn gray sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${x.id}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Satz entfernen" aria-label="Satz entfernen" data-del="${x.id}">${icon("trash")}</button></div></div>
         ${x.error ? callout("red", "Backup-Server nicht erreichbar", esc(x.error)) : ""}
-        ${x.overdue ? callout("yellow", "Kopie überfällig", `Letzte erfolgreiche Kopie: ${esc(fmtTime(x.last_copy, true))}.`) : ""}
+        ${x.overdue ? callout("yellow", `${x.mode === "direct" ? "Sicherung" : "Kopie"} überfällig`, `Letzte erfolgreiche ${x.mode === "direct" ? "Sicherung" : "Kopie"}: ${esc(fmtTime(x.last_copy, true))}.`) : ""}
+        ${x.mode === "direct" && x.disks.length === 1 ? callout("yellow", "Nur eine Platte im Satz", "Jede Sicherung liegt nur auf dieser Platte. Geht sie kaputt oder verloren, sind alle Stände weg. Empfehlung: eine zweite Platte hinzufügen und im Wechsel außer Haus lagern.", `<button class="btn sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>`) : ""}
         ${x.disks.filter((d) => d.damaged && !d.phase).map((d) => damageCallout(x, d)).join("")}
         ${!x.unmount_on_done && x.disks.length ? callout("yellow", "Platten bleiben nach der Kopie eingehängt",
           `Wer eine eingehängte Platte abzieht, riskiert Datenverlust auf der Platte. Empfehlung: „Nach der Kopie aushängen“ einschalten – dann kann jede fertige Platte gefahrlos gezogen werden.${x.disks.some((d) => d.unplugged_at) ? ` Zuletzt wurde eine Platte am ${esc(fmtTime(Math.max(...x.disks.map((d) => d.unplugged_at || 0))))} eingehängt abgezogen.` : ""}`,
@@ -2211,21 +2213,22 @@ PAGES["/wechselplatten"] = async (el, token) => {
         ${planCallout(x)}
         ${foreignCallouts(x)}
         ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : `<div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
-          <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? " · Platten werden nach der Kopie ausgehängt" : ""}</div></div></div>`}
-        ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte Kopie</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
-          const [l, t] = DISK_STATE[d.state] || DISK_STATE.absent;
+          <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte ${x.mode === "direct" ? "Sicherung" : "Kopie"}: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? ` · Platten werden nach der ${x.mode === "direct" ? "Sicherung" : "Kopie"} ausgehängt` : ""}</div></div></div>`}
+        ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte ${x.mode === "direct" ? "Sicherung" : "Kopie"}</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
+          const [l0, t] = DISK_STATE[d.state] || DISK_STATE.absent;
+          const l = x.mode === "direct" && d.state === "running" ? "Sichert …" : l0;
           const cls = d.state === "ready" ? "ready" : d.state === "error" ? "error" : d.present ? "present" : "";
           const busy = d.running || !!d.phase;
           const problem = d.damaged || busy ? "" : d.last_fail > d.last_ok ? `${fmtTime(d.last_fail)} ${d.last_error || ""}` : d.error || "";
           return `<tr class="disk-row ${cls}">
             <td data-l="Platte"><div class="disk-cell"><span class="disk-ic">${icon("disk")}</span><div><div class="t-main">${esc(d.label)}${d.today ? ` <span class="today-tag">heute dran</span>` : ""}</div><div class="t-sub"><span class="mono">${esc(d.store)}</span>${d.plan ? ` · ${esc(d.plan)}` : ""}</div></div></div></td>
             <td data-l="Status">${d.orphan ? pill("Abgezogen ohne Aushängen", "amber", true) : d.damaged && !d.phase ? pill("Beschädigt", "rose", true) : pill(d.phase ? PHASE[d.phase] || d.phase : l, t, true, d.state === "running" || !!d.phase)}${d.verify_next && !d.phase && !d.damaged ? `<div class="t-sub">wird nach der nächsten Kopie zurückgelesen</div>` : ""}${d.stale ? `<div class="t-sub warnc"${d.stale_hint ? ` title="${esc("Lange nicht angesteckt: " + d.stale_hint)}"` : ""}>lange nicht angesteckt${d.stale_hint ? " " + icon("info", "sm") : ""}</div>` : ""}</td>
-            <td data-l="Letzte Kopie" class="nowrap">${d.last_ok ? `${esc(fmtAgo(d.last_ok))}<div class="t-sub">${esc(fmtTime(d.last_ok, true))}</div>` : '<span class="muted">noch keine</span>'}${problem ? `<div class="t-sub bad">${esc(problem)}</div>` : ""}</td>
+            <td data-l="${x.mode === "direct" ? "Letzte Sicherung" : "Letzte Kopie"}" class="nowrap">${d.last_ok ? `${esc(fmtAgo(d.last_ok))}<div class="t-sub">${esc(fmtTime(d.last_ok, true))}</div>` : '<span class="muted">noch keine</span>'}${problem ? `<div class="t-sub bad">${esc(problem)}</div>` : ""}</td>
             <td data-l="Belegung" class="bar-cell">${d.total ? usageBar(d.used, d.total) : '<span class="muted small">—</span>'}
               <div data-live="${esc(d.label)}" hidden><div class="flex small"><span class="grow" data-live-text></span><b class="mono" data-live-pct></b></div><div class="pbar"><span></span></div></div></td>
             <td data-l="Zustand">${healthCell(d.health)}</td>
             <td class="act"><div class="row-actions">
-              ${d.present && !d.running && !d.phase ? `<button class="btn sm" type="button" title="Jetzt kopieren" data-run="${x.id}|${d.key}">${icon("play")}<span class="lbl">Kopieren</span></button>` : ""}
+              ${d.present && !d.running && !d.phase ? `<button class="btn sm" type="button" title="${x.mode === "direct" ? "Jetzt auf diese Platte sichern" : "Jetzt kopieren"}" data-run="${x.id}|${d.key}">${icon("play")}<span class="lbl">${x.mode === "direct" ? "Sichern" : "Kopieren"}</span></button>` : ""}
               ${d.mounted && !d.running ? `<button class="btn gray sm" type="button" title="Aushängen – danach kann die Platte abgezogen werden" data-eject="${x.id}|${d.key}">${icon("eject")}<span class="lbl">Aushängen</span></button>` : ""}
               <button class="ib red" type="button" title="Aus dem Satz nehmen" aria-label="Aus dem Satz nehmen" data-rmdisk="${x.id}|${d.key}|${esc(d.label)}">${icon("x")}</button></div></td></tr>`; }).join("")}</tbody></table></div>` :
           empty("Noch keine Platte im Satz", "Platte anstecken und „Platte hinzufügen“ wählen. Für einen sinnvollen Wechsel mindestens zwei Platten.", `<button class="btn sm" type="button" data-adddisk="${x.id}">${icon("plus")} Platte hinzufügen</button>`, "disk")}
@@ -2254,8 +2257,9 @@ PAGES["/wechselplatten"] = async (el, token) => {
       const [rid, k] = b.dataset.rebuild.split("|");
       const x = rots.find((r1) => r1.id === rid), d = x.disks.find((d1) => d1.key === k);
       const keeps = x.transfer_last === 1 && x.keep_last === 1 && !x.keep_daily && !x.keep_weekly && !x.keep_monthly;
-      const ok = await confirmDialog({ title: `„${d.label}“ neu aufsetzen?`, button: "Formatieren und neu kopieren", ic: "refresh",
-        text: `Alles auf der Platte wird gelöscht, sie wird neu formatiert und mit den Sicherungen von ${esc(x.source_name)} / ${esc(x.source_store)} neu befüllt. Danach liest die Appliance alles von der Platte zurück, um zu prüfen, ob sie zuverlässig speichert.${keeps ? "" : " <b>Ältere Stände, die nur auf dieser Platte liegen, gehen dabei verloren.</b>"}` });
+      const ok = await confirmDialog({ title: `„${d.label}“ neu aufsetzen?`, button: x.mode === "direct" ? "Formatieren und neu sichern" : "Formatieren und neu kopieren", ic: "refresh",
+        text: x.mode === "direct" ? `Alles auf der Platte wird gelöscht und sie wird neu formatiert. Danach sichert ${esc(x.source_name)} sofort neu auf die Platte und die Appliance liest alles zurück, um zu prüfen, ob sie zuverlässig speichert. <b>Alle älteren Stände auf dieser Platte gehen dabei verloren</b> – es gibt sie nirgends sonst.`
+          : `Alles auf der Platte wird gelöscht, sie wird neu formatiert und mit den Sicherungen von ${esc(x.source_name)} / ${esc(x.source_store)} neu befüllt. Danach liest die Appliance alles von der Platte zurück, um zu prüfen, ob sie zuverlässig speichert.${keeps ? "" : " <b>Ältere Stände, die nur auf dieser Platte liegen, gehen dabei verloren.</b>"}` });
       if (!ok) return;
       await run(b, async () => { await POST(`/api/rotations/${rid}/disks/${k}/rebuild`); setTimeout(draw, 1500); }, "Die Platte wird neu aufgesetzt – das dauert je nach Größe einige Minuten.");
     });
@@ -2264,20 +2268,21 @@ PAGES["/wechselplatten"] = async (el, token) => {
       const [rid, k, dev] = b.dataset.adopt.split("|");
       const x = rots.find((r1) => r1.id === rid), d = x.disks.find((d1) => d1.key === k), f = x.foreign.find((f1) => f1.name === dev);
       const ok = await confirmDialog({ title: `Als „${d.label}“ neu aufsetzen?`, button: "Formatieren und neu befüllen", ic: "refresh",
-        text: `Alles auf <b>${esc(foreignName(f))}</b> (/dev/${esc(f.name)}, ${esc(fmtBytes(f.size))}${f.uuid ? `, Kennung ${esc(f.uuid.slice(0, 8))}…` : ""}) wird gelöscht. Die Platte wird als „${esc(d.label)}“ formatiert, mit den Sicherungen von ${esc(x.source_name)} / ${esc(x.source_store)} neu befüllt und danach vollständig zurückgelesen.` });
+        text: `Alles auf <b>${esc(foreignName(f))}</b> (/dev/${esc(f.name)}, ${esc(fmtBytes(f.size))}${f.uuid ? `, Kennung ${esc(f.uuid.slice(0, 8))}…` : ""}) wird gelöscht. Die Platte wird als „${esc(d.label)}“ formatiert, ${x.mode === "direct" ? `${esc(x.source_name)} sichert sofort darauf` : `mit den Sicherungen von ${esc(x.source_name)} / ${esc(x.source_store)} neu befüllt`} und danach vollständig zurückgelesen.` });
       if (!ok) return;
       await run(b, async () => { await POST(`/api/rotations/${rid}/disks/${k}/adopt`, { disk: dev }); setTimeout(draw, 1500); }, `„${d.label}“ wird neu aufgesetzt – das dauert je nach Größe einige Minuten.`);
     });
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
       const x = rots.find((y) => y.id === b.dataset.del);
-      if (await confirmDialog({ title: `Satz „${x.name}“ entfernen?`, text: "Die Kopierjobs werden gelöscht. Die Wechsel-Datastores und die Sicherungen auf den Platten bleiben erhalten.", button: "Entfernen" }))
+      if (await confirmDialog({ title: `Satz „${x.name}“ entfernen?`, text: x.mode === "direct" ? "Der Sicherungsjob in Proxmox VE wird gelöscht – danach sichert niemand mehr auf diese Platten. Die Platten mit ihren Sicherungen und ihre Speicher in Proxmox VE (zum Wiederherstellen) bleiben erhalten." : "Die Kopierjobs werden gelöscht. Die Wechsel-Datastores und die Sicherungen auf den Platten bleiben erhalten.", button: "Entfernen" }))
         run(b, async () => { await DEL(`/api/rotations/${x.id}`); await draw(); }, "Entfernt.");
     });
-    qsa("[data-run]", el).forEach((b) => b.onclick = () => run(b, async () => { const [r1, k] = b.dataset.run.split("|"); await POST(`/api/rotations/${r1}/disks/${k}/run`); setTimeout(draw, 1500); }, "Kopie gestartet."));
+    qsa("[data-run]", el).forEach((b) => b.onclick = () => { const [r1, k] = b.dataset.run.split("|"); run(b, async () => { await POST(`/api/rotations/${r1}/disks/${k}/run`); setTimeout(draw, 1500); }, rots.find((y) => y.id === r1)?.mode === "direct" ? "Sicherung gestartet." : "Kopie gestartet."); });
     qsa("[data-eject]", el).forEach((b) => b.onclick = () => run(b, async () => { const [r1, k] = b.dataset.eject.split("|"); await POST(`/api/rotations/${r1}/disks/${k}/eject`); await draw(); }, "Ausgehängt – die Platte kann abgezogen werden."));
     qsa("[data-rmdisk]", el).forEach((b) => b.onclick = async () => {
       const [r1, k, label] = b.dataset.rmdisk.split("|");
-      if (await confirmDialog({ title: `${label} aus dem Satz nehmen?`, text: "Der Kopierjob für diese Platte wird gelöscht. Datastore und Daten auf der Platte bleiben erhalten.", button: "Herausnehmen" }))
+      const direct = rots.find((y) => y.id === r1)?.mode === "direct";
+      if (await confirmDialog({ title: `${label} aus dem Satz nehmen?`, text: direct ? "Auf diese Platte wird nicht mehr gesichert. Datastore und Sicherungen auf der Platte bleiben erhalten." : "Der Kopierjob für diese Platte wird gelöscht. Datastore und Daten auf der Platte bleiben erhalten.", button: "Herausnehmen" }))
         run(b, async () => { await DEL(`/api/rotations/${r1}/disks/${k}`); await draw(); }, "Herausgenommen.");
     });
   };
@@ -2305,11 +2310,17 @@ function foreignCallouts(x) {
 }
 
 const TRANSFER_OPTIONS = [[1, "Nur die neueste Sicherung"], [2, "Die neuesten 2"], [3, "Die neuesten 3"], [7, "Die neuesten 7"], [14, "Die neuesten 14"], [0, "Alle Sicherungen"]];
+// diskKeepText: what the retention leaves on each disk ("7 tägliche, 4 wöchentliche").
+const diskKeepText = (x) => [[x.keep_last, "letzte"], [x.keep_daily, "tägliche"], [x.keep_weekly, "wöchentliche"], [x.keep_monthly, "monatliche"]]
+  .filter(([n]) => n > 0).map(([n, l]) => `${n} ${l}`).join(", ") || "alle Stände";
 const transferText = (n) => (!n ? "alle Sicherungen" : n === 1 ? "nur die neueste Sicherung" : `die neuesten ${n} Sicherungen`);
 
 // damageCallout recommends formatting a disk whose files cannot be read any more.
 function damageCallout(x, d) {
   const src = `${x.source_name} / ${x.source_store}`;
+  if (x.mode === "direct" && !d.repair_failed) return callout("red", `„${d.label}“ ist beschädigt – Empfehlung: neu aufsetzen`,
+    `Dateien auf der Platte lassen sich nicht mehr richtig lesen, deshalb schlägt die Sicherung fehl. Neu aufsetzen formatiert die Platte, sichert sofort neu und liest danach zur Kontrolle alles zurück. <b>Die älteren Stände auf dieser Platte gehen dabei verloren.</b>${d.present ? "" : " <b>Dazu die Platte anstecken.</b>"}<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`,
+    `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} Neu aufsetzen</button>`);
   if (d.repair_failed) return callout("red", `„${d.label}“ speichert nicht zuverlässig`,
     `Die Platte wurde neu aufgesetzt, beim Zurücklesen waren die Daten aber wieder fehlerhaft. Meist liegt das am USB-Gehäuse oder Kabel, seltener an der Platte. <b>Empfehlung:</b> Gehäuse bzw. Platte tauschen und danach erneut neu aufsetzen.<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`,
     `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} Erneut neu aufsetzen</button>`);
@@ -2383,11 +2394,17 @@ function planForm(x, done) {
 function rotationForm(x, done) {
   const edit = !!x;
   const local = state.servers.find((s) => s.local)?.id || state.servers[0]?.id;
-  x = x || { rhythm: "daily", swap_day: 5, time: "22:30", run_on_mount: true, unmount_on_done: true, transfer_last: 1, keep_last: 1, keep_weekly: 0, keep_monthly: 0, keep_daily: 0, server_id: local, source_server: local };
+  x = x || { mode: "", rhythm: "daily", swap_day: 5, time: "22:30", run_on_mount: true, unmount_on_done: true, transfer_last: 1, keep_last: 1, keep_weekly: 0, keep_monthly: 0, keep_daily: 0, server_id: local, source_server: local, cluster: state.clusters[0]?.id || "" };
+  const fixedMode = edit && x.disks.length > 0;
   formDialog({
     title: edit ? `${x.name} bearbeiten` : "Wechselplatten-Satz anlegen", ic: "disk",
     fields: [
       { name: "name", label: "Name", value: x.name, required: true, placeholder: "USB täglich", wide: true },
+      { name: "mode", type: "radio", label: "Was kommt auf die Platten?", value: x.mode || "", options: [["", "Kopie der Sicherungen", "Proxmox VE sichert auf einen Datastore, die Platte bekommt eine Kopie davon"], ["direct", "Direkt auf die Platte", "Proxmox VE sichert direkt auf die angesteckte Platte – ohne Datastore dazwischen. Für kleine Umgebungen mit ein, zwei Servern."]],
+        hint: fixedMode ? "Lässt sich nur ändern, solange keine Platte im Satz ist." : "" },
+      { type: "html", name: "direct_note", wide: true, html: `<div class="callout yellow" style="margin:0"><div class="ct"><div class="ch">Jede Sicherung liegt nur auf ihrer Platte</div><div class="cb">Es gibt keine zweite Kopie auf dem Backup-Server. Geht eine Platte kaputt oder verloren, fehlen ihre Stände – mit zwei oder mehr Platten im Wechsel bleibt immer die andere. Steckt zur Sicherungszeit keine Platte, fällt die Sicherung aus; die Appliance warnt drei Stunden vorher.</div></div></div>` },
+      { name: "cluster", label: "Wer sichert", type: "select", value: x.cluster, options: state.clusters.map((c) => [c.id, c.name]), hint: "Proxmox VE, das direkt auf die Platten sichert." },
+      { name: "guests", label: "Welche Server", value: x.guests || "", mono: true, placeholder: "alle", hint: "Leer = alle VMs und Container. Sonst die IDs mit Komma, z. B. 100,101." },
       { name: "server_id", label: "Platten stecken an", type: "select", value: x.server_id, options: state.servers.map((s) => [s.id, s.name]), hint: "Backup-Server, an dem die USB-Platten angesteckt werden." },
       { name: "source_server", label: "Sicherungen kommen von", type: "select", value: x.source_server, options: state.servers.map((s) => [s.id, s.name]) },
       { name: "source_store", label: "Datastore mit den Sicherungen", type: "select", options: [["", "Lade …"]] },
@@ -2398,7 +2415,7 @@ function rotationForm(x, done) {
       { name: "unmount_on_done", label: "Nach der Kopie aushängen", type: "checkbox", value: x.unmount_on_done, wide: true, hint: "Dann kann die Platte gefahrlos abgezogen werden." },
       { name: "transfer_last", label: "Was auf die Platte kopieren?", type: "select", wide: true, value: x.transfer_last ?? 0, options: TRANSFER_OPTIONS,
         hint: "Pro VM bzw. Container. „Nur die neueste“ spart Zeit und Platz: ältere Stände bleiben nur auf dem Backup-Server." },
-      { type: "html", wide: true, html: `<div class="section-title">Aufbewahrung auf jeder Platte</div><div class="hint">Was nach der Kopie auf der Platte bleibt. „Letzte = 1“: Die Platte enthält nur die neueste Sicherung, ältere werden nach der Kopie entfernt. 0 = Regel nicht verwenden; alles 0 = nichts löschen.</div>` },
+      { type: "html", name: "keep_head", wide: true, html: `<div class="section-title">Aufbewahrung auf jeder Platte</div><div class="hint" data-keephint></div>` },
       { name: "keep_last", label: "Letzte", type: "number", min: 0, value: x.keep_last },
       { name: "keep_daily", label: "Täglich", type: "number", min: 0, value: x.keep_daily },
       { name: "keep_weekly", label: "Wöchentlich", type: "number", min: 0, value: x.keep_weekly },
@@ -2410,7 +2427,16 @@ function rotationForm(x, done) {
       const form = qs("form", d);
       const show = () => {
         const v = formValues(form);
+        const direct = v.mode === "direct";
         qs('[data-field="swap_day"]', d).hidden = v.rhythm !== "weekly";
+        ["source_server", "source_store", "run_on_mount", "transfer_last", "auto_repair"].forEach((n) => { qs(`[data-field="${n}"]`, d).hidden = direct; });
+        ["direct_note", "cluster", "guests"].forEach((n) => { qs(`[data-field="${n}"]`, d).hidden = !direct; });
+        qs('[data-field="time"] .fl', d).firstChild.textContent = direct ? "Täglich sichern um" : "Täglich kopieren um";
+        qs('[data-field="time"] .hint', d).textContent = direct ? "Proxmox VE sichert zu dieser Zeit auf die Platte, die gerade steckt. Steckt keine, warnt die Appliance drei Stunden vorher."
+          : "Kopiert auf die Platte, die zu dieser Zeit steckt. Wird später angesteckt, wartet sie auf den nächsten Termin. Leer = nur beim Anstecken kopieren.";
+        qs('[data-field="unmount_on_done"] small', d).textContent = direct ? "Nach jeder Sicherung – dann kann die Platte gefahrlos abgezogen werden. Vor der nächsten Sicherung hängt die Appliance eine noch steckende Platte wieder ein." : "Dann kann die Platte gefahrlos abgezogen werden.";
+        qs("[data-keephint]", d).textContent = direct ? "Wie viele Stände nach jeder Sicherung auf der Platte bleiben – sie sind die einzigen. Beispiel: 7 tägliche, 4 wöchentliche, 3 monatliche. 0 = Regel nicht verwenden; alles 0 = nichts löschen."
+          : "Was nach der Kopie auf der Platte bleibt. „Letzte = 1“: Die Platte enthält nur die neueste Sicherung, ältere werden nach der Kopie entfernt. 0 = Regel nicht verwenden; alles 0 = nichts löschen.";
         // Automatic repair only when the disk holds just the newest backup.
         const single = Number(v.transfer_last) === 1 && Number(v.keep_last) === 1 && !Number(v.keep_daily) && !Number(v.keep_weekly) && !Number(v.keep_monthly);
         const ar = qs('[name="auto_repair"]', d);
@@ -2427,8 +2453,18 @@ function rotationForm(x, done) {
         show();
       });
       qsa('[name="rhythm"]', d).forEach((r) => r.onchange = show);
+      qsa('[name="mode"]', d).forEach((r) => r.onchange = () => {
+        // A direct set keeps history on the disk itself: start from a useful retention.
+        if (r.value === "direct" && !edit) {
+          const set = (n, v) => { qs(`[name="${n}"]`, d).value = v; };
+          set("keep_last", 0); set("keep_daily", 7); set("keep_weekly", 4); set("keep_monthly", 3);
+          if (qs('[name="time"]', d).value === "22:30") set("time", "21:00");
+        }
+        show();
+      });
       show();
       if (edit && x.disks.length) qs('[name="server_id"]', d).disabled = true;
+      if (fixedMode) { qsa('[name="mode"]', d).forEach((r) => { r.disabled = true; }); qs('[name="cluster"]', d).disabled = true; }
       const ss = qs('[name="source_server"]', d), st = qs('[name="source_store"]', d);
       const fill = async (val) => {
         st.innerHTML = `<option value="">Lade …</option>`;
@@ -2441,6 +2477,7 @@ function rotationForm(x, done) {
     submit: async (v) => {
       v.swap_day = Number(v.swap_day);
       v.transfer_last = Number(v.transfer_last);
+      if (fixedMode) { v.mode = x.mode || ""; v.cluster = x.cluster || ""; }
       if (edit) { if (x.disks.length) v.server_id = x.server_id; await PUT(`/api/rotations/${x.id}`, v); }
       else await POST("/api/rotations", v);
       toast("Gespeichert."); done();

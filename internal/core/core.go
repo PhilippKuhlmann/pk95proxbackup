@@ -103,6 +103,8 @@ type Core struct {
 	mu      sync.Mutex
 	rotBusy map[string]bool
 	rotRT   map[string]*diskRuntime
+	// directBusy: disks of direct sets that Proxmox VE is backing up onto right now
+	directBusy map[string]bool
 	// sync tasks seen running at the last RunningTasks call
 	runningSync map[string]bool
 	ov          Overview

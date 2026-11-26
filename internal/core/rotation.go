@@ -42,6 +42,11 @@ type Rotation struct {
 	CheckPlan bool `json:"check_plan"`
 	// AutoRepair formats a damaged disk and copies again (only with SingleCopy).
 	AutoRepair bool `json:"auto_repair"`
+	// Mode "direct": Proxmox VE backs up straight onto the plugged-in disk at Time (no
+	// datastore in between, see directusb.go); "" copies from SourceStore.
+	Mode    string `json:"mode,omitempty"`
+	Cluster string `json:"cluster,omitempty"` // direct: the Proxmox VE that backs up
+	Guests  string `json:"guests,omitempty"`  // direct: "" all VMs and containers, else "100,101"
 }
 
 // RotDisk is one disk of a rotation set.
@@ -54,6 +59,8 @@ type RotDisk struct {
 	// "1"–"5" the n-th in the month, "odd"/"even" calendar weeks).
 	Days []int  `json:"days,omitempty"`
 	Week string `json:"week,omitempty"`
+	// Storage is the Proxmox VE storage of the disk (direct sets).
+	Storage string `json:"storage,omitempty"`
 }
 
 // SyncJobID is the PBS sync job that copies onto the disk.
@@ -104,6 +111,14 @@ func (r *Rotation) Validate() map[string]string {
 			errs["keep_last"] = "Werte zwischen 0 und 1000."
 		}
 	}
+	if r.Mode != "" && r.Mode != "direct" {
+		r.Mode = ""
+	}
+	if r.Direct() {
+		r.validateDirect(errs)
+	} else {
+		r.Cluster, r.Guests = "", ""
+	}
 	return errs
 }
 
@@ -140,6 +155,9 @@ func (c *Core) syncParams(r Rotation, d RotDisk, remote string) prox.Params {
 
 // ApplyRotation (re)creates the sync jobs of all disks of a set on the target server.
 func (c *Core) ApplyRotation(ctx context.Context, r Rotation) error {
+	if r.Direct() {
+		return c.applyDirect(ctx, r)
+	}
 	pbs, srv, err := c.PBS(r.ServerID)
 	if err != nil {
 		return err
@@ -184,6 +202,9 @@ func (c *Core) ApplyRotation(ctx context.Context, r Rotation) error {
 
 // RemoveRotationDisk deletes the sync job of a disk (the datastore and its data stay).
 func (c *Core) RemoveRotationDisk(ctx context.Context, r Rotation, d RotDisk) error {
+	if r.Direct() {
+		return nil // the job moves to another disk at the next look
+	}
 	pbs, _, err := c.PBS(r.ServerID)
 	if err != nil {
 		return err
@@ -217,6 +238,7 @@ type diskRuntime struct {
 	VerifyWhy    string `json:"verify_why,omitempty"`    // rebuild, unplugged
 	VerifyUPID   string `json:"verify_upid,omitempty"`   // the check running on the server
 	UnpluggedAt  int64  `json:"unplugged_at,omitempty"`
+	Saved        string `json:"saved,omitempty"` // direct: what the last backup wrote
 }
 
 func rtKey(r Rotation, d RotDisk) string { return r.ID + "/" + d.Key }
@@ -393,6 +415,11 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 	for _, r := range rots {
 		hidx := c.healthIndex()
 		st := RotationState{Rotation: r, Disks: []DiskState{}, ServerName: names[r.ServerID], SourceName: names[r.SourceServer]}
+		if r.Direct() {
+			if cl, err := c.Cluster(r.Cluster); err == nil {
+				st.SourceName = cl.Name
+			}
+		}
 		f, ok := factsBy[r.ServerID]
 		if !ok {
 			pbs, _, err := c.PBS(r.ServerID)
@@ -432,7 +459,14 @@ func (c *Core) RotationStates(ctx context.Context) []RotationState {
 			if f.err == nil {
 				c.noteDiskChange(key, ds.Present, ds.Mounted)
 			}
-			if j, ok := f.jobs[r.SyncJobID(d)]; ok && f.err == nil {
+			if r.Direct() {
+				c.mu.Lock()
+				ds.Running = c.directBusy[key]
+				c.mu.Unlock()
+				if d.Storage == "" && f.err == nil {
+					ds.Error = "In Proxmox VE nicht eingetragen – „Speichern“ beim Satz holt das nach"
+				}
+			} else if j, ok := f.jobs[r.SyncJobID(d)]; ok && f.err == nil {
 				if pbs := clients[r.ServerID]; pbs != nil {
 					c.trackJob(ctx, pbs, r, d, rt, j)
 				}
@@ -519,7 +553,11 @@ func swapHint(r Rotation, st RotationState, now time.Time) (string, string) {
 	}
 	switch {
 	case len(ready) > 0:
-		return next, "Kopie fertig, " + strings.Join(ready, ", ") + " ist ausgehängt und kann abgezogen werden."
+		done := "Kopie fertig, "
+		if r.Direct() {
+			done = "Sicherung fertig, "
+		}
+		return next, done + strings.Join(ready, ", ") + " ist ausgehängt und kann abgezogen werden."
 	case len(plugged) == 0:
 		return next, "Keine Platte des Satzes angesteckt. Nächste Platte anstecken."
 	default:
@@ -695,7 +733,14 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	}
 	det.Facts = []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Beginn", Value: fmtWhen(copyStart)}}
 	var copied *notify.Fact
-	if copyUPID != "" {
+	if r.Direct() {
+		c.mu.Lock()
+		saved := rt.Saved
+		c.mu.Unlock()
+		if saved != "" {
+			copied = &notify.Fact{Label: "Gesichert", Value: saved}
+		}
+	} else if copyUPID != "" {
 		if lines, err := pbs.TaskLog(ctx, copyUPID); err == nil {
 			if f, ok := copiedFact(prox.ParseSyncSummary(lines)); ok {
 				copied = &f
@@ -731,7 +776,7 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	c.saveRuntime(key, rt)
 	finished := time.Now().Unix()
 	det.Facts = append(det.Facts, notify.Fact{Label: "Fertig", Value: fmtWhen(finished)},
-		notify.Fact{Label: "Dauer", Value: durationText(finished-copyStart, copyEnd-copyStart)})
+		notify.Fact{Label: "Dauer", Value: durationTextOf(finished-copyStart, copyEnd-copyStart, map[bool]string{true: "Sicherung", false: "Kopie"}[r.Direct()])})
 	if copied != nil {
 		det.Facts = append(det.Facts, *copied)
 	}
@@ -783,6 +828,9 @@ func (c *Core) prune(ctx context.Context, pbs *prox.PBS, store string, r Rotatio
 // RunRotationDisk copies onto a disk now: mount it (which starts the job when run-on-mount
 // is set) or run the job directly when it is already mounted.
 func (c *Core) RunRotationDisk(ctx context.Context, r Rotation, d RotDisk) error {
+	if r.Direct() {
+		return c.runDirect(ctx, r, d)
+	}
 	pbs, _, err := c.PBS(r.ServerID)
 	if err != nil {
 		return err
@@ -845,7 +893,7 @@ func (c *Core) EjectRotationDisk(ctx context.Context, r Rotation, d RotDisk) err
 func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, now time.Time) {
 	for _, st := range states {
 		r := st.Rotation
-		if c.copyDue(r, now) {
+		if !r.Direct() && c.copyDue(r, now) {
 			for _, d := range st.Disks {
 				if !d.Present || d.Running || d.Phase != "" {
 					continue
@@ -1010,13 +1058,16 @@ func fmtWhen(ts int64) string {
 
 // durationText is the total time, with the copy part when the rest (cleaning up, freeing
 // space, unmounting) took noticeably long: "1 Std. 29 Min. (davon Kopie 1 Std. 27 Min.)".
-func durationText(total, copySecs int64) string {
+func durationText(total, copySecs int64) string { return durationTextOf(total, copySecs, "Kopie") }
+
+// durationTextOf is durationText with another name for the main part ("Sicherung").
+func durationTextOf(total, partSecs int64, part string) string {
 	if total < 0 {
 		total = 0
 	}
 	t := humanDuration(total)
-	if copySecs > 0 && total-copySecs >= 60 {
-		t += " (davon Kopie " + humanDuration(copySecs) + ")"
+	if partSecs > 0 && total-partSecs >= 60 {
+		t += " (davon " + part + " " + humanDuration(partSecs) + ")"
 	}
 	return t
 }

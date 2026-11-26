@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -360,8 +361,21 @@ func (s *Server) ensureStorage(ctx context.Context, pve *prox.PVE, cl core.PVECl
 		}
 		key = k
 	}
-	name := ""
 	pbs := s.C.PBSClient(srv)
+	name := freeStorageName(ctx, pve, store, keyFP)
+	if err := s.registerPBSStorage(ctx, pve, cl, pbs, srv, store, name, "", key.Key); err != nil {
+		return "", err
+	}
+	body := "Damit Proxmox VE aus " + srv.Name + " / " + store + " wiederherstellen kann, ist der Datastore jetzt als Speicher „" + name + "“ eingetragen."
+	if keyFP != "" {
+		body += " Er hat den Schlüssel „" + key.Name + "“, mit dem diese Sicherungen verschlüsselt sind."
+	}
+	s.C.Event("info", cl.Name, "Speicher "+name+" für die Wiederherstellung eingetragen", body)
+	return name, nil
+}
+
+// freeStorageName is an unused storage name for a datastore: "pk95-<store>" (plus the key).
+func freeStorageName(ctx context.Context, pve *prox.PVE, store, keyFP string) string {
 	existing := map[string]bool{}
 	if list, err := pve.Storages(ctx); err == nil {
 		for _, st := range list {
@@ -375,19 +389,51 @@ func (s *Server) ensureStorage(ctx context.Context, pve *prox.PVE, cl core.PVECl
 	if keyFP != "" {
 		base += "-" + enckey.ID(keyFP)[:8]
 	}
-	name = base
+	name := base
 	for i := 2; existing[name]; i++ {
 		name = fmt.Sprintf("%s-%d", base, i)
 	}
-	if err := s.registerPBSStorage(ctx, pve, cl, pbs, srv, store, name, "", key.Key); err != nil {
+	return name
+}
+
+// directStorage returns the storage through which Proxmox VE backs up onto a USB disk of a
+// direct set, and adds it when there is none.
+func (s *Server) directStorage(ctx context.Context, rot core.Rotation, store string) (string, error) {
+	pve, cl, err := s.C.PVE(rot.Cluster)
+	if err != nil {
 		return "", err
 	}
-	body := "Damit Proxmox VE aus " + srv.Name + " / " + store + " wiederherstellen kann, ist der Datastore jetzt als Speicher „" + name + "“ eingetragen."
-	if keyFP != "" {
-		body += " Er hat den Schlüssel „" + key.Name + "“, mit dem diese Sicherungen verschlüsselt sind."
+	srv, err := s.C.Server(rot.ServerID)
+	if err != nil {
+		return "", err
 	}
-	s.C.Event("info", cl.Name, "Speicher "+name+" für die Wiederherstellung eingetragen", body)
+	if name, err := s.ensureStorage(ctx, pve, cl, srv, store, "", false); err == nil {
+		return name, nil
+	} else if !errors.As(err, new(errStorageNeedsAdmin)) {
+		return "", err
+	}
+	name := freeStorageName(ctx, pve, store, "")
+	if err := s.registerPBSStorage(ctx, pve, cl, s.C.PBSClient(srv), srv, store, name, "", ""); err != nil {
+		return "", err
+	}
+	s.C.Event("info", cl.Name, "Speicher "+name+" für die USB-Sicherung eingetragen",
+		"Proxmox VE sichert über diesen Speicher direkt auf die USB-Platte "+srv.Name+" / "+store+" (Satz „"+rot.Name+"“). Steckt die Platte nicht, ist er abgeschaltet.")
 	return name, nil
+}
+
+// directStorages adds the missing storages of the disks of a direct set.
+func (s *Server) directStorages(ctx context.Context, rot *core.Rotation) error {
+	for i, d := range rot.Disks {
+		if d.Storage != "" {
+			continue
+		}
+		name, err := s.directStorage(ctx, *rot, d.Store)
+		if err != nil {
+			return fmt.Errorf("Platte %s in Proxmox VE eintragen: %w", d.Label, err)
+		}
+		rot.Disks[i].Storage = name
+	}
+	return nil
 }
 
 // snapshotKey returns the key fingerprint of an encrypted backup ("" when not encrypted or
@@ -582,64 +628,16 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 
 // runJob starts a backup job now: one vzdump per node with the guests of that node.
 func (s *Server) runJob(w http.ResponseWriter, r *http.Request) {
-	pve, _, err := s.C.PVE(r.PathValue("id"))
-	if err != nil {
+	upids, errs, err := s.C.RunBackupJob(r.Context(), r.PathValue("id"), r.PathValue("job"))
+	switch {
+	case errors.Is(err, core.ErrJobNotFound):
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	case errors.Is(err, core.ErrJobEmpty):
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
 		fail(w, err)
-		return
-	}
-	ctx := r.Context()
-	jobs, err := pve.BackupJobs(ctx)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	var job *prox.BackupJob
-	for i := range jobs {
-		if jobs[i].ID == r.PathValue("job") {
-			job = &jobs[i]
-		}
-	}
-	if job == nil {
-		writeErr(w, http.StatusNotFound, "Job nicht gefunden.")
-		return
-	}
-	guests, err := pve.Guests(ctx)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	include := idSet(job.VMID)
-	exclude := idSet(job.Exclude)
-	perNode := map[string][]string{}
-	for _, g := range guests {
-		if g.Template != 0 || (job.Node != "" && g.Node != job.Node) {
-			continue
-		}
-		id := strconv.Itoa(g.VMID)
-		if job.All != 0 && !exclude[id] || job.All == 0 && include[id] {
-			perNode[g.Node] = append(perNode[g.Node], id)
-		}
-	}
-	if len(perNode) == 0 {
-		writeErr(w, http.StatusConflict, "Der Job umfasst keine VM und keinen Container.")
-		return
-	}
-	var upids []string
-	var errs []string
-	for node, ids := range perNode {
-		p := prox.Params{"vmid": strings.Join(ids, ","), "storage": job.Storage, "mode": job.Mode, "notes-template": emptyNil(job.NotesTemplate)}
-		if job.PruneBackups != "" {
-			p["prune-backups"] = job.PruneBackups
-		}
-		upid, err := pve.Vzdump(ctx, node, p)
-		if err != nil {
-			errs = append(errs, node+": "+err.Error())
-			continue
-		}
-		upids = append(upids, upid)
-	}
-	if len(upids) == 0 {
-		writeErr(w, http.StatusBadGateway, strings.Join(errs, "; "))
 		return
 	}
 	s.C.RequestRefresh()
@@ -663,16 +661,6 @@ func emptyNil(s string) any {
 		return nil
 	}
 	return s
-}
-
-func idSet(list string) map[string]bool {
-	m := map[string]bool{}
-	for _, x := range strings.Split(list, ",") {
-		if x = strings.TrimSpace(x); x != "" {
-			m[x] = true
-		}
-	}
-	return m
 }
 
 // ---- guests ----

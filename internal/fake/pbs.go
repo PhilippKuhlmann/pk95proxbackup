@@ -264,6 +264,22 @@ func (p *PBS) AddBackupTask(store, typ, id string, t time.Time, size, upload int
 	p.tasks.seedLog(p.node, "backup", store+":"+typ+"/"+id, "OK", t, 4*time.Minute, log)
 }
 
+// BackupOnto takes a backup from Proxmox VE onto a USB disk (see PVE.OnBackup): only when it
+// is mounted. Backups onto other datastores are not simulated (the demo keeps its seed).
+func (p *PBS) BackupOnto(st, typ, id string, t time.Time, size int64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.stores[st]
+	if s == nil || s.cfg.BackingDevice == "" {
+		return nil
+	}
+	if !s.mounted {
+		return fmt.Errorf("datastore '%s' is not mounted", st)
+	}
+	p.AddSnapshot(st, typ, id, t.Unix(), size)
+	return nil
+}
+
 func (p *PBS) AddSnapshot(st, typ, id string, t, size int64) {
 	s := p.stores[st]
 	s.snaps = append(s.snaps, prox.Snapshot{Type: typ, ID: id, Time: t, Size: size, Owner: "pk95-pve@pbs!pve-cluster", Verification: &struct {

@@ -276,6 +276,7 @@ func (c *Core) Run(ctx context.Context) {
 		c.reportBackups(ctx, &ov)
 		c.scanForeignDisks(ctx, time.Now())
 		c.scheduleRotations(ctx, ov.Rotations, time.Now())
+		c.scheduleDirect(ctx, &ov, time.Now())
 		c.checkArchivesUnplugged(ctx, time.Now())
 		c.scheduleRestoreTests(time.Now())
 		c.scheduleDiskHealth(time.Now())

@@ -257,6 +257,7 @@ func Setup(c *core.Core) (func(), error) {
 	offsite.AddDisk("sdb", "QEMU", "QEMU HARDDISK", "hdd", 3500*gib, "filesystem", "")
 
 	pve := NewPVE([]string{"pve1", "pve2"})
+	pve.OnBackup = local.BackupOnto
 	pve.NoPrivs = PVENoPrivs
 	pve.AddGuest(100, "dc01", "pve1", "qemu", "running")
 	pve.AddGuest(101, "fileserver", "pve1", "qemu", "running")

@@ -43,6 +43,9 @@ type PVE struct {
 	asRoot  bool // the request being served came from root@pam (password login)
 	disks   map[string][]NodeDisk
 	layout  map[string]NodeLayout
+	// OnBackup writes a backup onto a datastore of a Backup Server (nil: backups go nowhere).
+	// It fails when the datastore cannot take it (a USB disk that is not mounted).
+	OnBackup func(datastore, typ, id string, t time.Time, size int64) error
 }
 
 // NodeLayout is what lies on the disks of a node: LVM volume groups and ZFS pools with their
@@ -355,6 +358,12 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if p.storages[i].Storage != seg[1] {
 				continue
 			}
+			if v := f.Get("disable"); v != "" {
+				p.storages[i].Disable = atoi(v)
+			}
+			if f.Get("delete") == "disable" {
+				p.storages[i].Disable = 0
+			}
 			if f.Get("delete") == "encryption-key" {
 				p.storages[i].EncryptionKey = ""
 			} else if k := f.Get("encryption-key"); k != "" {
@@ -384,7 +393,8 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if c := f.Get("content"); c != "" && !strings.Contains(s.Content, c) {
 				continue
 			}
-			out = append(out, prox.NodeStorage{Storage: s.Storage, Type: s.Type, Content: s.Content, Active: 1, Enabled: 1, Total: 900 * gib, Used: 300 * gib, Avail: 600 * gib})
+			on := 1 - min(s.Disable, 1)
+			out = append(out, prox.NodeStorage{Storage: s.Storage, Type: s.Type, Content: s.Content, Active: on, Enabled: on, Total: 900 * gib, Used: 300 * gib, Avail: 600 * gib})
 		}
 		data(w, out)
 	case path == "/cluster/backup" && m == "GET":
@@ -397,6 +407,9 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/cluster/backup" && m == "POST":
 		p.jobN++
 		j := prox.BackupJob{ID: "backup-" + strconv.Itoa(1000+p.jobN)}
+		if id := f.Get("id"); id != "" {
+			j.ID = id
+		}
 		p.jobParams(&j, f)
 		p.jobs = append(p.jobs, j)
 		data(w, nil)
@@ -421,6 +434,17 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			mode = "snapshot"
 		}
 		head := []string{"INFO: starting new backup job: vzdump " + strings.Join(ids, " ") + " --storage " + f.Get("storage") + " --mode " + mode}
+		var target *prox.Storage
+		for i := range p.storages {
+			if p.storages[i].Storage == f.Get("storage") {
+				target = &p.storages[i]
+			}
+		}
+		if target != nil && target.Disable != 0 {
+			msg := "storage '" + target.Storage + "' is disabled"
+			data(w, p.tasks.start(seg[1], "vzdump", f.Get("vmid"), time.Second, append(head, "ERROR: Backup job failed - "+msg), func() (string, []string) { return msg, nil }))
+			return
+		}
 		var rest []string
 		failed := false
 		for i, id := range ids {
@@ -445,6 +469,13 @@ func (p *PVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				label = "CT Name: "
 			}
 			gb := 8 + atoi(id)%7*9
+			if target != nil && target.Type == "pbs" && p.OnBackup != nil {
+				if err := p.OnBackup(target.Datastore, map[string]string{"qemu": "vm", "lxc": "ct"}[typ], id, time.Now(), int64(gb)*gib); err != nil {
+					rest = append(rest, "INFO: "+label+name, "ERROR: Backup of VM "+id+" failed - "+err.Error(), "INFO: Failed at "+time.Now().Format("2006-01-02 15:04:05"))
+					failed = true
+					continue
+				}
+			}
 			rest = append(rest, "INFO: "+label+name,
 				"INFO: creating Proxmox Backup Server archive '"+map[string]string{"qemu": "vm", "lxc": "ct"}[typ]+"/"+id+"/"+time.Now().UTC().Format("2006-01-02T15:04:05Z")+"'",
 				"INFO: backup was done incrementally, reused "+strconv.Itoa(gb-1)+".40 GiB (9"+strconv.Itoa(atoi(id)%9)+"%)",

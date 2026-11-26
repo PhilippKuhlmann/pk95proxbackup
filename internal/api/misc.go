@@ -638,6 +638,10 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 			fieldErrs(w, map[string]string{"server_id": "Der Server lässt sich nur ändern, solange keine Platte im Satz ist."})
 			return
 		}
+		if len(cur.Disks) > 0 && (req.Mode != cur.Mode || req.Direct() && req.Cluster != cur.Cluster) {
+			fieldErrs(w, map[string]string{"mode": "Art und Proxmox VE lassen sich nur ändern, solange keine Platte im Satz ist."})
+			return
+		}
 	} else {
 		req.ID = core.NewID(3)
 		req.Disks = []core.RotDisk{}
@@ -646,8 +650,17 @@ func (s *Server) saveRotation(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.C.Server(req.ServerID); err != nil && errs["server_id"] == "" {
 		errs["server_id"] = "Backup-Server wählen."
 	}
+	if _, err := s.C.Cluster(req.Cluster); req.Direct() && err != nil && errs["cluster"] == "" {
+		errs["cluster"] = "Proxmox VE wählen, das sichert."
+	}
 	if fieldErrs(w, errs) {
 		return
+	}
+	if req.Direct() {
+		if err := s.directStorages(r.Context(), &req); err != nil {
+			fail(w, err)
+			return
+		}
 	}
 	if err := s.C.ApplyRotation(r.Context(), req); err != nil {
 		fail(w, err)
@@ -706,8 +719,16 @@ func (s *Server) deleteRotation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	body := "Die Datastores auf den Platten bleiben erhalten."
+	if rot.Direct() {
+		if err := s.C.RemoveDirect(r.Context(), rot); err != nil {
+			fail(w, err)
+			return
+		}
+		body = "Der Sicherungsjob in Proxmox VE ist gelöscht. Die Platten, ihre Sicherungen und ihre Speicher in Proxmox VE (zum Wiederherstellen) bleiben erhalten."
+	}
 	_ = s.C.St.Delete(core.KindRotation, rot.ID)
-	s.C.Event("warning", "Wechselplatten", "Satz „"+rot.Name+"“ entfernt", "Die Datastores auf den Platten bleiben erhalten.")
+	s.C.Event("warning", "Wechselplatten", "Satz „"+rot.Name+"“ entfernt", body)
 	s.C.RequestRefresh()
 	ok(w)
 }
@@ -784,6 +805,12 @@ func (s *Server) addRotationDisk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d := core.RotDisk{Key: core.NewID(2), Store: req.Store, Label: req.Label, Added: time.Now().Unix()}
+	if rot.Direct() {
+		if d.Storage, err = s.directStorage(ctx, rot, d.Store); err != nil {
+			fail(w, fmt.Errorf("Platte in Proxmox VE eintragen: %w", err))
+			return
+		}
+	}
 	rot.Disks = append(rot.Disks, d)
 	if err := s.C.ApplyRotation(ctx, rot); err != nil {
 		fail(w, err)

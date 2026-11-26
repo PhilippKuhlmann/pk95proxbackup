@@ -91,3 +91,8 @@ func (c *Core) RecordJobRunsForTest(ctx context.Context, ov *Overview, now time.
 }
 
 var MatchBackupJobForTest = matchBackupJob
+
+// ScheduleDirectForTest exposes scheduleDirect.
+func (c *Core) ScheduleDirectForTest(ctx context.Context, ov *Overview, now time.Time) {
+	c.scheduleDirect(ctx, ov, now)
+}

@@ -74,7 +74,14 @@ func addRun(s *jobRunsState, key string, r JobRun) {
 // recordJobRuns adds the finished runs since the last look (every two minutes at most).
 func (c *Core) recordJobRuns(ctx context.Context, ov *Overview, now time.Time) {
 	c.jobRuns.mu.Lock()
-	if now.Sub(c.jobRuns.at) < jobRunsEvery {
+	// A backup that ended since the last look is read at once (a direct USB disk waits for it).
+	ended := false
+	for _, t := range ov.Tasks {
+		if t.Type == "vzdump" && t.EndTime > c.jobRuns.at.Unix() && !c.jobRuns.at.IsZero() {
+			ended = true
+		}
+	}
+	if now.Sub(c.jobRuns.at) < jobRunsEvery && !ended {
 		c.jobRuns.mu.Unlock()
 		return
 	}
@@ -145,6 +152,7 @@ func (c *Core) recordBackupRuns(ctx context.Context, ov *Overview, s *jobRunsSta
 			jobs[clusterID], _ = pve.BackupJobs(ctx)
 		}
 		run := JobRun{Start: start}
+		direct := map[string]*directRun{} // storage → what went there
 		jobID := ""
 		failedTask, readAll := false, true
 		for _, t := range g.tasks {
@@ -159,10 +167,17 @@ func (c *Core) recordBackupRuns(ctx context.Context, ov *Overview, s *jobRunsSta
 				readAll = false
 				break
 			}
-			if vj, ok := prox.ParseVzdumpJob(lines); ok && jobID == "" {
+			vj, vok := prox.ParseVzdumpJob(lines)
+			if vok && jobID == "" {
 				jobID = matchBackupJob(jobs[clusterID], vj)
 			}
 			parsed := prox.ParseVzdump(lines).Guests
+			if vok && vj.Storage != "" {
+				if direct[vj.Storage] == nil {
+					direct[vj.Storage] = &directRun{}
+				}
+				direct[vj.Storage].add(t, parsed, lines)
+			}
 			if cl, err := c.Cluster(clusterID); err == nil {
 				c.recordSpeeds(cl, t.EndTime, parsed)
 			}
@@ -180,6 +195,12 @@ func (c *Core) recordBackupRuns(ctx context.Context, ov *Overview, s *jobRunsSta
 		}
 		for _, t := range g.tasks {
 			s.Seen[t.UPID] = t.StartTime
+		}
+		c.noteDirectRuns(ctx, clusterID, direct)
+		for st := range direct {
+			if l := c.directLabel(clusterID, st); l != "" {
+				run.Label = l
+			}
 		}
 		if jobID == "" {
 			continue // a backup started by hand, no job
@@ -429,6 +450,9 @@ func (c *Core) buildJobCards(ctx context.Context) []JobCard {
 	}
 	rots, _ := c.Rotations()
 	for _, r := range rots {
+		if r.Direct() {
+			continue // its backup job in Proxmox VE has a card
+		}
 		var labels []string
 		for _, d := range r.Disks {
 			labels = append(labels, d.Label)

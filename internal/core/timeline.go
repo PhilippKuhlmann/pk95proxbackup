@@ -364,7 +364,7 @@ func (c *Core) Timeline(ctx context.Context, now time.Time) Timeline {
 	// USB disks planned by the appliance
 	rots, _ := c.Rotations()
 	for _, r := range rots {
-		if r.Time == "" {
+		if r.Time == "" || r.Direct() { // a direct set: its backup job in Proxmox VE is shown
 			continue
 		}
 		it := TimelineItem{Key: "usb:" + r.ID, Group: "usb", Title: r.Name, Sub: "Wechselplatten · " + srvName[r.ServerID],

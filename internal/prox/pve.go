@@ -199,6 +199,15 @@ func (p *PVE) SetStorageKey(ctx context.Context, name, encKey string) error {
 	return p.Do(ctx, http.MethodPut, "/storage/"+url.PathEscape(name), params, nil)
 }
 
+// SetStorageDisabled switches a storage off (Proxmox VE neither polls nor uses it) or on.
+func (p *PVE) SetStorageDisabled(ctx context.Context, name string, off bool) error {
+	params := Params{"disable": 1}
+	if !off {
+		params = Params{"delete": "disable"}
+	}
+	return p.Do(ctx, http.MethodPut, "/storage/"+url.PathEscape(name), params, nil)
+}
+
 // DeleteStorage removes a storage definition (the data stays on the PBS).
 func (p *PVE) DeleteStorage(ctx context.Context, name string) error {
 	return p.Do(ctx, http.MethodDelete, "/storage/"+url.PathEscape(name), nil, nil)
