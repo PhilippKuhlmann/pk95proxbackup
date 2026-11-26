@@ -1,6 +1,7 @@
 package prox
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -13,7 +14,8 @@ type GuestBackup struct {
 	OK          bool
 	Done        bool // finished or failed (false = log ended while it ran)
 	Duration    string
-	Transferred string // e.g. "32.00 GiB"
+	Transferred string // e.g. "32.00 GiB" (VM: data read; container: new data)
+	Scanned     string // container: all data read, e.g. "3.6 GiB"
 	Reused      string // incremental: reused part, e.g. "94%"
 	Archive     string // PBS snapshot, e.g. vm/100/2026-11-09T20:00:02Z
 	Error       string
@@ -36,6 +38,7 @@ var (
 	vzName     = regexp.MustCompile(`INFO: (?:VM|CT) Name: (.+)`)
 	vzTransfer = regexp.MustCompile(`transferred ([\d.]+ \w+)`)
 	vzReused   = regexp.MustCompile(`backup was done incrementally, reused ([\d.]+ \w+) \((\d+%)\)`)
+	vzHad      = regexp.MustCompile(`had to backup ([\d.]+ \w+) of ([\d.]+ \w+)`)
 	vzArchive  = regexp.MustCompile(`creating (?:Proxmox Backup Server )?archive '([^']+)'`)
 	vzJob      = regexp.MustCompile(`starting new backup job: vzdump .*`)
 	vzStorage  = regexp.MustCompile(`--storage (\S+)`)
@@ -94,6 +97,10 @@ func ParseVzdump(lines []TaskLine) VzdumpResult {
 				g.Reused = m[2]
 			} else if m := vzTransfer.FindStringSubmatch(t); m != nil && strings.HasPrefix(t, "INFO: transferred") {
 				g.Transferred = m[1]
+			} else if m := vzHad.FindStringSubmatch(t); m != nil && strings.HasPrefix(t, "INFO:") {
+				// a container (proxmox-backup-client): new data of all it read
+				g.Transferred = addSize(g.Transferred, m[1])
+				g.Scanned = addSize(g.Scanned, m[2])
 			} else if m := vzArchive.FindStringSubmatch(t); m != nil {
 				g.Archive = m[1]
 			} else if strings.HasPrefix(t, "ERROR:") && g.Error == "" {
@@ -102,6 +109,31 @@ func ParseVzdump(lines []TaskLine) VzdumpResult {
 		}
 	}
 	return r
+}
+
+// addSize adds two sizes ("1.2 GiB" + "300 MiB"; a container may have several archives).
+func addSize(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return fmt.Sprintf("%.2f MiB", float64(ParseSize(a)+ParseSize(b))/(1<<20))
+}
+
+// Seconds is how long the backup of the guest took ("Finished Backup of VM 100 (00:01:30)").
+func (g GuestBackup) Seconds() int64 {
+	var h, m, s int64
+	if n, _ := fmt.Sscanf(g.Duration, "%d:%d:%d", &h, &m, &s); n != 3 {
+		return 0
+	}
+	return h*3600 + m*60 + s
+}
+
+// ReadBytes is how much the backup read: the changed data of a VM, everything of a container.
+func (g GuestBackup) ReadBytes() int64 {
+	if g.Scanned != "" {
+		return ParseSize(g.Scanned)
+	}
+	return ParseSize(g.Transferred)
 }
 
 // VzdumpJob is the command line of a backup task: which job and which guests.

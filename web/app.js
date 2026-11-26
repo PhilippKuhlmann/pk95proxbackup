@@ -2816,6 +2816,22 @@ async function passthroughDialog() {
 // ---------- VMs & Container ----------
 // chainCell shows one link of the backup chain: traffic light, age, where.
 const CHAIN_TONE = { ok: "green", warn: "amber", bad: "rose", none: "" };
+// speedCell shows how fast the backups of a guest read (MB/s) with a small line of the last
+// ones; amber when the last two were much slower than usual.
+const mbs = (mib) => Math.round(mib * 1.048576);
+function speedCell(sp) {
+  if (!sp || !sp.points.length) return `<span class="muted small" title="Noch keine Sicherung, die genug Daten gelesen hat (ab 1 GiB)">—</span>`;
+  const w = 64, h = 18, pts = sp.points, top = Math.max(...pts.map((p) => p[1])) || 1;
+  const xy = pts.map((p, i) => [pts.length === 1 ? w - 2 : 2 + (i * (w - 4)) / (pts.length - 1), h - 2 - (p[1] / top) * (h - 4)]);
+  const tip = pts.slice().reverse().map((p) => `${fmtTime(p[0])}: ${mbs(p[1])} MB/s`).join("\n");
+  const last = xy[xy.length - 1];
+  return `<div class="speed-cell${sp.slow ? " slow" : ""}" title="${esc(tip)}"><svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+      <polyline points="${xy.map((p) => p.map((v) => v.toFixed(1)).join(",")).join(" ")}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.5" fill="currentColor"/></svg>
+    <span><b>${mbs(sp.last)}</b> MB/s</span></div>
+    ${sp.slow ? `<div class="t-sub warnc">langsamer – sonst ${mbs(sp.usual)} MB/s</div>` : sp.usual ? `<div class="t-sub">üblich ${mbs(sp.usual)} MB/s</div>` : ""}`;
+}
+
 function chainCell(l, label) {
   if (!l) return "—";
   const tone = CHAIN_TONE[l.state] || "";
@@ -2867,13 +2883,14 @@ PAGES["/sicherungen"] = async (el, token) => {
     qs("[data-list]", el).innerHTML = anomalyPanel() + (data.errors || []).map((e) => {
       const c = state.clusters.find((x) => e.startsWith(x.name + ": "));
       return c && e.includes("fehlen Rechte") ? `<div style="margin:12px">${permCallout(c, (e.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean))}</div>` : callout("red", "Nicht alles erreichbar", esc(e));
-    }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Außer Haus</th><th>USB-Platte</th><th>Restore-Test</th><th></th></tr></thead><tbody>
+    }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Außer Haus</th><th>USB-Platte</th><th>Restore-Test</th><th>Tempo</th><th></th></tr></thead><tbody>
       ${list.map((g) => { const where = [...g.backups, ...g.seen].map((b) => `${b.server_name} / ${b.store}: ${b.count} ${b.count === 1 ? "Stand" : "Stände"}${b.seen ? " (Platte zuletzt gelesen " + fmtAgo(b.seen) + ")" : ""}`).join("\n"); return `<tr>
         <td data-l="Gast"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} · ${esc(g.node)}${state.clusters.length > 1 ? " · " + esc(g.cluster_name) : ""}</div></td>
         <td data-l="Sicherung"${where ? ` title="${esc(where)}"` : ""}>${chainCell(g.chain.backup, "Sicherung")}</td>
         <td data-l="Außer Haus">${chainCell(g.chain.copy, "Kopie außer Haus (zweiter Server oder Cloud)")}</td>
         <td data-l="USB-Platte">${chainCell(g.chain.usb, "USB-Platte")}</td>
         <td data-l="Restore-Test">${chainCell(g.chain.test, "Restore-Test")}</td>
+        <td data-l="Tempo">${speedCell(g.speed)}</td>
         <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-backup="${g.cluster}|${g.vmid}">${icon("download")} Jetzt sichern</button>
           <button class="btn gray sm" type="button" data-restore="${g.cluster}|${g.vmid}" ${g.backups.length ? "" : "disabled"}>${icon("restore")} Wiederherstellen</button></div></td></tr>`; }).join("")}
       </tbody></table></div></div>` : empty(data.guests.length ? "Nichts gefunden" : "Keine VMs oder Container", data.guests.length ? "" : "Zuerst unter Verbindungen Proxmox VE eintragen.", "", "archive"));

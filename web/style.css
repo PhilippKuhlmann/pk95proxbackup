@@ -897,3 +897,8 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .pp-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .pp-legend .run-sq { display: inline-block; }
 @media (max-width: 560px) { .pp-row { flex-wrap: wrap; } .pp-name { width: 100%; } }
+
+/* Sicherungs-Tempo je Gast */
+.speed-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--accent); font-size: 13px; }
+.speed-cell span { color: var(--ink); }
+.speed-cell.slow { color: var(--amber-dot); }

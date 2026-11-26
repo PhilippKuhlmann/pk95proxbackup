@@ -108,6 +108,7 @@ type GuestCoverage struct {
 	Seen        []BackupRef `json:"seen"`    // on USB disks that are not plugged in
 	LastBackup  int64       `json:"last_backup"`
 	Chain       Chain       `json:"chain"`
+	Speed       *GuestSpeed `json:"speed,omitempty"` // backup speed (see speed.go)
 	seen        guestSeen
 }
 
@@ -356,6 +357,12 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 		unreadSets[r.ID] = !read
 	}
 	c.noteFirstSeen(out, jobsOf, now)
+	speeds := c.GuestSpeeds()
+	for i := range out {
+		if sp, ok := speeds[speedKey(out[i].Cluster, strconv.Itoa(out[i].VMID))]; ok && len(sp.Points) > 0 {
+			out[i].Speed = &sp
+		}
+	}
 	for i := range out {
 		c.chainOf(&out[i], refs, rots, unreadSets, twoServers, plans, runs, now)
 	}

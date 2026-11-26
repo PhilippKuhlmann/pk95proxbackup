@@ -162,7 +162,11 @@ func (c *Core) recordBackupRuns(ctx context.Context, ov *Overview, s *jobRunsSta
 			if vj, ok := prox.ParseVzdumpJob(lines); ok && jobID == "" {
 				jobID = matchBackupJob(jobs[clusterID], vj)
 			}
-			for _, gb := range prox.ParseVzdump(lines).Guests {
+			parsed := prox.ParseVzdump(lines).Guests
+			if cl, err := c.Cluster(clusterID); err == nil {
+				c.recordSpeeds(cl, t.EndTime, parsed)
+			}
+			for _, gb := range parsed {
 				if gb.OK {
 					run.OK++
 					run.Bytes += prox.ParseSize(gb.Transferred)

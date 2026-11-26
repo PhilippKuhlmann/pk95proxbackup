@@ -343,7 +343,21 @@ func Setup(c *core.Core) (func(), error) {
 					status = "job errors"
 					continue
 				}
-				lines = append(lines, "INFO: transferred "+strconv.Itoa(3+atoi(g[0])%5)+".20 GiB in 61 seconds (52.0 MiB/s)", "INFO: Finished Backup of VM "+g[0]+" (00:0"+strconv.Itoa(1+k)+":12)")
+				// what the backup read and how fast; homeassistant got much slower the last two nights
+				gib := float64(8+atoi(g[0])%5) + 0.2
+				speed := 180.0 + float64(atoi(g[0])%3)*25
+				if g[0] == "111" && i <= 2 {
+					speed = 38
+				}
+				secs := int(gib*1024/speed) + 1
+				if g[1] == "lxc" {
+					lines = append(lines, fmt.Sprintf("INFO: root.pxar: had to backup 312.4 MiB of %.1f GiB (compressed 120.1 MiB) in %d.20s", gib, secs),
+						fmt.Sprintf("INFO: root.pxar: average backup speed: %.2f MiB/s", speed))
+				} else {
+					lines = append(lines, fmt.Sprintf("INFO: transferred %.2f GiB in %d seconds (%.1f MiB/s)", gib, secs, speed))
+				}
+				d := secs + 8 + k
+				lines = append(lines, fmt.Sprintf("INFO: Finished Backup of VM %s (%02d:%02d:%02d)", g[0], d/3600, d%3600/60, d%60))
 			}
 			pve.tasks.seedLog(node, "vzdump", "", status, t.Add(time.Duration(map[string]int{"pve1": 0, "pve2": 7}[node])*time.Second), 42*time.Minute, lines)
 		}
