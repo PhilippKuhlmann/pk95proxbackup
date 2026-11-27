@@ -269,6 +269,7 @@ func (c *Core) Run(ctx context.Context) {
 			}
 		}
 		c.checkMaintenance(ctx, time.Now())
+		c.scheduleMaintPlans(ctx, time.Now())
 		hold := c.InMaintenance() // no work of its own during a maintenance
 		ov := c.BuildOverview(ctx)
 		c.check(ctx, prev, &ov)

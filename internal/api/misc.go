@@ -118,7 +118,19 @@ func (s *Server) running(w http.ResponseWriter, r *http.Request) {
 // ---- maintenance mode ----
 
 func (s *Server) getMaintenance(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.C.MaintenanceState())
+	type next struct {
+		Reason string `json:"reason"`
+		Start  int64  `json:"start"`
+		End    int64  `json:"end"`
+	}
+	out := struct {
+		core.Maintenance
+		Next *next `json:"next,omitempty"` // the next planned window
+	}{Maintenance: s.C.MaintenanceState()}
+	if p, w := s.C.NextMaint(time.Now()); w[0] > 0 {
+		out.Next = &next{Reason: p.Reason, Start: w[0], End: w[1]}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) startMaintenance(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +155,31 @@ func (s *Server) startMaintenance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) listMaintPlans(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"plans": s.C.MaintPlanViews()})
+}
+
+func (s *Server) saveMaintPlan(w http.ResponseWriter, r *http.Request) {
+	var req core.MaintPlan
+	if !decode(w, r, &req) {
+		return
+	}
+	p, errs := s.C.SaveMaintPlan(req)
+	if fieldErrs(w, errs) {
+		return
+	}
+	s.C.Event("info", "Wartung", "Wartung geplant: "+p.Reason, p.ScheduleText()+" – von "+currentUser(r).Username)
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) deleteMaintPlan(w http.ResponseWriter, r *http.Request) {
+	if err := s.C.DeleteMaintPlan(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	ok(w)
 }
 
 func (s *Server) endMaintenance(w http.ResponseWriter, r *http.Request) {

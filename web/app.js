@@ -606,6 +606,7 @@ function maintDialog() {
   if (!can("admin")) return;
   formDialog({
     title: "Wartungsmodus starten", ic: "wrench", button: "Wartung starten",
+    extraButtons: `<button class="btn gray" type="button" data-plans>${icon("calendar")} Geplante Wartungen</button>`,
     text: "Für einen Umbau am Host, einen Betriebsurlaub oder Arbeiten an den Backup-Servern: Die Appliance hält still und meldet sich danach mit einer Zusammenfassung. Laufende Sicherungen laufen zu Ende.",
     fields: [
       { name: "until", label: "Dauer", type: "select", value: maintOptions()[1][0], options: maintOptions() },
@@ -617,6 +618,7 @@ function maintDialog() {
         hint: "Mails, Telegram und Push bleiben aus, die Ereignisse werden trotzdem notiert. Am Ende kommt eine Zusammenfassung mit allen Warnungen und Fehlern aus der Zeit." },
     ],
     onMount: (d) => {
+      qs("[data-plans]", d).onclick = () => { d.close(); maintPlansDialog(); };
       const sel = qs('[name="until"]', d), custom = qs('[data-field="custom"]', d);
       const show = () => { custom.hidden = sel.value !== "custom"; };
       sel.onchange = show; show();
@@ -650,9 +652,10 @@ function maintActiveDialog(m) {
       ${(m.problems || []).length ? callout("yellow", "Nicht ausgesetzt", m.problems.map(esc).join("<br>")) : ""}
       ${admin ? `<div class="field mt" data-field="until"><label class="fl" for="f-ext">Ende ändern</label><div class="inline"><select id="f-ext">${maintOptions().filter(([v]) => v !== "custom").map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join("")}</select><button class="btn gray" type="button" data-extend>Übernehmen</button></div></div>` : ""}
     </div>
-    <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button>${admin ? `<button class="btn" type="button" data-end>${icon("play")} Wartung beenden</button>` : ""}</div>`, "wide");
+    <div class="dlg-foot">${admin ? `<button class="btn gray" type="button" data-plans>${icon("calendar")} Geplante Wartungen</button>` : ""}<span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button>${admin ? `<button class="btn" type="button" data-end>${icon("play")} Wartung beenden</button>` : ""}</div>`, "wide");
   qs("[data-close]", d).onclick = () => d.close();
   if (!admin) return;
+  qs("[data-plans]", d).onclick = () => { d.close(); maintPlansDialog(); };
   qs("[data-extend]", d).onclick = (e) => run(e.currentTarget, async () => {
     state.maint = await POST("/api/maintenance", { until: Number(qs("#f-ext", d).value), reason: "", pause_jobs: m.pause_jobs, mute: m.mute });
     drawMaint(); d.close();
@@ -662,6 +665,82 @@ function maintActiveDialog(m) {
     drawMaint(); d.close();
     if (location.pathname === "/") render();
   }, "Wartung beendet – die Jobs sind wieder eingeschaltet.");
+}
+
+// fmtWindow: "Sa, 05.12. 08:00–12:00" (end with its day when it is another day)
+function fmtWindow(w) {
+  const a = new Date(w[0] * 1000), b = new Date(w[1] * 1000);
+  const day = (d) => d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
+  const hm = (d) => d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  return `${day(a)} ${hm(a)}–${a.toDateString() === b.toDateString() ? hm(b) : day(b) + " " + hm(b)}`;
+}
+
+async function maintPlansDialog() {
+  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("calendar")}</span><div class="grow"><div class="dlg-title">Geplante Wartungen</div>
+      <p class="dlg-text">Zum Beginn schaltet die Appliance den Wartungsmodus selbst ein und zum Ende wieder aus – auf Wunsch mit Ankündigung vorher.</p></div></div>
+    <div class="dlg-body" data-list><p class="muted">Lade …</p></div>
+    <div class="dlg-foot"><button class="btn gray" type="button" data-close>Schließen</button><span class="spacer"></span><button class="btn" type="button" data-new>${icon("plus")} Wartung planen</button></div>`, "wide");
+  qs("[data-close]", d).onclick = () => d.close();
+  const load = async () => {
+    const { plans } = await GET("/api/maintenance/plans");
+    const box = qs("[data-list]", d);
+    box.innerHTML = plans.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Grund</th><th>Wann</th><th>Nächstes Mal</th><th></th></tr></thead><tbody>${plans.map((p) => `<tr>
+        <td data-l="Grund"><div class="t-main">${esc(p.reason)}</div><div class="t-sub">${p.pause_jobs ? "Jobs ausgesetzt" : "Jobs laufen weiter"}${p.mute ? " · Meldungen stumm" : ""}${p.announce_hours ? ` · Ankündigung ${p.announce_hours} Std. vorher` : ""}</div></td>
+        <td data-l="Wann" class="small">${esc(p.text)}</td>
+        <td data-l="Nächstes Mal" class="nowrap">${!p.enabled ? pill("Aus") : p.next.length ? esc(fmtWindow(p.next[0])) : '<span class="muted">vorbei</span>'}</td>
+        <td class="act"><div class="row-actions"><button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${p.id}">${icon("pencil")}</button><button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${p.id}">${icon("trash")}</button></div></td></tr>`).join("")}</tbody></table></div>`
+      : empty("Keine Wartung geplant", "Zum Beispiel jeden ersten Samstag im Monat 08:00–12:00 für Updates, oder einmalig für einen Umbau.", "", "calendar");
+    qsa("[data-edit]", box).forEach((b) => b.onclick = () => maintPlanForm(plans.find((p) => p.id === b.dataset.edit), load));
+    qsa("[data-del]", box).forEach((b) => b.onclick = async () => {
+      const p = plans.find((x) => x.id === b.dataset.del);
+      if (await confirmDialog({ title: `„${p.reason}“ löschen?`, text: "Eine gerade laufende Wartung aus diesem Plan läuft bis zu ihrem Ende weiter.", button: "Löschen" })) run(b, async () => { await DEL(`/api/maintenance/plans/${p.id}`); await load(); }, "Gelöscht.");
+    });
+  };
+  qs("[data-new]", d).onclick = () => maintPlanForm(null, load);
+  await load();
+}
+
+function maintPlanForm(p, done) {
+  const edit = !!p;
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  p = p || { enabled: true, repeat: "monthly", date: tomorrow, time: "08:00", minutes: 240, weekdays: [6], month_week: "1", month_weekday: 6, every_months: 1, pause_jobs: true, mute: true, announce_hours: 24 };
+  const dur = [[30, "30 Minuten"], [60, "1 Stunde"], [120, "2 Stunden"], [180, "3 Stunden"], [240, "4 Stunden"], [360, "6 Stunden"], [480, "8 Stunden"], [720, "12 Stunden"], [1440, "1 Tag"], [2880, "2 Tage"], [4320, "3 Tage"]];
+  if (!dur.some(([m]) => m === p.minutes)) dur.push([p.minutes, `${p.minutes} Minuten`]);
+  formDialog({
+    title: edit ? "Geplante Wartung bearbeiten" : "Wartung planen", ic: "calendar",
+    fields: [
+      { name: "reason", label: "Grund", value: p.reason, required: true, placeholder: "z. B. Updates, Umbau pve1", wide: true },
+      { name: "repeat", type: "radio", label: "Wie oft", value: p.repeat, options: [["once", "Einmalig", "An einem bestimmten Tag"], ["weekly", "Wöchentlich", "An bestimmten Wochentagen"], ["monthly", "Monatlich", "Z. B. jeden ersten Samstag"]] },
+      { name: "date", label: "Datum", type: "date", value: p.date || tomorrow },
+      { type: "html", name: "weekdays", wide: true, html: `<span class="fl">Wochentage</span><div class="daypick">${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(p.weekdays || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+      { name: "month_week", label: "Welcher", type: "select", value: p.month_week || "1", options: [["1", "Erster"], ["2", "Zweiter"], ["3", "Dritter"], ["4", "Vierter"], ["last", "Letzter"]] },
+      { name: "month_weekday", label: "Wochentag", type: "select", value: p.month_weekday || 6, options: [[1, "Montag"], [2, "Dienstag"], [3, "Mittwoch"], [4, "Donnerstag"], [5, "Freitag"], [6, "Samstag"], [7, "Sonntag"]] },
+      { name: "time", label: "Beginn", type: "time", value: p.time },
+      { name: "minutes", label: "Dauer", type: "select", value: p.minutes, options: dur },
+      { name: "pause_jobs", label: "Sicherungen und Jobs aussetzen", type: "checkbox", value: p.pause_jobs, wide: true },
+      { name: "mute", label: "Keine Benachrichtigungen (am Ende eine Zusammenfassung)", type: "checkbox", value: p.mute, wide: true },
+      { name: "announce_hours", label: "Ankündigen", type: "select", value: p.announce_hours, options: [[0, "Nicht ankündigen"], [1, "1 Stunde vorher"], [4, "4 Stunden vorher"], [24, "1 Tag vorher"], [48, "2 Tage vorher"], [168, "1 Woche vorher"]],
+        hint: "Per Mail, Telegram oder Push wie andere Meldungen." },
+      { name: "enabled", label: "Aktiv", type: "checkbox", value: p.enabled, wide: true },
+    ],
+    onMount: (d) => {
+      const show = () => {
+        const r = formValues(qs("form", d)).repeat;
+        qs('[data-field="date"]', d).hidden = r !== "once";
+        qs('[data-field="weekdays"]', d).hidden = r !== "weekly";
+        ["month_week", "month_weekday"].forEach((n) => { qs(`[data-field="${n}"]`, d).hidden = r !== "monthly"; });
+      };
+      qsa('[name="repeat"]', d).forEach((x) => x.onchange = show);
+      show();
+    },
+    submit: async (v, d) => {
+      const body = { id: edit ? p.id : "", reason: v.reason, enabled: v.enabled, repeat: v.repeat, date: v.date, time: v.time, minutes: Number(v.minutes),
+        weekdays: qsa('[data-field="weekdays"] input:checked', d).map((c) => Number(c.value)), month_mode: "weekday", month_week: v.month_week,
+        month_weekday: Number(v.month_weekday), every_weeks: 1, every_months: 1, pause_jobs: v.pause_jobs, mute: v.mute, announce_hours: Number(v.announce_hours) };
+      await POST("/api/maintenance/plans", body);
+      toast("Gespeichert."); done();
+    },
+  });
 }
 
 // ---------- running tasks (top bar) ----------
@@ -960,6 +1039,10 @@ PAGES["/"] = async (el, token) => {
     const disksIn = rots.flatMap((x) => x.disks).filter((d) => d.present).length;
 
     let callouts = "";
+    if (!mt?.active && mt?.next && mt.next.start - Date.now() / 1000 < 7 * 86400) {
+      callouts += callout("", `Wartung geplant: ${fmtWindow([mt.next.start, mt.next.end])}`, `${esc(mt.next.reason)} – die Appliance schaltet den Wartungsmodus zu Beginn selbst ein und zum Ende wieder aus.`,
+        can("admin") ? `<button class="btn gray sm" type="button" data-plans-open>${icon("calendar")} Ansehen</button>` : "");
+    }
     if (mt?.active) {
       callouts += callout("yellow", `Wartungsmodus bis ${untilText(mt.until)}`, `${mt.reason ? esc(mt.reason) + " – " : ""}${mt.pause_jobs ? `${(mt.paused || []).length} Jobs ausgesetzt, die Appliance startet nichts von sich aus` : "Jobs laufen weiter"}${mt.mute ? `; Benachrichtigungen aus${mt.muted ? ` (${mt.muted} zurückgehalten)` : ""}` : ""}. Am Ende kommt eine Zusammenfassung.`,
         `<button class="btn sm" type="button" data-maint-open>${icon("wrench")} Ansehen</button>`);
@@ -1079,6 +1162,7 @@ PAGES["/"] = async (el, token) => {
         </div>
       </div></div>`;
     qsa("[data-maint-open]", el).forEach((b) => b.onclick = maintDialog);
+    qsa("[data-plans-open]", el).forEach((b) => b.onclick = maintPlansDialog);
     qs("[data-refresh]", el).onclick = (e) => run(e.currentTarget, () => draw(true));
     qsa("[data-task]", el).forEach((row) => row.onclick = () => { const [s, u] = row.dataset.task.split("|"); showTask(s, u, "Aufgabe"); });
   };
@@ -4126,11 +4210,11 @@ function bindPveMail(root, redraw) {
 // last run took. Runs on the same datastore at the same time are marked; administrators move
 // times of Proxmox VE and Backup Server jobs right here.
 const TL_GROUPS = [
-  ["backup", "Sicherungen", "save"], ["copy", "Kopien", "copy"], ["usb", "Wechselplatten", "copy"],
+  ["maint", "Wartung", "maint"], ["backup", "Sicherungen", "save"], ["copy", "Kopien", "copy"], ["usb", "Wechselplatten", "copy"],
   ["verify", "Prüfungen", "verify"], ["prune", "Aufräumen", "clean"], ["gc", "Speicher freigeben", "clean"],
   ["restoretest", "Restore-Tests", "verify"], ["host", "Host-Sicherungen", "save"], ["update", "Updates", "update"],
 ];
-const TL_TONES = [["save", "Sichern"], ["copy", "Kopieren"], ["verify", "Prüfen"], ["clean", "Aufräumen"], ["update", "Updates"]];
+const TL_TONES = [["save", "Sichern"], ["copy", "Kopieren"], ["verify", "Prüfen"], ["clean", "Aufräumen"], ["update", "Updates"], ["maint", "Wartung"]];
 const TL_DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const hhmm = (ts) => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 

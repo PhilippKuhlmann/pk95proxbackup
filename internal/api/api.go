@@ -269,6 +269,9 @@ func (s *Server) routes() {
 
 	// Rotation
 	a("GET /api/maintenance", s.getMaintenance)
+	a("GET /api/maintenance/plans", s.listMaintPlans)
+	a("POST /api/maintenance/plans", s.saveMaintPlan)
+	a("DELETE /api/maintenance/plans/{id}", s.deleteMaintPlan)
 	a("POST /api/maintenance", s.startMaintenance)
 	a("DELETE /api/maintenance", s.endMaintenance)
 	a("GET /api/rotations", s.listRotations)

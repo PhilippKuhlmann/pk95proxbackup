@@ -431,7 +431,24 @@ func (c *Core) Timeline(ctx context.Context, now time.Time) Timeline {
 		add(it)
 	}
 
-	order := map[string]int{"backup": 0, "copy": 1, "usb": 2, "verify": 3, "prune": 4, "gc": 5, "restoretest": 6, "host": 7, "update": 8}
+	// Planned maintenance windows (nothing of the above runs in them when jobs are paused)
+	for _, p := range c.MaintPlans() {
+		if !p.Enabled {
+			continue
+		}
+		it := TimelineItem{Key: "maint:" + p.ID, Group: "maint", Title: "Wartung: " + p.Reason, Sub: map[bool]string{true: "Jobs ausgesetzt", false: "Jobs laufen weiter"}[p.PauseJobs],
+			Schedule: p.ScheduleText(), Text: p.ScheduleText(), Enabled: true, Link: "/", Starts: []int64{}}
+		for _, w := range p.Windows(from, 60) {
+			if w[0] < to.Unix() {
+				it.Starts = append(it.Starts, w[0])
+			}
+		}
+		it.took(nil)
+		it.Duration, it.Estimated = int64(p.Minutes)*60, false
+		add(it)
+	}
+
+	order := map[string]int{"maint": -1, "backup": 0, "copy": 1, "usb": 2, "verify": 3, "prune": 4, "gc": 5, "restoretest": 6, "host": 7, "update": 8}
 	sort.SliceStable(tl.Items, func(i, j int) bool {
 		a, b := tl.Items[i], tl.Items[j]
 		if order[a.Group] != order[b.Group] {

@@ -111,3 +111,8 @@ func (c *Core) CheckSpaceForTest(ctx context.Context, r Rotation, st RotationSta
 func (c *Core) CheckMaintenanceForTest(ctx context.Context, now time.Time) {
 	c.checkMaintenance(ctx, now)
 }
+
+// ScheduleMaintPlansForTest exposes scheduleMaintPlans.
+func (c *Core) ScheduleMaintPlansForTest(ctx context.Context, now time.Time) {
+	c.scheduleMaintPlans(ctx, now)
+}
