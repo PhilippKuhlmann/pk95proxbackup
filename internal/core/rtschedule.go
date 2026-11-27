@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,7 +90,7 @@ func (p RestoreTestPlan) DueOn(t time.Time) bool {
 		n, _ := strconv.Atoi(p.MonthWeek)
 		return (t.Day()-1)/7+1 == n
 	}
-	if !contains(p.Weekdays, wd) {
+	if !slices.Contains(p.Weekdays, wd) {
 		return false
 	}
 	if p.EveryWeeks <= 1 {

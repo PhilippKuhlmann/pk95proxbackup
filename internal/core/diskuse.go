@@ -58,7 +58,7 @@ func (c *Core) FindSelfVM(ctx context.Context) (*SelfVM, error) {
 			if g.Type != "qemu" {
 				continue
 			}
-			cfg, err := pve.VMConfig(ctx, g.Node, g.VMID)
+			cfg, err := pve.GuestConfig(ctx, g.Node, "qemu", g.VMID)
 			if err != nil {
 				continue
 			}
@@ -291,7 +291,7 @@ func (c *Core) backupVMs(ctx context.Context, trace *[]string) []backupVM {
 			if g.Type != "qemu" || g.Template != 0 {
 				continue
 			}
-			if cfg, err := pve.VMConfig(ctx, g.Node, g.VMID); err == nil {
+			if cfg, err := pve.GuestConfig(ctx, g.Node, "qemu", g.VMID); err == nil {
 				vms = append(vms, cand{cl, g, cfg})
 			}
 		}

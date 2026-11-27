@@ -340,8 +340,17 @@ type retention struct {
 	Comment     string `json:"comment"`
 }
 
-func (rt retention) any() bool {
-	return rt.KeepLast+rt.KeepDaily+rt.KeepWeekly+rt.KeepMonthly+rt.KeepYearly > 0
+func (rt retention) keep() prox.Keep {
+	return prox.Keep{Last: rt.KeepLast, Daily: rt.KeepDaily, Weekly: rt.KeepWeekly, Monthly: rt.KeepMonthly, Yearly: rt.KeepYearly}
+}
+
+// validateKeep checks the number of backups per rule.
+func (rt retention) validateKeep(errs map[string]string) {
+	for _, v := range []int{rt.KeepLast, rt.KeepDaily, rt.KeepWeekly, rt.KeepMonthly, rt.KeepYearly} {
+		if v < 0 || v > 10000 {
+			errs["keep_last"] = "Werte von 0 bis 10000."
+		}
+	}
 }
 
 func (rt retention) validate(errs map[string]string) {
@@ -350,11 +359,7 @@ func (rt retention) validate(errs map[string]string) {
 			errs[k] = "Zeitplan wie in PBS, z. B. daily, sat 02:00 oder *-*-* 22:00."
 		}
 	}
-	for _, v := range []int{rt.KeepLast, rt.KeepDaily, rt.KeepWeekly, rt.KeepMonthly, rt.KeepYearly} {
-		if v < 0 || v > 10000 {
-			errs["keep_last"] = "Werte von 0 bis 10000."
-		}
-	}
+	rt.validateKeep(errs)
 }
 
 // applyRetention writes GC schedule, prune job and verify job of a datastore.
@@ -370,20 +375,14 @@ func (s *Server) applyRetention(ctx context.Context, pbs *prox.PBS, store string
 			exists = true
 		}
 	}
-	if rt.any() {
+	if rt.keep().Any() {
 		sched := rt.PruneSched
 		if sched == "" {
 			sched = "daily"
 		}
-		p := prox.Params{"store": store, "schedule": sched, "comment": "PK95 Aufbewahrung"}
-		var del []string
-		for k, v := range map[string]int{"keep-last": rt.KeepLast, "keep-daily": rt.KeepDaily, "keep-weekly": rt.KeepWeekly, "keep-monthly": rt.KeepMonthly, "keep-yearly": rt.KeepYearly} {
-			if v > 0 {
-				p[k] = v
-			} else {
-				del = append(del, k)
-			}
-		}
+		p := rt.keep().Params()
+		p["store"], p["schedule"], p["comment"] = store, sched, "PK95 Aufbewahrung"
+		del := rt.keep().Unset()
 		if exists {
 			if len(del) > 0 {
 				p["delete"] = del
@@ -980,8 +979,6 @@ func (s *Server) taskLog(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "status": st})
 }
-
-var _ = store.ErrNotFound
 
 // checkSyncSource lets the target connect to the source of a copy (network, certificate, login).
 func (s *Server) checkSyncSource(w http.ResponseWriter, r *http.Request) {

@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -816,8 +815,6 @@ func (r *Runner) RemoveFile(_ context.Context, path string) error {
 
 // Describe implements hostexec.Runner.
 func (r *Runner) Describe() string { return "Demo" }
-
-var _ = sort.Strings
 
 // lastHostRun is the newest seeded host backup (today 02:30 or yesterday).
 func lastHostRun(now time.Time) int64 {

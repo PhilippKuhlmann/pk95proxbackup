@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -614,5 +613,3 @@ func (s *Server) static() http.Handler {
 		files.ServeHTTP(w, r)
 	})
 }
-
-var _ = log.Printf

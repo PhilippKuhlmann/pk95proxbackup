@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -138,8 +135,10 @@ func (c *Core) syncParams(r Rotation, d RotDisk, remote string) prox.Params {
 		"store":           d.Store,
 		"remote-store":    r.SourceStore,
 		"remove-vanished": false,
-		"run-on-mount":    r.RunOnMount,
-		"comment":         "PK95 Wechselplatte " + d.Label + " (" + r.Name + ")",
+		// Not while the backups on the disk still belong to Proxmox VE (the set backed up
+		// directly before): the copy would fail; it starts after the hand-over.
+		"run-on-mount": r.RunOnMount && !c.copyOwnerPending(r, d),
+		"comment":      "PK95 Wechselplatte " + d.Label + " (" + r.Name + ")",
 	}
 	if remote != "" {
 		p["remote"] = remote
@@ -203,7 +202,7 @@ func (c *Core) ApplyRotation(ctx context.Context, r Rotation) error {
 // RemoveRotationDisk deletes the sync job of a disk (the datastore and its data stay).
 func (c *Core) RemoveRotationDisk(ctx context.Context, r Rotation, d RotDisk) error {
 	if r.Direct() {
-		return nil // the job moves to another disk at the next look
+		return c.removeDirectDisk(ctx, r, d)
 	}
 	pbs, _, err := c.PBS(r.ServerID)
 	if err != nil {
@@ -540,11 +539,7 @@ func swapHint(r Rotation, st RotationState, now time.Time) (string, string) {
 	}
 	next := ""
 	if r.Rhythm == "weekly" {
-		wd := int(now.Weekday())
-		if wd == 0 {
-			wd = 7
-		}
-		days := (r.SwapDay - wd + 7) % 7
+		days := (r.SwapDay - isoWeekday(now) + 7) % 7
 		if days == 0 {
 			next = "heute (" + weekdays[r.SwapDay] + ")"
 		} else {
@@ -573,7 +568,7 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 	c.mu.Lock()
 	seen := rt.SeenUPID
 	c.mu.Unlock()
-	failed := j.LastRunState != "OK" && !strings.HasPrefix(j.LastRunState, "WARNINGS")
+	failed := !prox.TaskOK(j.LastRunState)
 	if j.LastRunUPID != "" && j.LastRunUPID == seen && j.LastRunEnd != 0 && failed {
 		// A failure seen before this version looked for damage: look once (no new message).
 		c.mu.Lock()
@@ -597,12 +592,15 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 	c.mu.Lock()
 	rt.SeenUPID = j.LastRunUPID
 	c.mu.Unlock()
-	if seen == "" && rt.LastOK == 0 && rt.LastFail == 0 && time.Since(time.Unix(j.LastRunEnd, 0)) > time.Hour {
+	c.mu.Lock()
+	fresh := seen == "" && rt.LastOK == 0 && rt.LastFail == 0
+	c.mu.Unlock()
+	if fresh && time.Since(time.Unix(j.LastRunEnd, 0)) > time.Hour {
 		// First look at an old run (e.g. after an update): only remember it.
 		c.saveRuntime(key, rt)
 		return
 	}
-	ok := j.LastRunState == "OK" || strings.HasPrefix(j.LastRunState, "WARNINGS")
+	ok := prox.TaskOK(j.LastRunState)
 	copyStart := j.LastRunEnd
 	if st, err := pbs.TaskStatus(ctx, j.LastRunUPID); err == nil && st.StartTime > 0 {
 		copyStart = st.StartTime
@@ -620,8 +618,8 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 	c.mu.Unlock()
 	c.saveRuntime(key, rt)
 	if !ok {
-		det := &notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{
-			{Label: "Festplatte", Value: "„" + d.Label + "“"},
+		det := &notify.Details{Status: "error", Link: "/wechselplatten", Kind: "usb-failed", Ref: rtKey(r, d), Facts: []notify.Fact{
+			diskFact(d),
 			{Label: "Zeitpunkt", Value: fmtWhen(j.LastRunEnd)},
 			{Label: "Fehlermeldung", Value: j.LastRunState}}}
 		title := "USB-Sicherung auf „" + d.Label + "“ fehlgeschlagen"
@@ -638,8 +636,13 @@ func (c *Core) trackJob(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 		c.EventDetails("critical", rotationSource, title, msg, det)
 		return
 	}
-	// Something else may still work on the disk (e.g. removing a stale mount): wait for it
-	// instead of skipping the aftercare of this copy.
+	c.aftercareWhenFree(ctx, pbs, r, d, rt)
+}
+
+// aftercareWhenFree runs the aftercare of a disk in the background once nothing else works on
+// it (e.g. removing a stale mount) – waiting up to half an hour instead of skipping it.
+func (c *Core) aftercareWhenFree(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDisk, rt *diskRuntime) {
+	key := rtKey(r, d)
 	go func() {
 		for i := 0; !c.tryBusy(key); i++ {
 			if i >= 1800 {
@@ -657,7 +660,7 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	key := rtKey(r, d)
 	defer c.setPhase(key, rt, "")
 	var problems []string
-	if r.KeepLast+r.KeepDaily+r.KeepWeekly+r.KeepMonthly > 0 {
+	if rotKeep(r).Any() {
 		c.setPhase(key, rt, "pruning")
 		if err := c.prune(ctx, pbs, d.Store, r); err != nil {
 			problems = append(problems, "Aufräumen (prune): "+err.Error())
@@ -699,7 +702,7 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 			msg := c.noteDamage(r, d, rt, bad)
 			c.EventDetails("critical", rotationSource, "Festplatte „"+d.Label+"“ nach dem Abziehen beschädigt",
 				"Die Platte war im eingehängten Zustand abgezogen worden. Beim Zurücklesen nach der Kopie waren Daten nicht mehr lesbar. "+msg,
-				&notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Befund", Value: bad}}})
+				&notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{diskFact(d), {Label: "Befund", Value: bad}}})
 			return
 		}
 		checked = "nach dem Abziehen ohne Aushängen vollständig zurückgelesen: alles in Ordnung"
@@ -716,7 +719,7 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 			c.EventDetails("critical", rotationSource, "Festplatte „"+d.Label+"“ speichert nicht zuverlässig",
 				"Die Platte wurde neu aufgesetzt und neu befüllt, aber beim Zurücklesen waren die Daten wieder fehlerhaft. "+
 					"Das liegt meist am USB-Gehäuse oder Kabel, seltener an der Platte selbst. Bitte Gehäuse bzw. Platte tauschen und die Platte danach erneut neu aufsetzen.",
-				&notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Befund", Value: bad}}})
+				&notify.Details{Status: "error", Link: "/wechselplatten", Facts: []notify.Fact{diskFact(d), {Label: "Befund", Value: bad}}})
 			return
 		}
 		c.mu.Lock()
@@ -726,14 +729,14 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 	}
 	// What is on the disk now (read before it is unmounted).
 	rows := c.diskContents(ctx, pbs, d.Store)
-	det := &notify.Details{Status: "ok", RowsTitle: "Diese Server sind auf der Festplatte gesichert", Rows: rows, Link: "/wechselplatten"}
+	det := &notify.Details{Status: "ok", RowsTitle: "Diese Server sind auf der Festplatte gesichert", Rows: rows, Link: "/wechselplatten", Kind: "usb-done", Ref: rtKey(r, d)}
 	c.mu.Lock()
 	copyStart, copyEnd, copyUPID := rt.CopyStart, rt.LastOK, rt.CopyUPID
 	c.mu.Unlock()
 	if copyStart == 0 || copyStart > copyEnd {
 		copyStart = copyEnd
 	}
-	det.Facts = []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Beginn", Value: fmtWhen(copyStart)}}
+	det.Facts = []notify.Fact{diskFact(d), {Label: "Beginn", Value: fmtWhen(copyStart)}}
 	var copied *notify.Fact
 	if r.Direct() {
 		c.mu.Lock()
@@ -787,7 +790,9 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 		det.Facts = append(det.Facts, notify.Fact{Label: "Geprüft", Value: checked})
 	}
 	det.Facts = append(det.Facts, later...)
+	c.mu.Lock()
 	canPull := !r.UnmountOnDone || rt.DoneAt > 0
+	c.mu.Unlock()
 	title := "USB-Sicherung auf „" + d.Label + "“ fertig"
 	msg := "Alle Daten wurden erfolgreich auf die Festplatte „" + d.Label + "“ gesichert."
 	if r.UnmountOnDone && canPull {
@@ -810,16 +815,7 @@ func (c *Core) aftercare(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDi
 }
 
 func (c *Core) prune(ctx context.Context, pbs *prox.PBS, store string, r Rotation) error {
-	p := prox.Params{}
-	for k, v := range map[string]int{"keep-last": r.KeepLast, "keep-daily": r.KeepDaily, "keep-weekly": r.KeepWeekly, "keep-monthly": r.KeepMonthly} {
-		if v > 0 {
-			p[k] = v
-		}
-	}
-	if r.SourceNS != "" {
-		p["ns"] = r.SourceNS
-	}
-	upid, err := pbs.StartTask(ctx, "/admin/datastore/"+url.PathEscape(store)+"/prune-datastore", p)
+	upid, err := pbs.PruneDatastore(ctx, store, r.SourceNS, rotKeep(r))
 	if err != nil {
 		return err
 	}
@@ -860,7 +856,7 @@ func (c *Core) RunRotationDisk(ctx context.Context, r Rotation, d RotDisk) error
 		if _, err := pbs.WaitTask(ctx, upid, 5*time.Minute); err != nil {
 			return fmt.Errorf("Platte %s einhängen: %w", d.Label, err)
 		}
-		if r.RunOnMount {
+		if r.RunOnMount && !c.copyOwnerPending(r, d) {
 			c.RequestRefresh()
 			return nil
 		}
@@ -912,8 +908,9 @@ func (c *Core) scheduleRotations(ctx context.Context, states []RotationState, no
 		if !r.Direct() {
 			if pbs, _, err := c.PBS(r.ServerID); err == nil {
 				for _, d := range st.Disks {
-					if d.Mounted && !d.Running && d.Phase == "" {
-						c.handOverForCopy(ctx, pbs, r, d.RotDisk)
+					// the copy that did not start on mounting (see syncParams) starts now
+					if d.Mounted && !d.Running && d.Phase == "" && c.handOverForCopy(ctx, pbs, r, d.RotDisk) && r.RunOnMount {
+						_ = pbs.RunJob(ctx, "sync", r.SyncJobID(d.RotDisk))
 					}
 				}
 			}
@@ -1055,9 +1052,6 @@ func (c *Core) PrepareDisk(ctx context.Context, serverID, disk, store, fs string
 	return nil
 }
 
-var _ = http.MethodGet
-var _ = log.Printf
-
 // rotationSource names the USB rotation in events and mails (readers are customers).
 const rotationSource = "USB-Sicherung"
 
@@ -1102,4 +1096,31 @@ func copiedFact(s prox.SyncSummary) (notify.Fact, bool) {
 		v += " mit durchschnittlich " + s.Rate
 	}
 	return notify.Fact{Label: "Kopiert", Value: v}, true
+}
+
+// diskFact names a USB disk in the facts of a message.
+func diskFact(d RotDisk) notify.Fact {
+	return notify.Fact{Label: "Festplatte", Value: "„" + d.Label + "“"}
+}
+
+// ForgetRotation removes what the appliance kept about a set that is deleted.
+func (c *Core) ForgetRotation(r Rotation) {
+	for _, k := range []string{"directwarn:", "usbspace-day:", "usbspace-warned:", "rotcopy:", "remind:"} {
+		_ = c.St.DeleteSetting(k + r.ID)
+	}
+	for _, p := range []string{"directproblem:", "plan:"} {
+		_ = c.St.DeleteSettingsPrefix(p + r.ID + ":")
+	}
+	for _, d := range r.Disks {
+		c.ForgetRotationDisk(r, d)
+	}
+}
+
+// ForgetRotationDisk removes the state of a disk that left its set.
+func (c *Core) ForgetRotationDisk(r Rotation, d RotDisk) {
+	key := rtKey(r, d)
+	_ = c.St.DeleteSetting("rt:" + key)
+	c.mu.Lock()
+	delete(c.rotRT, key)
+	c.mu.Unlock()
 }

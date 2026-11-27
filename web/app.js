@@ -82,6 +82,10 @@ function fmtTime(ts, withYear) {
   const p = (x) => String(x).padStart(2, "0");
   return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${withYear ? d.getFullYear() + " " : ""}${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+// hmOf: "08:30"; dayShortOf: "Sa., 05.12." – both take unix seconds or a Date.
+const asDate = (t) => (t instanceof Date ? t : new Date(t * 1000));
+const hmOf = (t) => { const d = asDate(t); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+const dayShortOf = (t) => asDate(t).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
 function fmtAgo(ts) {
   if (!ts) return "nie";
   const s = Math.round(Date.now() / 1000 - ts);
@@ -123,6 +127,31 @@ const TASK_LABELS = {
   aptupdate: "Paketlisten laden", srvreload: "Dienste neu laden",
 };
 const taskLabel = (t) => TASK_LABELS[t] || t;
+
+// ---------- weekdays (1 = Monday … 7 = Sunday) ----------
+const DAY_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+const DAY_LONG = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+// dayOptions: select options [[1, "Montag"], …, [7, "Sonntag"]].
+const dayOptions = () => DAY_LONG.map((n, i) => [i + 1, n]);
+// dayPick renders the weekday checkboxes (.daypick) with the given days ticked; pickedDays reads them back.
+const dayPick = (selected, attrs = "") => `<div class="daypick"${attrs ? " " + attrs : ""}>${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(selected || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div>`;
+const pickedDays = (root) => qsa(".daypick input:checked", root).map((c) => Number(c.value));
+
+// guestKind: "CT", "VM" or "Host" for the type of a backup ("ct", "vm", "host") or a PVE guest ("lxc", "qemu").
+const guestKind = (t) => (t === "ct" || t === "lxc" ? "CT" : t === "vm" || t === "qemu" ? "VM" : "Host");
+
+// ---------- retention ----------
+const KEEP_RULES = [["last", "letzte", "letzte"], ["daily", "tägl.", "tägliche"], ["weekly", "wöch.", "wöchentliche"], ["monthly", "monatl.", "monatliche"], ["yearly", "jährl.", "jährliche"]];
+// keepParts lists the rules that keep something, e.g. ["7 tägl.", "4 wöch."]. pbs: the keys of a
+// PBS job ("keep-daily") with short words; otherwise the keys of a rotation set ("keep_daily").
+const keepParts = (x, pbs) => KEEP_RULES.map(([k, short, long]) => [x[(pbs ? "keep-" : "keep_") + k], pbs ? short : long])
+  .filter(([n]) => n > 0).map(([n, l]) => `${n} ${l}`);
+// keepText: the retention of a PBS prune job ("7 tägl. · 4 wöch.").
+const keepText = (j) => (j ? keepParts(j, true).join(" · ") : "");
+// diskKeepText: what the retention leaves on each disk ("7 tägliche, 4 wöchentliche").
+const diskKeepText = (x) => keepParts(x, false).join(", ") || "alle Stände";
+// onlyNewest: a set (or its form values) copies only the newest backup and keeps just that one.
+const onlyNewest = (x) => Number(x.transfer_last) === 1 && Number(x.keep_last) === 1 && !Number(x.keep_daily) && !Number(x.keep_weekly) && !Number(x.keep_monthly);
 
 // ---------- API ----------
 async function api(method, path, body, headers = {}) {
@@ -195,10 +224,15 @@ function toast(text, kind = "ok") {
 const toastErr = (e) => toast(e.message || String(e), "error");
 
 // ---------- dialogs ----------
+// dlgHead renders the head of a dialog: icon, title and an optional text (both HTML).
+const dlgHead = ({ ic, title, text = "", tone = "" }) => `<div class="dlg-head"><span class="dlg-ic${tone ? " " + tone : ""}">${icon(ic)}</span><div class="grow"><div class="dlg-title">${title}</div>${text ? `<p class="dlg-text">${text}</p>` : ""}</div></div>`;
+
+// openDialog shows a modal dialog; buttons with data-close close it.
 function openDialog(html, cls = "") {
   const d = document.createElement("dialog");
   d.className = cls;
   d.innerHTML = html;
+  qsa("[data-close]", d).forEach((b) => b.addEventListener("click", () => d.close()));
   document.body.appendChild(d);
   d.addEventListener("close", () => setTimeout(() => d.remove(), 0));
   d.addEventListener("click", (e) => { if (e.target === d && !d.dataset.busy) d.close(); });
@@ -285,8 +319,7 @@ const tip = (() => {
 function askPassword({ title, text = "", button = "Löschen" }) {
   return new Promise((resolve) => {
     const d = openDialog(`<form method="dialog" novalidate>
-      <div class="dlg-head"><span class="dlg-ic red">${icon("trash")}</span>
-        <div class="grow"><div class="dlg-title">${esc(title)}</div>${text ? `<p class="dlg-text">${text}</p>` : ""}</div></div>
+      ${dlgHead({ ic: "trash", tone: "red", title: esc(title), text })}
       <div class="dlg-body"><div class="field"><label class="fl" for="ask-pw">Zur Bestätigung dein Passwort</label>
         <input type="password" id="ask-pw" data-pw autocomplete="current-password" required><span class="err" data-err hidden></span></div></div>
       <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-cancel>Abbrechen</button><button class="btn red" type="submit" data-ok>${esc(button)}</button></div></form>`);
@@ -315,8 +348,7 @@ function askPassword({ title, text = "", button = "Löschen" }) {
 function confirmDialog({ title, text = "", button = "Löschen", tone = "red", ic }) {
   return new Promise((resolve) => {
     const d = openDialog(`
-      <div class="dlg-head"><span class="dlg-ic ${tone === "red" ? "red" : ""}">${icon(ic || (tone === "red" ? "trash" : "refresh"))}</span>
-        <div class="grow"><div class="dlg-title">${esc(title)}</div>${text ? `<p class="dlg-text">${text}</p>` : ""}</div></div>
+      ${dlgHead({ ic: ic || (tone === "red" ? "trash" : "refresh"), tone: tone === "red" ? "red" : "", title: esc(title), text })}
       <div class="dlg-foot" style="margin-top:20px"><button class="btn gray" data-r="0" type="button" autofocus>Abbrechen</button><button class="btn ${tone === "red" ? "red" : ""}" data-r="1" type="button">${esc(button)}</button></div>`);
     let result = false;
     qsa("[data-r]", d).forEach((b) => b.onclick = () => { result = b.dataset.r === "1"; d.close(); });
@@ -393,7 +425,7 @@ function showErrors(root, err) {
 function formDialog({ title, text, ic = "pencil", tone = "", fields, submit, button = "Speichern", cls = "wide", extra = "", onMount, extraButtons = "", grid = "" }) {
   const d = openDialog(`
     <form method="dialog" novalidate>
-      <div class="dlg-head"><span class="dlg-ic ${tone}">${icon(ic)}</span><div class="grow"><div class="dlg-title">${esc(title)}</div>${text ? `<p class="dlg-text">${text}</p>` : ""}</div></div>
+      ${dlgHead({ ic, tone, title: esc(title), text })}
       <div class="dlg-body"><div class="form-error" hidden></div><div class="form-grid ${grid}">${fields.map(field).join("")}</div>${extra}</div>
       <div class="dlg-foot">${extraButtons}<span class="spacer"></span><button class="btn gray" type="button" data-cancel>Abbrechen</button><button class="btn ${tone === "red" ? "red" : ""}" type="submit">${esc(button)}</button></div>
     </form>`, cls);
@@ -425,7 +457,6 @@ function showTask(source, upid, title) {
     <div class="dlg-head"><span class="dlg-ic">${icon("terminal")}</span><div class="grow"><div class="dlg-title">${esc(title || "Aufgabe")}</div><p class="dlg-text mono small">${esc(upid)}</p></div><span data-st></span></div>
     <div class="dlg-body"><pre class="log" data-log>Lade …</pre></div>
     <div class="dlg-foot"><button class="btn gray" type="button" data-close>Schließen</button></div>`, "xwide");
-  qs("[data-close]", d).onclick = () => d.close();
   let open = true;
   d.addEventListener("close", () => { open = false; });
   const poll = async () => {
@@ -445,6 +476,18 @@ function showTask(source, upid, title) {
     } catch (e) { qs("[data-log]", d).textContent = e.message; }
   };
   poll();
+}
+
+// fillStores fills a datastore <select> with the stores of a server and selects value.
+// fixedOnly leaves out removable datastores; emptyText is shown when there is none; loading
+// shows "Lade …" first. Returns false when loading failed (shown as a toast).
+async function fillStores(sel, serverId, { value, fixedOnly = false, emptyText = "", loading = true } = {}) {
+  if (loading) sel.innerHTML = `<option value="">Lade …</option>`;
+  try {
+    const list = (await storesOf(serverId)).filter((s) => !fixedOnly || !s.removable);
+    sel.innerHTML = list.map((s) => `<option ${s.name === value ? "selected" : ""}>${esc(s.name)}</option>`).join("") || (emptyText ? `<option value="">${esc(emptyText)}</option>` : "");
+    return true;
+  } catch (e) { sel.innerHTML = ""; toastErr(e); return false; }
 }
 
 async function run(btn, fn, okText) {
@@ -520,7 +563,6 @@ function themeIcon() {
 
 function shell() {
   const cur = location.pathname;
-  const failing = (state.ov?.events || []).length;
   let collapsed = false;
   try { collapsed = localStorage.getItem("pk95pb-menu") === "zu"; } catch (e) { /* ignore */ }
   document.body.classList.toggle("collapsed", collapsed);
@@ -561,18 +603,17 @@ function shell() {
   drawMaint();
   bindRunning();
   qs("[data-logout]").onclick = async () => { await POST("/api/logout").catch(() => {}); state.user = null; render(); };
-  void failing;
 }
 
 // ---------- maintenance mode (top bar) ----------
 // "bis 14:30", "bis morgen 08:00", "bis Mo., 01.12. 08:00"
 function untilText(ts) {
   const d = new Date(ts * 1000), now = new Date();
-  const hm = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  const hm = hmOf(d);
   if (d.toDateString() === now.toDateString()) return hm;
   const tom = new Date(now); tom.setDate(now.getDate() + 1);
   if (d.toDateString() === tom.toDateString()) return "morgen " + hm;
-  return d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" }) + " " + hm;
+  return dayShortOf(d) + " " + hm;
 }
 
 function drawMaint() {
@@ -641,8 +682,7 @@ function maintActiveDialog(m) {
   const admin = can("admin");
   const paused = m.paused || [];
   const d = openDialog(`
-    <div class="dlg-head"><span class="dlg-ic yellow">${icon("wrench")}</span><div class="grow"><div class="dlg-title">Wartung bis ${esc(untilText(m.until))}</div>
-      <p class="dlg-text">${m.reason ? esc(m.reason) + " · " : ""}seit ${esc(fmtTime(m.start))} · von ${esc(m.by)}</p></div></div>
+    ${dlgHead({ ic: "wrench", tone: "yellow", title: `Wartung bis ${esc(untilText(m.until))}`, text: `${m.reason ? esc(m.reason) + " · " : ""}seit ${esc(fmtTime(m.start))} · von ${esc(m.by)}` })}
     <div class="dlg-body">
       <ul class="plain-list small">
         <li>${m.pause_jobs ? `${paused.length} Jobs ausgesetzt; USB-Kopien, Restore-Tests und Updates starten nicht.` : "Jobs laufen normal weiter."}</li>
@@ -653,7 +693,6 @@ function maintActiveDialog(m) {
       ${admin ? `<div class="field mt" data-field="until"><label class="fl" for="f-ext">Ende ändern</label><div class="inline"><select id="f-ext">${maintOptions().filter(([v]) => v !== "custom").map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join("")}</select><button class="btn gray" type="button" data-extend>Übernehmen</button></div></div>` : ""}
     </div>
     <div class="dlg-foot">${admin ? `<button class="btn gray" type="button" data-plans>${icon("calendar")} Geplante Wartungen</button>` : ""}<span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button>${admin ? `<button class="btn" type="button" data-end>${icon("play")} Wartung beenden</button>` : ""}</div>`, "wide");
-  qs("[data-close]", d).onclick = () => d.close();
   if (!admin) return;
   qs("[data-plans]", d).onclick = () => { d.close(); maintPlansDialog(); };
   qs("[data-extend]", d).onclick = (e) => run(e.currentTarget, async () => {
@@ -670,17 +709,13 @@ function maintActiveDialog(m) {
 // fmtWindow: "Sa, 05.12. 08:00–12:00" (end with its day when it is another day)
 function fmtWindow(w) {
   const a = new Date(w[0] * 1000), b = new Date(w[1] * 1000);
-  const day = (d) => d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
-  const hm = (d) => d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-  return `${day(a)} ${hm(a)}–${a.toDateString() === b.toDateString() ? hm(b) : day(b) + " " + hm(b)}`;
+  return `${dayShortOf(a)} ${hmOf(a)}–${a.toDateString() === b.toDateString() ? hmOf(b) : dayShortOf(b) + " " + hmOf(b)}`;
 }
 
 async function maintPlansDialog() {
-  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("calendar")}</span><div class="grow"><div class="dlg-title">Geplante Wartungen</div>
-      <p class="dlg-text">Zum Beginn schaltet die Appliance den Wartungsmodus selbst ein und zum Ende wieder aus – auf Wunsch mit Ankündigung vorher.</p></div></div>
+  const d = openDialog(`${dlgHead({ ic: "calendar", title: "Geplante Wartungen", text: "Zum Beginn schaltet die Appliance den Wartungsmodus selbst ein und zum Ende wieder aus – auf Wunsch mit Ankündigung vorher." })}
     <div class="dlg-body" data-list><p class="muted">Lade …</p></div>
     <div class="dlg-foot"><button class="btn gray" type="button" data-close>Schließen</button><span class="spacer"></span><button class="btn" type="button" data-new>${icon("plus")} Wartung planen</button></div>`, "wide");
-  qs("[data-close]", d).onclick = () => d.close();
   const load = async () => {
     const { plans } = await GET("/api/maintenance/plans");
     const box = qs("[data-list]", d);
@@ -712,9 +747,9 @@ function maintPlanForm(p, done) {
       { name: "reason", label: "Grund", value: p.reason, required: true, placeholder: "z. B. Updates, Umbau pve1", wide: true },
       { name: "repeat", type: "radio", label: "Wie oft", value: p.repeat, options: [["once", "Einmalig", "An einem bestimmten Tag"], ["weekly", "Wöchentlich", "An bestimmten Wochentagen"], ["monthly", "Monatlich", "Z. B. jeden ersten Samstag"]] },
       { name: "date", label: "Datum", type: "date", value: p.date || tomorrow },
-      { type: "html", name: "weekdays", wide: true, html: `<span class="fl">Wochentage</span><div class="daypick">${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(p.weekdays || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+      { type: "html", name: "weekdays", wide: true, html: `<span class="fl">Wochentage</span>${dayPick(p.weekdays)}<span class="err" hidden></span>` },
       { name: "month_week", label: "Welcher", type: "select", value: p.month_week || "1", options: [["1", "Erster"], ["2", "Zweiter"], ["3", "Dritter"], ["4", "Vierter"], ["last", "Letzter"]] },
-      { name: "month_weekday", label: "Wochentag", type: "select", value: p.month_weekday || 6, options: [[1, "Montag"], [2, "Dienstag"], [3, "Mittwoch"], [4, "Donnerstag"], [5, "Freitag"], [6, "Samstag"], [7, "Sonntag"]] },
+      { name: "month_weekday", label: "Wochentag", type: "select", value: p.month_weekday || 6, options: dayOptions() },
       { name: "time", label: "Beginn", type: "time", value: p.time },
       { name: "minutes", label: "Dauer", type: "select", value: p.minutes, options: dur },
       { name: "pause_jobs", label: "Sicherungen und Jobs aussetzen", type: "checkbox", value: p.pause_jobs, wide: true },
@@ -735,7 +770,7 @@ function maintPlanForm(p, done) {
     },
     submit: async (v, d) => {
       const body = { id: edit ? p.id : "", reason: v.reason, enabled: v.enabled, repeat: v.repeat, date: v.date, time: v.time, minutes: Number(v.minutes),
-        weekdays: qsa('[data-field="weekdays"] input:checked', d).map((c) => Number(c.value)), month_mode: "weekday", month_week: v.month_week,
+        weekdays: pickedDays(d), month_mode: "weekday", month_week: v.month_week,
         month_weekday: Number(v.month_weekday), every_weeks: 1, every_months: 1, pause_jobs: v.pause_jobs, mute: v.mute, announce_hours: Number(v.announce_hours) };
       await POST("/api/maintenance/plans", body);
       toast("Gespeichert."); done();
@@ -827,7 +862,8 @@ function pageHead(title, sub = "", actions = "", back = null) {
   return `<div class="page-head"><div style="min-width:0">${back ? `<a class="back" href="${back[0]}" data-go>${icon("back")}${esc(back[1])}</a>` : ""}<h1>${title}</h1>${sub ? `<div class="sub">${sub}</div>` : ""}</div>${actions ? `<div class="actions">${actions}</div>` : ""}</div>`;
 }
 const empty = (title, text = "", action = "", ic = "archive") => `<div class="empty">${icon(ic)}${title ? `<b>${esc(title)}</b>` : ""}${text ? `<p>${text}</p>` : ""}${action}</div>`;
-const callout = (tone, title, text, actions = "") => `<div class="callout ${tone}"><div class="ct"><div class="ch">${esc(title)}</div><div class="cb">${text}</div></div>${actions ? `<div class="flex">${actions}</div>` : ""}</div>`;
+// callout: cls adds classes, e.g. "flat" (no margin), "mb12" or "mb16" (only a bottom margin).
+const callout = (tone, title, text, actions = "", cls = "") => `<div class="callout ${tone}${cls ? " " + cls : ""}"><div class="ct"><div class="ch">${esc(title)}</div><div class="cb">${text}</div></div>${actions ? `<div class="flex">${actions}</div>` : ""}</div>`;
 
 const PAGES = {};
 
@@ -1092,7 +1128,7 @@ PAGES["/"] = async (el, token) => {
     const cov = r.coverage || {};
     if (cov.bad) issue("warning", `${cov.bad} ${cov.bad === 1 ? "VM bzw. Container hat" : "VMs und Container haben"} eine Lücke in der Sicherungskette${cov.names?.length ? " (" + cov.names.join(", ") + (cov.bad > cov.names.length ? ", …" : "") + ")" : ""}`, "/sicherungen?luecken=1");
     for (const x of r.damaged || []) issue("error", `${x.damaged.length} ${x.damaged.length === 1 ? "beschädigte Sicherung" : "beschädigte Sicherungen"} auf ${x.server_name} / ${x.store} – betroffene Server neu sichern`, `/datastores?server=${x.server_id}`);
-    for (const a of r.anomalies || []) issue("warning", `Auffällige Sicherung: ${a.type === "ct" ? "CT" : "VM"} ${a.guest_id}${a.name ? " " + a.name : ""} – ${a.text}`, "/sicherungen?auffaellig=1");
+    for (const a of r.anomalies || []) issue("warning", `Auffällige Sicherung: ${guestKind(a.type)} ${a.guest_id}${a.name ? " " + a.name : ""} – ${a.text}`, "/sicherungen?auffaellig=1");
     const hb = r.handbook || {};
     if (servers.length && hb.state === "never" && can("admin")) issue("warning", "Das Notfallhandbuch ist noch nicht ausgedruckt", "/notfallhandbuch");
     else if (hb.state === "changed") issue("warning", `Notfallhandbuch veraltet – geändert: ${hb.changed.join(", ")}`, "/notfallhandbuch");
@@ -1143,7 +1179,7 @@ PAGES["/"] = async (el, token) => {
             ${stores.length ? `<div class="table-wrap"><table class="resp dash-table"><thead><tr><th>Datastore</th><th>Belegung</th><th class="num">Frei</th></tr></thead><tbody>
             ${stores.map((d) => `<tr><td data-l="Datastore"><div class="t-main">${esc(d.store)} ${d["mount-status"] === "notmounted" ? pill("ausgehängt") : d["mount-status"] === "mounted" ? pill("USB", "blue") : ""}</div><div class="t-sub">${esc(d.server)}</div></td>
               <td data-l="Belegung" class="bar-cell">${d.total ? usageBar(d.used, d.total) : `<span class="muted small">${d.error ? esc(d.error) : "nicht eingehängt"}</span>`}</td>
-              <td class="num" data-l="Frei">${d.total ? fmtBytes(d.avail) : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Datastore", "", `<a class="btn sm" href="/datastores" data-go>Datastore anlegen</a>`, "database")}</div>`}
+              <td class="num" data-l="Frei">${d.total ? fmtBytes(d.avail) : "—"}</td></tr>`).join("")}</tbody></table></div>` : `<div class="flush-pad">${empty("Noch kein Datastore", "", `<a class="btn sm" href="/datastores" data-go>Datastore anlegen</a>`, "database")}</div>`}
           </div>
           <div class="panel flush"><div class="panel-head"><div class="panel-title">Letzte Aufgaben</div><a class="btn gray sm" href="/aufgaben" data-go>Alle</a></div>
             <div class="rows">${tasks.slice(0, 8).map((t) => `<button class="row task-row" type="button" data-task="${esc(t.source)}|${esc(t.upid)}"><div class="grow"><div class="title">${esc(taskLabel(t.type))} <span class="muted">${esc(t.id || "")}</span></div><div class="t-sub">${esc(t.server)}${t.node ? " · " + esc(t.node) : ""} · ${esc(fmtTime(t.starttime))}</div></div>${taskPill(t)}</button>`).join("") || `<div class="row muted">Keine Aufgaben.</div>`}</div>
@@ -1154,7 +1190,7 @@ PAGES["/"] = async (el, token) => {
             ${rots.length ? rots.map((x) => `<div class="rot-sum"><div class="rot-sum-head"><div><b>${esc(x.name)}</b> <span class="muted small">${x.rhythm === "weekly" ? "wöchentlich" : "täglich"}</span></div><div class="small muted">Letzte Kopie <b class="ink-2">${esc(fmtAgo(x.last_copy))}</b></div></div>
               <ul class="disk-list">${x.disks.map((d) => { const [l, t] = diskState[d.state] || diskState.absent; return `<li><span class="sdot ${t}${d.state === "running" ? " pulse" : ""}"></span><span class="grow">${esc(d.label)}${d.today ? ` <span class="today-tag">heute dran</span>` : ""}</span><span class="small muted">${esc(l)}</span></li>`; }).join("")}</ul>
               <div class="small muted">${esc(x.hint)}</div></div>`).join("") :
-              `<div style="padding:0 16px 16px">${empty("Kein Wechselplatten-Satz", "Zwei oder mehr USB-Platten, die täglich oder wöchentlich getauscht werden: eine liegt immer außer Haus.", `<a class="btn sm" href="/wechselplatten" data-go>Einrichten</a>`, "disk")}</div>`}
+              `<div class="flush-pad">${empty("Kein Wechselplatten-Satz", "Zwei oder mehr USB-Platten, die täglich oder wöchentlich getauscht werden: eine liegt immer außer Haus.", `<a class="btn sm" href="/wechselplatten" data-go>Einrichten</a>`, "disk")}</div>`}
           </div>
           <div class="panel flush"><div class="panel-head"><div class="panel-title">Ereignisse</div><a class="btn gray sm" href="/ereignisse" data-go>Alle</a></div>
             <div class="rows">${(r.events || []).map(eventItem).join("") || `<div class="row muted">Noch keine Ereignisse.</div>`}</div>
@@ -1232,7 +1268,7 @@ PAGES["/verbindungen"] = async (el, token) => {
           <td data-l="Software">${softwareCell(sh[s.id], s.id)}</td>
           <td data-l="Kommandozeile">${s.local ? '<span class="small">lokal</span>' : s.ssh_enabled ? '<span class="small">SSH ' + esc(s.ssh_user || "root") + "@" + esc(s.ssh_host || s.host) + "</span>" : '<span class="small muted">nur API</span>'}</td>
           <td class="act"><div class="row-actions">${!s.local && s.ssh_enabled ? `<button class="btn gray sm" type="button" data-ssh="${s.id}">SSH testen</button>` : ""}<button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit-pbs="${s.id}">${icon("pencil")}</button>${s.local ? "" : `<button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del-pbs="${s.id}">${icon("trash")}</button>`}</div></td></tr>`; }).join("")}
-        </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Backup-Server", state.localPBS ? "Der lokale PBS wird gerade eingebunden …" : "Auf dieser Maschine ist kein Proxmox Backup Server installiert. Einen vorhandenen PBS hinzufügen.", "", "server")}</div>`}
+        </tbody></table></div>` : `<div class="flush-pad">${empty("Noch kein Backup-Server", state.localPBS ? "Der lokale PBS wird gerade eingebunden …" : "Auf dieser Maschine ist kein Proxmox Backup Server installiert. Einen vorhandenen PBS hinzufügen.", "", "server")}</div>`}
       </div>
       <div class="panel flush"><div class="panel-head"><div class="panel-title">Proxmox VE</div><div class="actions"><button class="btn" type="button" data-add-pve>${icon("plus")} Proxmox VE hinzufügen</button></div></div>
         <p class="panel-intro">Ein Knoten genügt, auch bei einem Cluster. Darüber legt die Appliance Sicherungsjobs an, startet Sicherungen und stellt wieder her.</p>
@@ -1243,8 +1279,8 @@ PAGES["/verbindungen"] = async (el, token) => {
           <td data-l="Status">${x.online ? pill("Online", "green", true) + `<div class="t-sub">PVE ${esc(x.version)} · ${x.nodes} Knoten</div>` : pill("Offline", "rose") + `<div class="t-sub">${esc(x.error || "")}</div>`}</td>
           <td data-l="Gäste">${x.online ? ((x.missing || []).length ? '<span class="bad small">keine Rechte</span>' : `${x.guests} ${x.not_backed_up ? `<div class="t-sub bad">${x.not_backed_up} ohne Job</div>` : ""}`) : "—"}</td>
           <td class="act"><div class="row-actions"><button class="btn gray sm" type="button" data-storages="${c.id}">${icon("database")} Backup-Speicher</button><button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit-pve="${c.id}">${icon("pencil")}</button><button class="ib red" type="button" title="Entfernen" aria-label="Entfernen" data-del-pve="${c.id}">${icon("trash")}</button></div></td></tr>`; }).join("")}
-        </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Proxmox VE verbunden", "Unten steht, wie du den API-Token anlegst.", "", "server")}</div>`}
-        ${state.clusters.filter((c) => (cst[c.id]?.missing || []).length).map((c) => `<div style="padding:0 16px 16px">${permCallout(c, cst[c.id].missing)}</div>`).join("")}
+        </tbody></table></div>` : `<div class="flush-pad">${empty("Noch kein Proxmox VE verbunden", "Unten steht, wie du den API-Token anlegst.", "", "server")}</div>`}
+        ${state.clusters.filter((c) => (cst[c.id]?.missing || []).length).map((c) => `<div class="flush-pad">${permCallout(c, cst[c.id].missing)}</div>`).join("")}
       </div>
       <div class="grid">
         <div class="panel"><div class="panel-head"><div class="panel-title">Token für Proxmox VE</div></div>
@@ -1381,11 +1417,9 @@ function pveForm(s, done) {
 }
 
 async function pveStoragesDialog(cl) {
-  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("database")}</span><div class="grow"><div class="dlg-title">Backup-Speicher in ${esc(cl.name)}</div>
-    <p class="dlg-text">PBS-Datastores, die Proxmox VE als Ziel für Sicherungen kennt. Beim Eintragen legt die Appliance auf dem Backup-Server einen eigenen Token an, der nur diesen Datastore benutzen darf.</p></div></div>
+  const d = openDialog(`${dlgHead({ ic: "database", title: `Backup-Speicher in ${esc(cl.name)}`, text: "PBS-Datastores, die Proxmox VE als Ziel für Sicherungen kennt. Beim Eintragen legt die Appliance auf dem Backup-Server einen eigenen Token an, der nur diesen Datastore benutzen darf." })}
     <div class="dlg-body" data-body><div class="flex"><span class="spinner"></span> Lade …</div></div>
     <div class="dlg-foot"><button class="btn gray" type="button" data-close>Schließen</button></div>`, "xwide");
-  qs("[data-close]", d).onclick = () => d.close();
   const body = qs("[data-body]", d);
   const draw = async () => {
     const [r, kr] = await Promise.all([GET(`/api/pve/${cl.id}/storages`), GET("/api/enckeys?usage=0")]);
@@ -1407,14 +1441,10 @@ async function pveStoragesDialog(cl) {
     sel.onchange = async () => {
       const st = qs('[name="store"]', form);
       st.innerHTML = `<option value="">Lade …</option>`;
-      if (!sel.value) return;
-      try {
-        const x = await GET(`/api/pbs/${sel.value}/datastores`);
-        st.innerHTML = x.datastores.filter((s) => !s.removable).map((s) => `<option>${esc(s.name)}</option>`).join("") || `<option value="">(kein Datastore)</option>`;
-        const nm = qs('[name="name"]', form);
-        if (!nm.value) nm.value = "pbs-" + (st.value || "backup");
-        st.onchange = () => { nm.value = "pbs-" + st.value; };
-      } catch (e) { st.innerHTML = ""; toastErr(e); }
+      if (!sel.value || !(await fillStores(st, sel.value, { fixedOnly: true, emptyText: "(kein Datastore)", loading: false }))) return;
+      const nm = qs('[name="name"]', form);
+      if (!nm.value) nm.value = "pbs-" + (st.value || "backup");
+      st.onchange = () => { nm.value = "pbs-" + st.value; };
     };
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -1441,13 +1471,6 @@ async function pveStoragesDialog(cl) {
 // ---------- server picker ----------
 function noServer(el, title) {
   el.innerHTML = pageHead(title) + empty("Kein Backup-Server verbunden", "Unter Verbindungen den PBS dieser Appliance prüfen oder einen vorhandenen PBS hinzufügen.", `<a class="btn" href="/verbindungen" data-go>Verbindungen</a>`, "server");
-}
-
-function keepText(j) {
-  if (!j) return "";
-  const parts = [["keep-last", "letzte"], ["keep-daily", "tägl."], ["keep-weekly", "wöch."], ["keep-monthly", "monatl."], ["keep-yearly", "jährl."]]
-    .filter(([k]) => j[k]).map(([k, l]) => `${j[k]} ${l}`);
-  return parts.join(" · ");
 }
 
 // ---------- Datastores ----------
@@ -1624,7 +1647,6 @@ function spaceDialog(srv, store) {
     <div class="dlg-body" data-body><div class="row flex"><span class="spinner"></span> Lade …</div></div>
     <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-measure hidden>${icon("refresh")} Jetzt messen</button><button class="btn" type="button" data-close>Schließen</button></div>`, "xwide");
   dlg.addEventListener("close", () => clearTimeout(timer));
-  qs("[data-close]", dlg).onclick = () => dlg.close();
   const url = `/api/pbs/${enc(srv.id)}/datastores/${enc(store)}/space`;
   const kind = { vm: "VM", ct: "CT", host: "Host" };
   const growth = (g) => {
@@ -1678,13 +1700,12 @@ function forecastDialog(srv, d) {
   if (f.full_at) rows.push(["Voll", esc(fcWhen(f).replace(/^voll ca\. /, "etwa "))]);
   if (f.removable) rows.push(["Messwerte", "nur an Tagen, an denen die Platte angesteckt war"]);
   const advice = d.advice || [];
-  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("chart")}</span><div class="grow"><div class="dlg-title">Platzprognose: ${esc(d.name)}</div><p class="dlg-text">${esc(srv.name)} · ${pill(state[0], state[1], true)}</p></div></div>
+  const dlg = openDialog(`${dlgHead({ ic: "chart", title: `Platzprognose: ${esc(d.name)}`, text: `${esc(srv.name)} · ${pill(state[0], state[1], true)}` })}
     <div class="dlg-body">${fcChart(f)}
       <table class="kv mt">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table>
       ${advice.length ? `<div class="section-title mt">Was hilft</div><ul class="fc-advice">${advice.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
       <p class="hint mt">Die Prognose verlängert das Wachstum der letzten ${f.removable ? "sechs Monate" : "zwei Monate"} gerade weiter. Neue Server, eine geänderte Aufbewahrung oder eine Speicherfreigabe ändern sie; sie wird täglich neu berechnet.</p></div>
     <div class="dlg-foot">${!f.removable && !s3Of(d) ? `<button class="btn gray" type="button" data-who>${icon("chart")} Wer belegt den Platz?</button>` : ""}<span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`, "wide");
-  qs("[data-close]", dlg).onclick = () => dlg.close();
   const who = qs("[data-who]", dlg);
   if (who) who.onclick = () => { dlg.close(); spaceDialog(srv, d.name); };
   bindFcChart(dlg, f);
@@ -1712,8 +1733,7 @@ function s3Of(d) {
 function s3Wizard(srv, s3, stores, done) {
   const P = s3.providers;
   let prov = P[0], ep = null;
-  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("globe")}</span><div class="grow"><div class="dlg-title">Cloud-Speicher (S3) anbinden</div>
-      <p class="dlg-text">Ein Datastore im Bucket eines S3-Anbieters, als Kopie außer Haus. Der Backup-Server legt die Daten dort ab und hält einen lokalen Cache. Anbieter berechnen Speicher, Abrufe und teils Übertragung – die Kosten im Blick behalten.</p></div></div>
+  const d = openDialog(`${dlgHead({ ic: "globe", title: "Cloud-Speicher (S3) anbinden", text: "Ein Datastore im Bucket eines S3-Anbieters, als Kopie außer Haus. Der Backup-Server legt die Daten dort ab und hält einen lokalen Cache. Anbieter berechnen Speicher, Abrufe und teils Übertragung – die Kosten im Blick behalten." })}
     <div class="dlg-body" data-step></div>`, "wide");
   d.dataset.busy = "1";
   const box = qs("[data-step]", d);
@@ -1867,10 +1887,8 @@ async function growDialog(srv, store, done, btn) {
   const p = await run(btn, () => GET(`/api/pbs/${srv.id}/datastores/${enc(store)}/grow`));
   if (!p) return;
   if (p.problem) {
-    const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("expand")}</span><div class="grow"><div class="dlg-title">${esc(store)} vergrößern</div>
-        <p class="dlg-text">${esc(p.problem)}</p></div></div>
+    const dlg = openDialog(`${dlgHead({ ic: "expand", title: `${esc(store)} vergrößern`, text: esc(p.problem) })}
       <div class="dlg-foot"><span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`);
-    qs("[data-close]", dlg).onclick = () => dlg.close();
     return;
   }
   const GiB = 2 ** 30;
@@ -1985,8 +2003,7 @@ function prunePreview(dlg, srv, store) {
 }
 
 async function datastoreDelete(srv, name, done) {
-  const d = openDialog(`<form method="dialog"><div class="dlg-head"><span class="dlg-ic red">${icon("trash")}</span><div class="grow"><div class="dlg-title">Datastore ${esc(name)} entfernen?</div>
-    <p class="dlg-text">Standard: Der Backup-Server vergisst den Datastore, die Dateien bleiben liegen und lassen sich später wieder einbinden.</p></div></div>
+  const d = openDialog(`<form method="dialog">${dlgHead({ ic: "trash", tone: "red", title: `Datastore ${esc(name)} entfernen?`, text: "Standard: Der Backup-Server vergisst den Datastore, die Dateien bleiben liegen und lassen sich später wieder einbinden." })}
     <div class="dlg-body"><label class="check"><input type="checkbox" name="destroy"><span class="ct"><span><b>Auch alle Sicherungen darin löschen</b></span><small>Kann nicht rückgängig gemacht werden.</small></span></label>
     <div class="field" data-field="confirm" hidden><label class="fl">Zur Bestätigung den Namen eintippen</label><input type="text" name="confirm" class="mono" autocomplete="off"></div>
     <div class="field" data-field="pw" hidden><label class="fl" for="ds-pw">Und dein Passwort</label><input type="password" id="ds-pw" name="pw" autocomplete="current-password"><span class="err" data-err hidden></span></div></div>
@@ -2015,7 +2032,6 @@ async function snapshotsDialog(srv, store) {
     <input type="search" placeholder="Filtern: ID, Typ …" data-filter style="max-width:220px"></div>
     <div class="dlg-body" data-body><div class="flex"><span class="spinner"></span> Lade …</div></div>
     <div class="dlg-foot"><span class="muted small" data-count></span><span class="spacer"></span><span data-delgroup></span><button class="btn gray" type="button" data-close>Schließen</button></div>`, "xwide");
-  qs("[data-close]", d).onclick = () => d.close();
   let snaps = [];
   const body = qs("[data-body]", d);
   const draw = () => {
@@ -2238,13 +2254,7 @@ function syncForm(srv, job, done, remotes = {}, windows = {}) {
     ],
     extraButtons: `<button class="btn gray" type="button" data-add-src>${icon("plus")} Backup-Server verbinden</button>`,
     onMount: async (d) => {
-      const fill = async (sel, sid, value) => {
-        sel.innerHTML = `<option value="">Lade …</option>`;
-        try {
-          const list = await storesOf(sid);
-          sel.innerHTML = list.map((s) => `<option ${s.name === value ? "selected" : ""}>${esc(s.name)}</option>`).join("");
-        } catch (e) { sel.innerHTML = ""; toastErr(e); }
-      };
+      const fill = (sel, sid, value) => fillStores(sel, sid, { value });
       const ss = qs('[name="source_server"]', d), host = qs('[name="source_host"]', d), res = qs("[data-conn-res]", d);
       const showConn = () => {
         const other = ss.value !== srv.id;
@@ -2390,7 +2400,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
       (rots.length ? rots.map((x) => `
       <div class="panel">
         <div class="panel-head"><div><div class="panel-title">${esc(x.name)}</div>
-          <div class="muted small">${x.mode === "direct" ? `<span class="pill blue">Direkt auf USB</span> ` : ""}${x.rhythm === "weekly" ? `Wechsel wöchentlich am ${["", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][x.swap_day]}` : "Wechsel täglich"}
+          <div class="muted small">${x.mode === "direct" ? `<span class="pill blue">Direkt auf USB</span> ` : ""}${x.rhythm === "weekly" ? `Wechsel wöchentlich am ${["", ...DAY_LONG][x.swap_day]}` : "Wechsel täglich"}
           ${x.mode === "direct" ? `· <b>${esc(x.source_name || x.cluster)}</b> sichert ${x.guests ? "die Server " + esc(x.guests.split(",").join(", ")) : "alle VMs und Container"} täglich um ${esc(x.time)} direkt auf die angesteckte Platte · Platten an <b>${esc(x.server_name)}</b>
           · auf jeder Platte bleiben ${esc(diskKeepText(x))}` : `· Quelle <b>${esc(x.source_name)}</b> / ${esc(x.source_store)} · Platten an <b>${esc(x.server_name)}</b>
           · ${x.time ? "Kopie täglich um " + esc(x.time) : ""}${x.time && x.run_on_mount ? " und " : ""}${x.run_on_mount ? "beim Anstecken" : ""}
@@ -2408,8 +2418,8 @@ PAGES["/wechselplatten"] = async (el, token) => {
         ${planCallout(x)}
         ${foreignCallouts(x)}
         <div data-space="${x.id}">${x.disks.length ? spaceBlock(x, spaceCache[x.id]?.e) : ""}</div>
-        ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : `<div class="callout ${x.disks.some((d) => d.state === "ready") ? "green" : ""}" style="margin:0 0 16px"><div class="ct"><div class="ch">${esc(x.hint)}</div>
-          <div class="cb">Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte ${x.mode === "direct" ? "Sicherung" : "Kopie"}: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? ` · Platten werden nach der ${x.mode === "direct" ? "Sicherung" : "Kopie"} ausgehängt` : ""}</div></div></div>`}
+        ${(x.plan_today || x.plan_next) && !x.disks.some((d) => d.state === "ready") ? "" : callout(x.disks.some((d) => d.state === "ready") ? "green" : "", x.hint,
+          `Nächster Wechsel: ${esc(x.next_swap || "—")} · Letzte ${x.mode === "direct" ? "Sicherung" : "Kopie"}: ${esc(fmtAgo(x.last_copy))}${x.unmount_on_done ? ` · Platten werden nach der ${x.mode === "direct" ? "Sicherung" : "Kopie"} ausgehängt` : ""}`, "", "mb16")}
         ${x.disks.length ? `<div class="table-wrap"><table class="resp disk-table"><thead><tr><th>Platte</th><th>Status</th><th>Letzte ${x.mode === "direct" ? "Sicherung" : "Kopie"}</th><th>Belegung</th><th>Zustand</th><th></th></tr></thead><tbody>${x.disks.map((d) => {
           const [l0, t] = DISK_STATE[d.state] || DISK_STATE.absent;
           const l = x.mode === "direct" && d.state === "running" ? "Sichert …" : l0;
@@ -2464,7 +2474,7 @@ PAGES["/wechselplatten"] = async (el, token) => {
     qsa("[data-rebuild]", el).forEach((b) => b.onclick = async () => {
       const [rid, k] = b.dataset.rebuild.split("|");
       const x = rots.find((r1) => r1.id === rid), d = x.disks.find((d1) => d1.key === k);
-      const keeps = x.transfer_last === 1 && x.keep_last === 1 && !x.keep_daily && !x.keep_weekly && !x.keep_monthly;
+      const keeps = onlyNewest(x);
       const ok = await confirmDialog({ title: `„${d.label}“ neu aufsetzen?`, button: x.mode === "direct" ? "Formatieren und neu sichern" : "Formatieren und neu kopieren", ic: "refresh",
         text: x.mode === "direct" ? `Alles auf der Platte wird gelöscht und sie wird neu formatiert. Danach sichert ${esc(x.source_name)} sofort neu auf die Platte und die Appliance liest alles zurück, um zu prüfen, ob sie zuverlässig speichert. <b>Alle älteren Stände auf dieser Platte gehen dabei verloren</b> – es gibt sie nirgends sonst.`
           : `Alles auf der Platte wird gelöscht, sie wird neu formatiert und mit den Sicherungen von ${esc(x.source_name)} / ${esc(x.source_store)} neu befüllt. Danach liest die Appliance alles von der Platte zurück, um zu prüfen, ob sie zuverlässig speichert.${keeps ? "" : " <b>Ältere Stände, die nur auf dieser Platte liegen, gehen dabei verloren.</b>"}` });
@@ -2550,44 +2560,43 @@ function foreignCallouts(x) {
 }
 
 const TRANSFER_OPTIONS = [[1, "Nur die neueste Sicherung"], [2, "Die neuesten 2"], [3, "Die neuesten 3"], [7, "Die neuesten 7"], [14, "Die neuesten 14"], [0, "Alle Sicherungen"]];
-// diskKeepText: what the retention leaves on each disk ("7 tägliche, 4 wöchentliche").
-const diskKeepText = (x) => [[x.keep_last, "letzte"], [x.keep_daily, "tägliche"], [x.keep_weekly, "wöchentliche"], [x.keep_monthly, "monatliche"]]
-  .filter(([n]) => n > 0).map(([n, l]) => `${n} ${l}`).join(", ") || "alle Stände";
 const transferText = (n) => (!n ? "alle Sicherungen" : n === 1 ? "nur die neueste Sicherung" : `die neuesten ${n} Sicherungen`);
 
 // damageCallout recommends formatting a disk whose files cannot be read any more.
 function damageCallout(x, d) {
   const src = `${x.source_name} / ${x.source_store}`;
+  const plug = d.present ? "" : " <b>Dazu die Platte anstecken.</b>";
+  const detail = `<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`;
+  const button = (label) => `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} ${label}</button>`;
   if (x.mode === "direct" && !d.repair_failed) return callout("red", `„${d.label}“ ist beschädigt – Empfehlung: neu aufsetzen`,
-    `Dateien auf der Platte lassen sich nicht mehr richtig lesen, deshalb schlägt die Sicherung fehl. Neu aufsetzen formatiert die Platte, sichert sofort neu und liest danach zur Kontrolle alles zurück. <b>Die älteren Stände auf dieser Platte gehen dabei verloren.</b>${d.present ? "" : " <b>Dazu die Platte anstecken.</b>"}<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`,
-    `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} Neu aufsetzen</button>`);
+    `Dateien auf der Platte lassen sich nicht mehr richtig lesen, deshalb schlägt die Sicherung fehl. Neu aufsetzen formatiert die Platte, sichert sofort neu und liest danach zur Kontrolle alles zurück. <b>Die älteren Stände auf dieser Platte gehen dabei verloren.</b>${plug}${detail}`,
+    button("Neu aufsetzen"));
   if (d.repair_failed) return callout("red", `„${d.label}“ speichert nicht zuverlässig`,
-    `Die Platte wurde neu aufgesetzt, beim Zurücklesen waren die Daten aber wieder fehlerhaft. Meist liegt das am USB-Gehäuse oder Kabel, seltener an der Platte. <b>Empfehlung:</b> Gehäuse bzw. Platte tauschen und danach erneut neu aufsetzen.<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`,
-    `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} Erneut neu aufsetzen</button>`);
+    `Die Platte wurde neu aufgesetzt, beim Zurücklesen waren die Daten aber wieder fehlerhaft. Meist liegt das am USB-Gehäuse oder Kabel, seltener an der Platte. <b>Empfehlung:</b> Gehäuse bzw. Platte tauschen und danach erneut neu aufsetzen.${detail}`,
+    button("Erneut neu aufsetzen"));
   return callout("red", `„${d.label}“ ist beschädigt – Empfehlung: neu aufsetzen`,
-    `Dateien auf der Platte lassen sich nicht mehr richtig lesen, deshalb schlägt die Kopie fehl. Neu aufsetzen formatiert die Platte, kopiert alles neu von ${esc(src)} und liest es danach zur Kontrolle von der Platte zurück. Die Sicherungen auf dem Backup-Server bleiben unberührt.${d.present ? "" : " <b>Dazu die Platte anstecken.</b>"}<div class="t-sub mono" style="margin-top:6px">${esc(d.damaged)}</div>`,
-    `<button class="btn red sm" type="button" data-rebuild="${x.id}|${d.key}" ${d.present ? "" : "disabled"}>${icon("refresh")} Neu aufsetzen</button>`);
+    `Dateien auf der Platte lassen sich nicht mehr richtig lesen, deshalb schlägt die Kopie fehl. Neu aufsetzen formatiert die Platte, kopiert alles neu von ${esc(src)} und liest es danach zur Kontrolle von der Platte zurück. Die Sicherungen auf dem Backup-Server bleiben unberührt.${plug}${detail}`,
+    button("Neu aufsetzen"));
 }
 
 // planCallout says which disk is due today according to the swap plan.
 function planCallout(x) {
   if (!x.plan_today && !x.plan_next) return "";
   const last = ` · Letzte Kopie: ${esc(fmtAgo(x.last_copy))}`;
-  if (!x.plan_today) return `<div class="callout" style="margin:0 0 16px"><div class="ct"><div class="ch">Heute ist laut Wechselplan keine Platte dran</div><div class="cb">Als Nächstes: ${esc(x.plan_next)}${last}</div></div></div>`;
+  if (!x.plan_today) return callout("", "Heute ist laut Wechselplan keine Platte dran", `Als Nächstes: ${esc(x.plan_next)}${last}`, "", "mb16");
   const tone = x.plan_state === "ok" ? "green" : x.plan_late || x.check_plan ? "yellow" : "";
   const what = x.plan_state === "ok" ? "steckt" : x.plan_state === "swap" ? `angesteckt ist „${x.disks.filter((d) => d.present).map((d) => d.label).join("“, „")}“ – bitte tauschen` : "noch nicht angesteckt";
-  return `<div class="callout ${tone}" style="margin:0 0 16px"><div class="ct"><div class="ch">Heute dran: „${esc(x.plan_today)}“ – ${esc(what)}</div>
-    <div class="cb">${x.plan_next ? "Danach: " + esc(x.plan_next) : ""}${last}${x.check_plan ? " · Eine falsche Platte wird gemeldet." : ""}</div></div></div>`;
+  return callout(tone, `Heute dran: „${x.plan_today}“ – ${what}`,
+    `${x.plan_next ? "Danach: " + esc(x.plan_next) : ""}${last}${x.check_plan ? " · Eine falsche Platte wird gemeldet." : ""}`, "", "mb16");
 }
 
-const DAY_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const WEEK_OPTS = [["", "jede Woche"], ["1", "1. im Monat"], ["2", "2. im Monat"], ["3", "3. im Monat"], ["4", "4. im Monat"], ["5", "5. im Monat"], ["odd", "ungerade KW"], ["even", "gerade KW"]];
 
 // planForm assigns the disks of a set to weekdays.
 function planForm(x, done) {
   const row = (d) => `<tr data-key="${esc(d.key)}">
       <td><input type="text" class="plan-label" value="${esc(d.label)}" aria-label="Name der Platte" maxlength="40"></td>
-      <td><div class="daypick">${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(d.days || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div></td>
+      <td>${dayPick(d.days)}</td>
       <td><select class="plan-week" aria-label="Welche Woche">${WEEK_OPTS.map(([v, l]) => `<option value="${v}" ${(d.week || "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></td></tr>`;
   const n = x.disks.length;
   formDialog({
@@ -2614,8 +2623,8 @@ function planForm(x, done) {
         const t = b.dataset.tpl;
         rows.forEach((tr, i) => {
           if (t === "none") return setRow(tr, [], "");
-          if (t === "row") return setRow(tr, i < 5 ? [i + 1] : [], "", i < 5 ? ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag"][i] : "");
-          if (i < 4) return setRow(tr, [i + 1], "", ["Montag", "Dienstag", "Mittwoch", "Donnerstag"][i]);
+          if (t === "row") return setRow(tr, i < 5 ? [i + 1] : [], "", i < 5 ? DAY_LONG[i] : "");
+          if (i < 4) return setRow(tr, [i + 1], "", DAY_LONG[i]);
           const k = i - 3;
           setRow(tr, k <= 5 ? [5] : [], k <= 5 ? String(k) : "", k <= 5 ? "Freitag " + k : "");
         });
@@ -2623,7 +2632,7 @@ function planForm(x, done) {
     },
     submit: async (v, d) => {
       const disks = qsa("tbody tr", d).map((tr) => ({ key: tr.dataset.key, label: qs(".plan-label", tr).value.trim(),
-        days: qsa('input[type="checkbox"]:checked', tr).map((c) => +c.value), week: qs(".plan-week", tr).value }));
+        days: pickedDays(tr), week: qs(".plan-week", tr).value }));
       await PUT(`/api/rotations/${x.id}/plan`, { check_plan: v.check_plan, disks });
       toast("Wechselplan gespeichert.");
       done();
@@ -2642,14 +2651,14 @@ function rotationForm(x, done) {
       { name: "name", label: "Name", value: x.name, required: true, placeholder: "USB täglich", wide: true },
       { name: "mode", type: "radio", label: "Was kommt auf die Platten?", value: x.mode || "", options: [["", "Kopie der Sicherungen", "Proxmox VE sichert auf einen Datastore, die Platte bekommt eine Kopie davon"], ["direct", "Direkt auf die Platte", "Proxmox VE sichert direkt auf die angesteckte Platte – ohne Datastore dazwischen. Für kleine Umgebungen mit ein, zwei Servern."]],
         hint: hasDisks ? "Umstellen geht jederzeit: Die Sicherungen auf den Platten bleiben erhalten und gehören danach dem neuen Schreiber." : "" },
-      { type: "html", name: "direct_note", wide: true, html: `<div class="callout yellow" style="margin:0"><div class="ct"><div class="ch">Jede Sicherung liegt nur auf ihrer Platte</div><div class="cb">Es gibt keine zweite Kopie auf dem Backup-Server. Geht eine Platte kaputt oder verloren, fehlen ihre Stände – mit zwei oder mehr Platten im Wechsel bleibt immer die andere. Steckt zur Sicherungszeit keine Platte, fällt die Sicherung aus; die Appliance warnt drei Stunden vorher.</div></div></div>` },
+      { type: "html", name: "direct_note", wide: true, html: callout("yellow", "Jede Sicherung liegt nur auf ihrer Platte", "Es gibt keine zweite Kopie auf dem Backup-Server. Geht eine Platte kaputt oder verloren, fehlen ihre Stände – mit zwei oder mehr Platten im Wechsel bleibt immer die andere. Steckt zur Sicherungszeit keine Platte, fällt die Sicherung aus; die Appliance warnt drei Stunden vorher.", "", "flat") },
       { name: "cluster", label: "Wer sichert", type: "select", value: x.cluster, options: state.clusters.map((c) => [c.id, c.name]), hint: "Proxmox VE, das direkt auf die Platten sichert." },
       { name: "guests", label: "Welche Server", value: x.guests || "", mono: true, placeholder: "alle", hint: "Leer = alle VMs und Container. Sonst die IDs mit Komma, z. B. 100,101." },
       { name: "server_id", label: "Platten stecken an", type: "select", value: x.server_id, options: state.servers.map((s) => [s.id, s.name]), hint: "Backup-Server, an dem die USB-Platten angesteckt werden." },
       { name: "source_server", label: "Sicherungen kommen von", type: "select", value: x.source_server, options: state.servers.map((s) => [s.id, s.name]) },
       { name: "source_store", label: "Datastore mit den Sicherungen", type: "select", options: [["", "Lade …"]] },
       { name: "rhythm", type: "radio", label: "Wechsel", value: x.rhythm, options: [["daily", "Täglich", "Jeden Tag eine andere Platte (z. B. Mo–Fr)"], ["weekly", "Wöchentlich", "Eine Platte pro Woche"]] },
-      { name: "swap_day", label: "Wechseltag", type: "select", value: x.swap_day || 5, options: [[1, "Montag"], [2, "Dienstag"], [3, "Mittwoch"], [4, "Donnerstag"], [5, "Freitag"], [6, "Samstag"], [7, "Sonntag"]] },
+      { name: "swap_day", label: "Wechseltag", type: "select", value: x.swap_day || 5, options: dayOptions() },
       { name: "time", label: "Täglich kopieren um", type: "time", value: x.time, hint: "Kopiert auf die Platte, die zu dieser Zeit steckt. Wird später angesteckt, wartet sie auf den nächsten Termin. Leer = nur beim Anstecken kopieren." },
       { name: "run_on_mount", label: "Beim Anstecken sofort kopieren", type: "checkbox", value: x.run_on_mount, wide: true },
       { name: "unmount_on_done", label: "Nach der Kopie aushängen", type: "checkbox", value: x.unmount_on_done, wide: true, hint: "Dann kann die Platte gefahrlos abgezogen werden." },
@@ -2666,6 +2675,7 @@ function rotationForm(x, done) {
     ],
     onMount: async (d) => {
       const form = qs("form", d);
+      const set = (n, v) => { qs(`[name="${n}"]`, d).value = v; };
       const show = () => {
         const v = formValues(form);
         const direct = v.mode === "direct";
@@ -2679,7 +2689,7 @@ function rotationForm(x, done) {
         qs("[data-keephint]", d).textContent = direct ? "Wie viele Stände nach jeder Sicherung auf der Platte bleiben – sie sind die einzigen. Beispiel: 7 tägliche, 4 wöchentliche, 3 monatliche. 0 = Regel nicht verwenden; alles 0 = nichts löschen."
           : "Was nach der Kopie auf der Platte bleibt. „Letzte = 1“: Die Platte enthält nur die neueste Sicherung, ältere werden nach der Kopie entfernt. 0 = Regel nicht verwenden; alles 0 = nichts löschen.";
         // Automatic repair only when the disk holds just the newest backup.
-        const single = Number(v.transfer_last) === 1 && Number(v.keep_last) === 1 && !Number(v.keep_daily) && !Number(v.keep_weekly) && !Number(v.keep_monthly);
+        const single = onlyNewest(v);
         const ar = qs('[name="auto_repair"]', d);
         ar.disabled = !single;
         if (!single) ar.checked = false;
@@ -2689,7 +2699,6 @@ function rotationForm(x, done) {
       // "only the newest": the disk should then hold just that one, too.
       qs('[name="transfer_last"]', d).addEventListener("change", (e) => {
         if (e.target.value !== "1") return;
-        const set = (n, v) => { qs(`[name="${n}"]`, d).value = v; };
         set("keep_last", 1); set("keep_daily", 0); set("keep_weekly", 0); set("keep_monthly", 0);
         show();
       });
@@ -2719,7 +2728,6 @@ function rotationForm(x, done) {
       qsa('[name="mode"]', d).forEach((r) => r.onchange = () => {
         // A direct set keeps history on the disk itself: start from a useful retention.
         if (r.value === "direct" && !(x.mode === "direct")) {
-          const set = (n, v) => { qs(`[name="${n}"]`, d).value = v; };
           set("keep_last", 0); set("keep_daily", 7); set("keep_weekly", 4); set("keep_monthly", 3);
           if (!edit && qs('[name="time"]', d).value === "22:30") set("time", "21:00");
         }
@@ -2729,11 +2737,7 @@ function rotationForm(x, done) {
       if (edit && x.disks.length) qs('[name="server_id"]', d).disabled = true;
 
       const ss = qs('[name="source_server"]', d), st = qs('[name="source_store"]', d);
-      const fill = async (val) => {
-        st.innerHTML = `<option value="">Lade …</option>`;
-        try { const list = (await storesOf(ss.value)).filter((s) => !s.removable); st.innerHTML = list.map((s) => `<option ${s.name === val ? "selected" : ""}>${esc(s.name)}</option>`).join("") || `<option value="">(kein Datastore)</option>`; }
-        catch (e) { st.innerHTML = ""; toastErr(e); }
-      };
+      const fill = (val) => fillStores(st, ss.value, { value: val, fixedOnly: true, emptyText: "(kein Datastore)" });
       ss.onchange = () => fill("");
       await fill(x.source_store);
     },
@@ -2817,7 +2821,6 @@ function addDiskForm(x, done) {
 // ---------- Archiv-Platten (einmalige Sicherung) ----------
 const ARCH_STATUS = { running: ["Läuft", "blue"], ok: ["Fertig", "green"], warning: ["Mit Hinweisen", "amber"], error: ["Fehlgeschlagen", "rose"] };
 const ARCH_PHASE = { preparing: "Platte wird vorbereitet", mounting: "wird eingehängt", copying: "Sicherungen werden kopiert", verifying: "Kopie wird geprüft", reading: "Inhalt wird gelesen", unmounting: "wird ausgehängt" };
-const guestKind = (t) => (t === "ct" ? "CT" : t === "vm" ? "VM" : "Host");
 
 function archivePanel(list) {
   const card = (a) => {
@@ -3025,18 +3028,16 @@ function archiveForm(done) {
         } catch (e) { box.innerHTML = `<span class="bad small">${esc(e.message)}</span>`; }
       };
       const ss = qs('[name="source_server"]', d), sst = qs('[name="source_store"]', d);
-      const fillStores = async () => {
-        sst.innerHTML = `<option value="">Lade …</option>`;
-        try { const list = (await storesOf(ss.value)).filter((s) => !s.removable); sst.innerHTML = list.map((s) => `<option>${esc(s.name)}</option>`).join("") || `<option value="">(kein Datastore)</option>`; }
-        catch (e) { sst.innerHTML = ""; toastErr(e); }
+      const loadStores = async () => {
+        await fillStores(sst, ss.value, { fixedOnly: true, emptyText: "(kein Datastore)" });
         await loadGroups();
       };
-      ss.onchange = fillStores;
+      ss.onchange = loadStores;
       sst.onchange = loadGroups;
       qs('[name="server_id"]', d).onchange = loadDisks;
       const rb = qs("[data-reload]", d);
       rb.onclick = () => run(rb, loadDisks);
-      await Promise.all([loadDisks(), fillStores()]);
+      await Promise.all([loadDisks(), loadStores()]);
     },
     submit: async (v, d) => {
       const body = { name: v.name, server_id: v.server_id, source_server: v.source_server, source_store: v.source_store, latest: v.latest, verify: v.verify, location: v.location, note: v.note, groups: [] };
@@ -3054,11 +3055,9 @@ function archiveForm(done) {
 }
 
 async function passthroughDialog() {
-  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("usb")}</span><div class="grow"><div class="dlg-title">USB-Anschluss an diese VM durchreichen</div>
-    <p class="dlg-text">Durchgereicht wird der Anschluss am Proxmox-Host. Jede Platte, die später dort steckt, erscheint in der Appliance. Nach dem Durchreichen die Platte einmal ab- und wieder anstecken.</p></div></div>
+  const d = openDialog(`${dlgHead({ ic: "usb", title: "USB-Anschluss an diese VM durchreichen", text: "Durchgereicht wird der Anschluss am Proxmox-Host. Jede Platte, die später dort steckt, erscheint in der Appliance. Nach dem Durchreichen die Platte einmal ab- und wieder anstecken." })}
     <div class="dlg-body" data-body><div class="flex"><span class="spinner"></span> Suche diese VM in Proxmox VE …</div></div>
     <div class="dlg-foot"><button class="btn gray" type="button" data-close>Schließen</button></div>`, "wide");
-  qs("[data-close]", d).onclick = () => d.close();
   const body = qs("[data-body]", d);
   let target = {}; // the VM shown: changes go only to it
   const draw = async () => {
@@ -3169,7 +3168,7 @@ PAGES["/sicherungen"] = async (el, token) => {
         <div class="muted small">Ungewöhnlich viele neue Daten – etwa ein Verschlüsselungstrojaner oder ein Dienst, der viel schreibt – oder eine viel kleinere Sicherung als sonst. Die letzte unauffällige Sicherung bleibt geschützt, bis die Meldung als geprüft markiert ist.</div></div></div>
       <div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Befund</th><th>Geschützt</th><th></th></tr></thead><tbody>
       ${list.map((a) => `<tr class="${a.ack_at ? "dim" : ""}">
-        <td data-l="Gast"><div class="t-main"><span class="tag mono">${a.type === "ct" ? "CT" : "VM"}</span> ${esc(a.guest_id)} ${esc(a.name || "")}</div><div class="t-sub">${esc(a.server_name)} / ${esc(a.store)}${a.ns ? " / " + esc(a.ns) : ""}</div></td>
+        <td data-l="Gast"><div class="t-main"><span class="tag mono">${guestKind(a.type)}</span> ${esc(a.guest_id)} ${esc(a.name || "")}</div><div class="t-sub">${esc(a.server_name)} / ${esc(a.store)}${a.ns ? " / " + esc(a.ns) : ""}</div></td>
         <td data-l="Sicherung">${fmtTime(a.time, true)}<div class="t-sub">${fmtAgo(a.time)}</div></td>
         <td data-l="Befund">${pill(a.kind === "shrink" ? "viel kleiner" : "viele neue Daten", "amber")}<div class="t-sub">${esc(a.text)}</div></td>
         <td data-l="Geschützt" class="small">${!a.kept ? '<span class="muted">—</span>' : a.ack_at && a.kept_own ? `<span class="muted">Schutz aufgehoben</span>` : `Stand vom ${fmtTime(a.kept, true)}`}${a.ack_at ? `<div class="t-sub">geprüft ${fmtAgo(a.ack_at)}${a.ack_by ? " von " + esc(a.ack_by) : ""}</div>` : ""}</td>
@@ -3192,7 +3191,7 @@ PAGES["/sicherungen"] = async (el, token) => {
       return c && e.includes("fehlen Rechte") ? `<div style="margin:12px">${permCallout(c, (e.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean))}</div>` : callout("red", "Nicht alles erreichbar", esc(e));
     }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Außer Haus</th><th>USB-Platte</th><th>Restore-Test</th><th>Tempo</th><th></th></tr></thead><tbody>
       ${list.map((g) => { const where = [...g.backups, ...g.seen].map((b) => `${b.server_name} / ${b.store}: ${b.count} ${b.count === 1 ? "Stand" : "Stände"}${b.seen ? " (Platte zuletzt gelesen " + fmtAgo(b.seen) + ")" : ""}`).join("\n"); return `<tr>
-        <td data-l="Gast"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} · ${esc(g.node)}${state.clusters.length > 1 ? " · " + esc(g.cluster_name) : ""}</div></td>
+        <td data-l="Gast"><div class="t-main"><span class="tag mono">${guestKind(g.type)}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} · ${esc(g.node)}${state.clusters.length > 1 ? " · " + esc(g.cluster_name) : ""}</div></td>
         <td data-l="Sicherung"${where ? ` title="${esc(where)}"` : ""}>${chainCell(g.chain.backup, "Sicherung")}</td>
         <td data-l="Außer Haus">${chainCell(g.chain.copy, "Kopie außer Haus (zweiter Server oder Cloud)")}</td>
         <td data-l="USB-Platte">${chainCell(g.chain.usb, "USB-Platte")}</td>
@@ -3208,7 +3207,7 @@ PAGES["/sicherungen"] = async (el, token) => {
     qsa("[data-ack]", el).forEach((b) => b.onclick = async () => {
       const a = anomalies.find((x) => x.id === b.dataset.ack);
       const ok = await confirmDialog({ title: "Als geprüft markieren?", tone: "", ic: "check", button: "Geprüft",
-        text: `${a.type === "ct" ? "CT" : "VM"} ${esc(a.guest_id)} ${esc(a.name || "")}: ${esc(a.text)}.${a.kept_own ? ` Der Schutz der Sicherung vom ${fmtTime(a.kept, true)} wird aufgehoben – danach räumt der Backup-Server sie nach den normalen Regeln auf.` : ""}` });
+        text: `${guestKind(a.type)} ${esc(a.guest_id)} ${esc(a.name || "")}: ${esc(a.text)}.${a.kept_own ? ` Der Schutz der Sicherung vom ${fmtTime(a.kept, true)} wird aufgehoben – danach räumt der Backup-Server sie nach den normalen Regeln auf.` : ""}` });
       if (!ok) return;
       run(b, async () => { await POST(`/api/anomalies/${enc(a.id)}/ack`); toast("Als geprüft markiert."); await load(); });
     });
@@ -3329,12 +3328,12 @@ function restoreStart(el, data, guests, srcs) {
   const draw = (f) => {
     const rows = guests.filter((x) => !f || `${x.vmid} ${x.name} ${x.node} ${x.cluster_name}`.toLowerCase().includes(f));
     qs("[data-rows]", list).innerHTML = rows.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>System</th><th>Letzte Sicherung</th><th>Gesichert auf</th><th></th></tr></thead><tbody>
-      ${rows.map((x) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${x.type === "lxc" ? "CT" : "VM"}</span> ${x.vmid} ${esc(x.name)}</div><div class="t-sub">${x.status === "running" ? '<span class="dot green"></span> läuft' : esc(x.status)}</div></td>
+      ${rows.map((x) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${guestKind(x.type)}</span> ${x.vmid} ${esc(x.name)}</div><div class="t-sub">${x.status === "running" ? '<span class="dot green"></span> läuft' : esc(x.status)}</div></td>
         <td data-l="System" class="small">${esc(x.cluster_name)}<div class="t-sub">${esc(x.node)}</div></td>
         <td data-l="Letzte Sicherung">${fmtTime(x.last_backup, true)}<div class="t-sub">${fmtAgo(x.last_backup)}</div></td>
         <td data-l="Gesichert auf" class="small">${x.backups.map((b) => esc(b.store)).join(", ")}</td>
         <td class="act"><a class="btn sm" href="/wiederherstellen?cluster=${enc(x.cluster)}&vmid=${x.vmid}" data-go>${icon("restore")} Auswählen</a></td></tr>`).join("")}
-      </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Keine Sicherungen gefunden", guests.length ? "Nichts passt zur Suche." : "Sobald eine VM oder ein Container gesichert wurde, erscheint er hier.", "", "archive")}</div>`;
+      </tbody></table></div>` : `<div class="flush-pad">${empty("Keine Sicherungen gefunden", guests.length ? "Nichts passt zur Suche." : "Sobald eine VM oder ein Container gesichert wurde, erscheint er hier.", "", "archive")}</div>`;
   };
   qs("[data-q]", list).oninput = (e) => draw(e.target.value.trim().toLowerCase());
   draw("");
@@ -3395,7 +3394,7 @@ async function restoreSourceList(el, token, x) {
   catch (e) { qs("[data-list]", el).innerHTML = callout("red", "Inhalt nicht lesbar", esc(e.message)); return; }
   if (token !== pageToken) return;
   qs("[data-list]", el).innerHTML = list.length ? `<div class="panel flush"><div class="panel-head"><div class="panel-title">Server wählen</div></div><div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>Neueste Sicherung hier</th><th>Stände</th><th>In Proxmox</th><th></th></tr></thead><tbody>
-    ${list.map((g) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${g.type === "lxc" ? "CT" : "VM"}</span> ${g.vmid} ${esc(g.name || "")}</div></td>
+    ${list.map((g) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${guestKind(g.type)}</span> ${g.vmid} ${esc(g.name || "")}</div></td>
       <td data-l="Neueste Sicherung">${fmtTime(g.last_backup, true)}<div class="t-sub">${fmtAgo(g.last_backup)}</div></td>
       <td data-l="Stände" class="small">${g.count}</td>
       <td data-l="In Proxmox" class="small">${g.exists ? `${esc(g.cluster_name)} · ${esc(g.node)}` : '<span class="muted">in keinem verbundenen Proxmox VE</span>'}</td>
@@ -3408,11 +3407,9 @@ async function restoreSourceList(el, token, x) {
 // Protected backups stay; disks that are not plugged in are listed but cannot be cleaned now.
 async function deleteGuestDialog(typ, id, name, done) {
   const kind = typ === "ct" ? "Container" : "VM";
-  const d = openDialog(`<div class="dlg-head"><span class="dlg-ic red">${icon("trash")}</span><div class="grow"><div class="dlg-title">Alle Sicherungen von ${kind} ${esc(id)}${name ? " " + esc(name) : ""} löschen</div>
-      <p class="dlg-text">Gelöschte Sicherungen lassen sich nicht zurückholen. Der Platz wird beim nächsten „Speicher freigeben“ frei.</p></div></div>
+  const d = openDialog(`${dlgHead({ ic: "trash", tone: "red", title: `Alle Sicherungen von ${kind} ${esc(id)}${name ? " " + esc(name) : ""} löschen`, text: "Gelöschte Sicherungen lassen sich nicht zurückholen. Der Platz wird beim nächsten „Speicher freigeben“ frei." })}
     <form class="dlg-body" data-form novalidate><div data-body><div class="flex"><span class="spinner"></span> Suche auf allen Backup-Servern …</div></div></form>
     <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-close>Abbrechen</button><button class="btn red" type="button" data-go-del disabled>Löschen</button></div>`, "wide");
-  qs("[data-close]", d).onclick = () => d.close();
   qs("[data-form]", d).addEventListener("submit", (e) => e.preventDefault());
   let r;
   try { r = await GET(`/api/guests/backups?type=${typ}&bid=${enc(id)}`); }
@@ -3509,9 +3506,9 @@ async function restoreGuest(el, token, g, source) {
     if (!sel) { right.innerHTML = `<div class="panel">${empty("Links einen Stand wählen", "", "", "calendar")}</div>`; return; }
     right.innerHTML = `<div class="panel"><div class="panel-head"><div><div class="panel-title">2. Was wiederherstellen?</div><div class="muted small">Stand vom ${fmtTime(sel, true)}</div></div></div>
         ${can("files") ? `<div class="radio-cards">
-          <button type="button" class="radio-card" data-files style="text-align:left;font:inherit;color:inherit">${icon("folder")}<span><b>Dateien und Ordner</b><small>Einzelne Dateien aus der Sicherung herunterladen. Der ${kind} läuft dabei normal weiter.</small></span></button>
-          ${can("operator") ? `<button type="button" class="radio-card" data-whole style="text-align:left;font:inherit;color:inherit">${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>` : ""}
-          ${can("operator") && typ === "vm" ? `<button type="button" class="radio-card" data-disk style="text-align:left;font:inherit;color:inherit">${icon("disk")}<span><b>Einzelne Disk</b><small>Eine Platte aus der Sicherung zusätzlich an eine VM hängen – die VM bleibt, wie sie ist.</small></span></button>` : ""}
+          <button type="button" class="radio-card" data-files>${icon("folder")}<span><b>Dateien und Ordner</b><small>Einzelne Dateien aus der Sicherung herunterladen. Der ${kind} läuft dabei normal weiter.</small></span></button>
+          ${can("operator") ? `<button type="button" class="radio-card" data-whole>${icon("restore")}<span><b>Ganze${typ === "ct" ? "n Container" : " VM"}</b><small>Als neue${typ === "ct" ? "n Container" : " VM"} neben dem Original oder das Original ersetzen.</small></span></button>` : ""}
+          ${can("operator") && typ === "vm" ? `<button type="button" class="radio-card" data-disk>${icon("disk")}<span><b>Einzelne Disk</b><small>Eine Platte aus der Sicherung zusätzlich an eine VM hängen – die VM bleibt, wie sie ist.</small></span></button>` : ""}
         </div>` : `<p class="muted small" style="margin:0">Mit der Rolle „${esc(ROLE_NAMES[state.role] || "")}“ lassen sich Sicherungen nur ansehen.</p>`}</div><div data-browser></div>`;
     const fb = qs("[data-files]", right), wb = qs("[data-whole]", right);
     if (fb) fb.onclick = () => { browse = fileBrowser(qs("[data-browser]", right), query(), g, typ, null, sel, ver); };
@@ -3740,14 +3737,12 @@ function versionsDialog(file, dir, typ, ver, current) {
   const cur = res.find((r) => r.t === current);
   if (cur) Object.assign(cur, { state: "ok", size: file.size, mtime: file.mtime, filepath: file.filepath });
   let only = true, stopped = false;
-  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("clock")}</span><div class="grow"><div class="dlg-title">Versionen von „${esc(file.text)}“</div>
-      <p class="dlg-text">Sucht die Datei im selben Ordner aller ${res.length} Stände dieser Quelle.${typ === "vm" ? " Bei VMs startet Proxmox für jeden Stand eine Hilfs-VM – das dauert je Stand bis zu einer Minute." : ""}</p></div></div>
+  const dlg = openDialog(`${dlgHead({ ic: "clock", title: `Versionen von „${esc(file.text)}“`, text: `Sucht die Datei im selben Ordner aller ${res.length} Stände dieser Quelle.${typ === "vm" ? " Bei VMs startet Proxmox für jeden Stand eine Hilfs-VM – das dauert je Stand bis zu einer Minute." : ""}` })}
     <div class="dlg-body"><div class="flex" style="justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px"><span class="small muted flex" data-sum></span>
       <label class="check"><input type="checkbox" data-only checked> Nur Stände mit Änderung</label></div>
       <div class="table-wrap"><table class="resp"><thead><tr><th>Stand</th><th>Datei geändert am</th><th class="num">Größe</th><th>Status</th><th></th></tr></thead><tbody data-rows></tbody></table></div></div>
     <div class="dlg-foot"><span class="spacer"></span><button class="btn" type="button" data-close>Schließen</button></div>`, "xwide");
   dlg.addEventListener("close", () => { stopped = true; });
-  qs("[data-close]", dlg).onclick = () => dlg.close();
   qs("[data-only]", dlg).onchange = (e) => { only = e.target.checked; draw(); };
   const same = (a, b) => a.size === b.size && a.mtime === b.mtime;
   // status compares a backup with the next older one (res is newest first).
@@ -3848,12 +3843,10 @@ async function restoreDisk(g, b, time, files) {
 
 function diskJobDialog(job) {
   let timer = null;
-  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("disk")}</span><div class="grow"><div class="dlg-title">Disk ${esc(job.drive)} wird zurückgeholt</div>
-      <p class="dlg-text">Aus der Sicherung von ${job.source} vom ${fmtTime(job.time, true)} an VM ${job.target} ${esc(job.target_name)} (${esc(job.node)}).</p></div></div>
+  const dlg = openDialog(`${dlgHead({ ic: "disk", title: `Disk ${esc(job.drive)} wird zurückgeholt`, text: `Aus der Sicherung von ${job.source} vom ${fmtTime(job.time, true)} an VM ${job.target} ${esc(job.target_name)} (${esc(job.node)}).` })}
     <div class="dlg-body" data-body></div>
     <div class="dlg-foot"><span class="muted small" style="flex:1" data-bg>Läuft im Hintergrund weiter, wenn du das Fenster schließt.</span><button class="btn" type="button" data-close>Schließen</button></div>`, "wide");
   dlg.addEventListener("close", () => clearTimeout(timer));
-  qs("[data-close]", dlg).onclick = () => dlg.close();
   const order = ["restore", "attach", "cleanup", "done"];
   const draw = (j) => {
     const at = j.phase === "error" ? -1 : order.indexOf(j.phase);
@@ -3900,7 +3893,7 @@ async function proofDialog() {
     days30: [new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30), now],
   };
   const list = `<div class="field wide" data-field="pick"><span class="fl">Server</span>
-    <div class="section guest-list" style="max-height:220px;overflow:auto;gap:6px">${guests.map((g) => `<label class="check"><input type="checkbox" class="plain" data-g="${g.type === "lxc" ? "ct" : "vm"}/${g.vmid}"><span>${g.vmid} ${esc(g.name)} <span class="muted small">${g.type === "lxc" ? "CT" : "VM"} · ${esc(g.cluster_name || "")}</span></span></label>`).join("") || '<span class="muted small">Keine Gäste gefunden.</span>'}</div><span class="err" hidden></span></div>`;
+    <div class="section guest-list" style="max-height:220px;overflow:auto;gap:6px">${guests.map((g) => `<label class="check"><input type="checkbox" class="plain" data-g="${g.type === "lxc" ? "ct" : "vm"}/${g.vmid}"><span>${g.vmid} ${esc(g.name)} <span class="muted small">${guestKind(g.type)} · ${esc(g.cluster_name || "")}</span></span></label>`).join("") || '<span class="muted small">Keine Gäste gefunden.</span>'}</div><span class="err" hidden></span></div>`;
   formDialog({
     title: "Sicherungsnachweis", ic: "shield", button: "Nachweis öffnen", grid: "cols-2",
     text: "Für Versicherung, Prüfer oder Kunden: wann jeder Server gesichert wurde, wo die Sicherungen liegen und wann ein Restore-Test lief. Öffnet sich als druckbares Dokument (auch als PDF).",
@@ -3992,7 +3985,6 @@ async function restoreWhole(g, typ, b, time) {
 }
 
 // ---------- Restore-Tests ----------
-const WD = ["", "Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const RT_STATUS = { ok: ["Erfolgreich", "green"], warning: ["Hinweis", "amber"], error: ["Fehler", "rose"], skipped: ["Übersprungen", "amber"],
   running: ["Läuft", "blue"], pending: ["Wartet", ""], cancelled: ["Abgebrochen", "amber"] };
 const rtPill = (st) => { const [l, t] = RT_STATUS[st] || [st, ""]; return pill(l, t, st === "running", st === "running"); };
@@ -4018,14 +4010,14 @@ PAGES["/restoretests"] = async (el, token) => {
           <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-run="${p.id}" ${act ? "disabled" : ""}>${icon("play")} Jetzt testen</button>
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${p.id}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${p.id}">${icon("trash")}</button></div></td></tr>`).join("")}
-        </tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Plan", "Zum Beispiel: jeden Samstag um 02:00 alle Server aus dem Hauptspeicher auf pve1 testen.", `<button class="btn sm" type="button" data-add2>${icon("plus")} Plan anlegen</button>`, "shield")}</div>`}</div>
+        </tbody></table></div>` : `<div class="flush-pad">${empty("Noch kein Plan", "Zum Beispiel: jeden Samstag um 02:00 alle Server aus dem Hauptspeicher auf pve1 testen.", `<button class="btn sm" type="button" data-add2>${icon("plus")} Plan anlegen</button>`, "shield")}</div>`}</div>
       <div class="panel flush"><div class="panel-head"><div class="panel-title">Verlauf</div></div>
         ${runs.filter((x) => x.status !== "running").length ? `<div class="rows">${runs.filter((x) => x.status !== "running").map((x) => {
           const n = (st) => (x.results || []).filter((y) => y.status === st).length;
           return `<div class="row" style="cursor:pointer;align-items:center" data-show="${esc(x.id)}"><span class="when">${fmtTime(x.start, true)}</span>${rtPill(x.status)}
             <div class="grow"><div class="title"><b>${esc(x.plan_name)}</b> <span class="muted small">${x.end ? "Dauer " + fmtDur(x.start, x.end) : ""} · ${esc(x.by)}</span></div>
             <div class="flex" style="margin-top:4px"><a class="btn gray sm" href="/api/restoretests/report?run=${enc(x.id)}" target="_blank" rel="noopener" data-noshow>${icon("list")} Bericht</a>${n("ok") ? pill(n("ok") + " erfolgreich", "green") : ""}${n("warning") ? pill(n("warning") + " Hinweis", "amber") : ""}${n("error") ? pill(n("error") + " Fehler", "rose") : ""}${n("skipped") ? pill(n("skipped") + " übersprungen", "amber") : ""}${x.error ? `<span class="small bad">${esc(x.error)}</span>` : ""}</div></div>${icon("chevron-down")}</div>`;
-        }).join("")}</div>` : `<div style="padding:0 16px 16px">${empty("Noch kein Testlauf", "", "", "list")}</div>`}</div>
+        }).join("")}</div>` : `<div class="flush-pad">${empty("Noch kein Testlauf", "", "", "list")}</div>`}</div>
       <div class="callout"><div class="ct"><div class="ch">So bleibt der Test vom Betrieb getrennt</div><div class="cb">Jeder Server wird unter einer freien Test-ID (ab 990000) mit neuen MAC-Adressen wiederhergestellt. Vor dem Start werden die Netzwerkkarten getrennt, durchgereichte PCI- und USB-Geräte, Bind-Mounts und eingelegte ISOs entfernt, CPU und RAM begrenzt und der Autostart abgeschaltet. Vorher prüft die Appliance, ob Platz und Arbeitsspeicher reichen – sonst wird der Server übersprungen. Nach dem Test wird alles gelöscht; Reste eines abgebrochenen Laufs räumt der nächste Lauf weg.</div></div></div>`;
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => rtPlanForm(null, draw));
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => rtPlanForm(plans.find((p) => p.id === b.dataset.edit), draw));
@@ -4046,7 +4038,6 @@ PAGES["/restoretests"] = async (el, token) => {
       const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("shield")}</span><div class="grow"><div class="dlg-title">${esc(x.plan_name)} · ${fmtTime(x.start, true)}</div><p class="dlg-text">${x.end ? "Dauer " + fmtDur(x.start, x.end) + " · " : ""}gestartet von ${esc(x.by)}</p></div>${rtPill(x.status)}</div>
         <div class="dlg-body">${x.error ? `<div class="form-error">${esc(x.error)}</div>` : ""}${rtTable(x, false)}</div>
         <div class="dlg-foot"><a class="btn gray" href="/api/restoretests/report?run=${enc(x.id)}&download=1">${icon("download")} Herunterladen</a><a class="btn" href="/api/restoretests/report?run=${enc(x.id)}" target="_blank" rel="noopener">${icon("list")} Bericht öffnen</a><span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button></div>`, "xwide");
-      qs("[data-close]", dlg).onclick = () => dlg.close();
     });
     if (act) kickRunning();
     return !!act;
@@ -4059,7 +4050,7 @@ PAGES["/restoretests"] = async (el, token) => {
 
 function rtTable(x, live) {
   return `<div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>Status</th><th>Sicherung vom</th><th>Dauer</th><th>Ergebnis</th>${live ? "" : "<th>Bild</th>"}</tr></thead><tbody>
-    ${(x.results || []).map((r) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${r.type === "ct" ? "CT" : "VM"}</span> ${esc(r.vmid)} ${esc(r.name || "")}</div>${r.test_id ? `<div class="t-sub">Test-ID ${r.test_id}${r.disk_bytes ? " · " + fmtBytes(r.disk_bytes) : ""}</div>` : ""}</td>
+    ${(x.results || []).map((r) => `<tr><td data-l="Server"><div class="t-main"><span class="tag mono">${guestKind(r.type)}</span> ${esc(r.vmid)} ${esc(r.name || "")}</div>${r.test_id ? `<div class="t-sub">Test-ID ${r.test_id}${r.disk_bytes ? " · " + fmtBytes(r.disk_bytes) : ""}</div>` : ""}</td>
       <td data-l="Status">${rtPill(r.status)}${r.phase ? `<div class="t-sub">${esc(r.phase)} …</div>` : ""}</td>
       <td data-l="Sicherung vom" class="small nowrap">${fmtTime(r.backup_time, true)}</td>
       <td data-l="Dauer" class="small nowrap">${r.restore_secs ? "Restore " + fmtSecs(r.restore_secs) : ""}${r.boot_secs ? "<br>Start " + fmtSecs(r.boot_secs) : ""}</td>
@@ -4087,12 +4078,12 @@ function rtPlanForm(p, done, preset = {}) {
       { name: "storage", label: "Speicher für die Test-Disks", type: "select", options: [["", "Lade …"]] },
       { type: "html", wide: true, html: `<div class="section-title">Wann?</div>` },
       { name: "repeat", type: "radio", label: "Rhythmus", value: p.repeat || "weekly", options: [["weekly", "Wöchentlich", "An bestimmten Wochentagen, auch alle 2–4 Wochen"], ["monthly", "Monatlich", "Z. B. erster oder letzter Sonntag, auch alle 2, 3 oder 6 Monate"]] },
-      { type: "html", wide: true, name: "weekdays", html: `<span class="fl">Wochentage</span><div class="daypick" data-wd>${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(p.weekdays || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+      { type: "html", wide: true, name: "weekdays", html: `<span class="fl">Wochentage</span>${dayPick(p.weekdays, "data-wd")}<span class="err" hidden></span>` },
       { name: "every_weeks", label: "Wie oft", type: "select", value: p.every_weeks || 1, options: [[1, "jede Woche"], [2, "alle 2 Wochen"], [3, "alle 3 Wochen"], [4, "alle 4 Wochen"]] },
       { name: "start_date", label: "Gezählt ab", type: "date", value: p.start_date || new Date().toISOString().slice(0, 10), hint: "Die Woche dieses Datums ist eine Test-Woche." },
       { name: "month_mode", type: "radio", label: "An welchem Tag?", value: p.month_mode || "weekday", options: [["weekday", "Wochentag", "z. B. der erste oder letzte Sonntag"], ["day", "Datum", "z. B. der 15. oder der Monatsletzte"]] },
       { name: "month_week", label: "Der …", type: "select", value: p.month_week || "1", options: [["1", "erste"], ["2", "zweite"], ["3", "dritte"], ["4", "vierte"], ["last", "letzte"]] },
-      { name: "month_weekday", label: "Wochentag", type: "select", value: p.month_weekday || 7, options: ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"].map((n, i) => [i + 1, n]) },
+      { name: "month_weekday", label: "Wochentag", type: "select", value: p.month_weekday || 7, options: dayOptions() },
       { name: "month_day", label: "Tag im Monat", type: "select", value: p.month_day || 1, options: [...Array(30).keys()].map((i) => [i + 1, `${i + 1}.`]).concat([[31, "letzter Tag"]]) },
       { name: "every_months", label: "Wie oft", type: "select", value: p.every_months || 1, options: [[1, "jeden Monat"], [2, "alle 2 Monate"], [3, "alle 3 Monate (Quartal)"], [4, "alle 4 Monate"], [6, "alle 6 Monate"], [12, "einmal im Jahr"]] },
       { name: "start_month", label: "Beginnend im", type: "select", value: p.start_month || (new Date().getMonth() + 1), options: ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"].map((m, i) => [i + 1, m]) },
@@ -4113,7 +4104,7 @@ function rtPlanForm(p, done, preset = {}) {
       const form = qs("form", d);
       const schedValues = () => {
         const v = formValues(form);
-        const out = { repeat: v.repeat, time: v.time, weekdays: qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value)),
+        const out = { repeat: v.repeat, time: v.time, weekdays: pickedDays(d),
           every_weeks: Number(v.every_weeks), start_date: v.start_date, month_mode: v.month_mode, month_week: v.month_week,
           month_weekday: Number(v.month_weekday), month_day: Number(v.month_day), every_months: Number(v.every_months), start_month: Number(v.start_month) };
         return out;
@@ -4142,11 +4133,7 @@ function rtPlanForm(p, done, preset = {}) {
       };
       form.addEventListener("change", show);
       show();
-      const fillStores = async (val) => {
-        const sel = qs('[name="store"]', d);
-        try { const list = await storesOf(qs('[name="pbs"]', d).value); sel.innerHTML = list.map((x) => `<option ${x.name === val ? "selected" : ""}>${esc(x.name)}</option>`).join(""); }
-        catch (e) { sel.innerHTML = ""; toastErr(e); }
-      };
+      const fillStore = (val) => fillStores(qs('[name="store"]', d), qs('[name="pbs"]', d).value, { value: val, loading: false });
       const fillStorage = async (val) => {
         const sel = qs('[name="storage"]', d);
         try {
@@ -4162,13 +4149,13 @@ function rtPlanForm(p, done, preset = {}) {
         } catch (e) { sel.innerHTML = ""; }
         await fillStorage(sval);
       };
-      qs('[name="pbs"]', d).onchange = () => fillStores("");
+      qs('[name="pbs"]', d).onchange = () => fillStore("");
       qs('[name="cluster"]', d).onchange = () => fillNodes("", "");
       qs('[name="node"]', d).onchange = () => fillStorage("");
-      await Promise.all([fillStores(p.store), fillNodes(p.node, p.storage)]);
+      await Promise.all([fillStore(p.store), fillNodes(p.node, p.storage)]);
     },
     submit: async (v, d) => {
-      v.weekdays = qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value));
+      v.weekdays = pickedDays(d);
       ["max_cores", "max_memory", "boot_wait", "time_limit", "id_base", "every_weeks", "month_weekday", "month_day", "every_months", "start_month"].forEach((k) => { v[k] = Number(v[k]) || 0; });
       if (edit) await PUT(`/api/restoretests/${p.id}`, v); else await POST("/api/restoretests", v);
       toast("Gespeichert."); done();
@@ -4215,8 +4202,6 @@ const TL_GROUPS = [
   ["restoretest", "Restore-Tests", "verify"], ["host", "Host-Sicherungen", "save"], ["update", "Updates", "update"],
 ];
 const TL_TONES = [["save", "Sichern"], ["copy", "Kopieren"], ["verify", "Prüfen"], ["clean", "Aufräumen"], ["update", "Updates"], ["maint", "Wartung"]];
-const TL_DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
-const hhmm = (ts) => { const d = new Date(ts * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 
 PAGES["/zeitplan"] = async (el, token) => {
   let data = null, day = 0; // 0 = today … 6
@@ -4245,11 +4230,11 @@ PAGES["/zeitplan"] = async (el, token) => {
       clashes.push({ a, b, store });
       clashAt.add(a.it.key + "@" + a.s).add(b.it.key + "@" + b.s);
     }
-    const storeName = (key) => { const [srv, ...st] = key.split("/"); return `${(state.servers.find((s) => s.id === srv) || {}).name || srv} / ${st.join("/")}`; };
+    const storeName = (key) => { const [srv, ...st] = key.split("/"); return `${serverName(srv)} / ${st.join("/")}`; };
     const pos = (t) => Math.max(0, Math.min(100, ((t - from) / 864)));
     const hours = [0, 3, 6, 9, 12, 15, 18, 21];
     const now = Date.now() / 1000;
-    const nowLine = now >= from && now < to ? `<span class="tl-now" style="left:${pos(now)}%" title="Jetzt ${hhmm(now)}"></span>` : "";
+    const nowLine = now >= from && now < to ? `<span class="tl-now" style="left:${pos(now)}%" title="Jetzt ${hmOf(now)}"></span>` : "";
     // working hours of the chosen day as a band behind the bars
     const work = data.work || {};
     const workday = work.enabled && (work.weekdays || []).includes((new Date(from * 1000).getDay() + 6) % 7 + 1);
@@ -4266,9 +4251,9 @@ PAGES["/zeitplan"] = async (el, token) => {
           <small>${esc(it.text || it.schedule)}${it.enabled ? "" : " · ausgeschaltet"} · ${esc(dur)}</small></span></button>
         <div class="tl-track">${grid}${nowLine}${own.map((b) => {
           const clash = clashAt.has(it.key + "@" + b.s);
-          const tip = `${it.title}: ${b.s < from ? "seit Vortag " : ""}${hhmm(b.s)}–${hhmm(b.e)} (${it.estimated ? "geschätzt" : "dauerte zuletzt"} ${fmtSecs(it.duration)})${clash ? " – gleichzeitig mit einem anderen Job auf demselben Datastore" : ""}`;
+          const tip = `${it.title}: ${b.s < from ? "seit Vortag " : ""}${hmOf(b.s)}–${hmOf(b.e)} (${it.estimated ? "geschätzt" : "dauerte zuletzt"} ${fmtSecs(it.duration)})${clash ? " – gleichzeitig mit einem anderen Job auf demselben Datastore" : ""}`;
           const w = pos(b.e) - pos(b.s);
-          return `<button type="button" class="tl-bar ${tone[it.group]}${it.estimated ? " est" : ""}${clash ? " clash" : ""}" data-open="${esc(it.key)}" style="left:${pos(b.s)}%;width:${w}%" title="${esc(tip)}" aria-label="${esc(tip)}">${w > 7 ? `<span>${hhmm(Math.max(b.s, from))}</span>` : ""}</button>`;
+          return `<button type="button" class="tl-bar ${tone[it.group]}${it.estimated ? " est" : ""}${clash ? " clash" : ""}" data-open="${esc(it.key)}" style="left:${pos(b.s)}%;width:${w}%" title="${esc(tip)}" aria-label="${esc(tip)}">${w > 7 ? `<span>${hmOf(Math.max(b.s, from))}</span>` : ""}</button>`;
         }).join("")}</div></div>`;
     };
     const groups = TL_GROUPS.map(([g, label]) => {
@@ -4281,7 +4266,7 @@ PAGES["/zeitplan"] = async (el, token) => {
       const width = Math.max(300, (el.clientWidth || 800) - 64);
       const lane = 26;
       const placed = bars.filter((b) => b.it.enabled).map((b) => {
-        const label = `${hhmm(Math.max(b.s, from))} ${b.it.title}`;
+        const label = `${hmOf(Math.max(b.s, from))} ${b.it.title}`;
         const lw = (label.length * 6.4 + 18) / width * 100;
         const x0 = pos(b.s), x1 = Math.max(pos(b.e), x0 + 0.4);
         // name inside a long bar; else right of it; left of it when it fits only there; else
@@ -4301,7 +4286,7 @@ PAGES["/zeitplan"] = async (el, token) => {
       return `<div class="tl-one"><div class="tl-track tl-one-axis">${hours.map((hr) => `<span class="tl-tick" style="left:${hr / 24 * 100}%">${String(hr).padStart(2, "0")}:00</span>`).join("")}<span class="tl-tick end">24:00</span></div>
         <div class="tl-track tl-one-track" style="height:${h}px">${grid}${nowLine}${placed.map((p) => {
           const clash = clashAt.has(p.it.key + "@" + p.s);
-          const tip = `${p.it.title}: ${p.s < from ? "seit Vortag " : ""}${hhmm(p.s)}–${hhmm(p.e)} (${p.it.estimated ? "geschätzt" : "dauerte zuletzt"} ${fmtSecs(p.it.duration)})${clash ? " – gleichzeitig mit einem anderen Job auf demselben Datastore" : ""}`;
+          const tip = `${p.it.title}: ${p.s < from ? "seit Vortag " : ""}${hmOf(p.s)}–${hmOf(p.e)} (${p.it.estimated ? "geschätzt" : "dauerte zuletzt"} ${fmtSecs(p.it.duration)})${clash ? " – gleichzeitig mit einem anderen Job auf demselben Datastore" : ""}`;
           const top = p.lane * lane + 4;
           return `<button type="button" class="tl-bar ${tone[p.it.group]}${p.it.estimated ? " est" : ""}${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" style="left:${p.x0}%;width:${p.x1 - p.x0}%;top:${top}px;bottom:auto;height:${lane - 8}px" title="${esc(tip)}" aria-label="${esc(tip)}">${p.inside ? `<span class="tl-in">${esc(p.label)}</span>` : ""}</button>
             ${p.inside ? "" : `<button type="button" class="tl-tag${clash ? " clash" : ""}" data-open="${esc(p.it.key)}" tabindex="-1" style="${p.right ? `left:calc(${p.x1}% + 7px);max-width:calc(${100 - p.x1}% - 7px)` : `right:calc(${100 - p.x0}% + 7px)`};top:${top}px">${esc(p.label)}</button>`}`;
@@ -4309,7 +4294,7 @@ PAGES["/zeitplan"] = async (el, token) => {
     };
     const tabs = Array.from({ length: 7 }, (_, n) => {
       const d = new Date(dayStart(n) * 1000);
-      const name = n === 0 ? "Heute" : n === 1 ? "Morgen" : `${TL_DAYS[(d.getDay() + 6) % 7]} ${d.getDate()}.${d.getMonth() + 1}.`;
+      const name = n === 0 ? "Heute" : n === 1 ? "Morgen" : `${DAY_SHORT[(d.getDay() + 6) % 7]} ${d.getDate()}.${d.getMonth() + 1}.`;
       return `<button type="button" data-day="${n}" aria-pressed="${n === day}">${name}</button>`;
     }).join("");
     const unplanned = data.items.filter((it) => it.problem);
@@ -4330,9 +4315,9 @@ PAGES["/zeitplan"] = async (el, token) => {
         <div class="tl-legend">${TL_TONES.map(([t, l]) => `<span><span class="tl-dot ${t}"></span>${l}</span>`).join("")}<span><span class="tl-dot est"></span>geschätzt</span>${work.enabled ? `<span><span class="tl-dot work"></span>Arbeitszeit</span>` : ""}</div></div>
         ${clashes.length ? `<div style="padding:0 16px 12px">${callout("yellow", `${clashes.length} ${clashes.length === 1 ? "Überschneidung" : "Überschneidungen"} auf demselben Datastore`,
           `Das klappt, macht aber beides langsamer. Besser nacheinander legen.<ul class="tl-clashes">${clashes.slice(0, 8).map(({ a, b, store }) =>
-            `<li><b>${esc(a.it.title)}</b> ${hhmm(a.s)}–${hhmm(a.e)} und <b>${esc(b.it.title)}</b> ${hhmm(b.s)}–${hhmm(b.e)} auf ${esc(storeName(store))}</li>`).join("")}</ul>`)}</div>` : ""}
+            `<li><b>${esc(a.it.title)}</b> ${hmOf(a.s)}–${hmOf(a.e)} und <b>${esc(b.it.title)}</b> ${hmOf(b.s)}–${hmOf(b.e)} auf ${esc(storeName(store))}</li>`).join("")}</ul>`)}</div>` : ""}
         ${atWork.length ? `<div style="padding:0 16px 12px">${callout("", `${atWork.length === 1 ? "1 Job läuft" : `${atWork.length} Jobs laufen`} in der Arbeitszeit (${esc(work.from)}–${esc(work.to)})`,
-          `${atWork.slice(0, 8).map((b) => `<b>${esc(b.it.title)}</b> ${hhmm(b.s)}–${hhmm(b.e)}`).join(" · ")}. Sicherungen dürfen das, sie stören kaum; Aufräumen, Freigeben und Prüfen legt „Plan vorschlagen“ davor oder dahinter.`)}</div>` : ""}
+          `${atWork.slice(0, 8).map((b) => `<b>${esc(b.it.title)}</b> ${hmOf(b.s)}–${hmOf(b.e)}`).join(" · ")}. Sicherungen dürfen das, sie stören kaum; Aufräumen, Freigeben und Prüfen legt „Plan vorschlagen“ davor oder dahinter.`)}</div>` : ""}
         ${view === "one" ? (bars.length ? together() : `<div class="row muted" style="padding:0 16px 16px">An diesem Tag ist nichts geplant.</div>`) : `<div class="tl-scroll"><div class="tl">
           <div class="tl-row tl-axis"><span class="tl-label"></span><div class="tl-track">${hours.map((h) => `<span class="tl-tick" style="left:${h / 24 * 100}%">${String(h).padStart(2, "0")}:00</span>`).join("")}<span class="tl-tick end">24:00</span></div></div>
           ${groups || `<div class="row muted">Nichts geplant.</div>`}
@@ -4391,17 +4376,15 @@ PAGES["/zeitplan"] = async (el, token) => {
 // workHoursDialog sets the working hours the time plan keeps housekeeping out of.
 function workHoursDialog(work, saved) {
   const days = work.weekdays || [1, 2, 3, 4, 5];
-  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("clock")}</span><div class="grow"><div class="dlg-title">Arbeitszeit</div>
-      <p class="dlg-text">Wann bei euch gearbeitet wird. Der Zeitplan zeigt sie grau, und „Plan vorschlagen“ legt Aufräumen, Speicher freigeben und Prüfen außerhalb davon.</p></div></div>
+  const dlg = openDialog(`${dlgHead({ ic: "clock", title: "Arbeitszeit", text: "Wann bei euch gearbeitet wird. Der Zeitplan zeigt sie grau, und „Plan vorschlagen“ legt Aufräumen, Speicher freigeben und Prüfen außerhalb davon." })}
     <form class="dlg-body" data-form novalidate>
       <label class="check"><input type="checkbox" data-on ${work.enabled ? "checked" : ""}><span>Arbeitszeit bei der Planung berücksichtigen</span></label>
       <div class="flex" style="gap:12px;flex-wrap:wrap;align-items:center"><span class="small">von</span><input type="time" data-from value="${esc(work.from || "07:00")}" style="width:130px" aria-label="Beginn">
         <span class="small">bis</span><input type="time" data-to value="${esc(work.to || "18:00")}" style="width:130px" aria-label="Ende"></div>
-      <div class="tl-wd" role="group" aria-label="Arbeitstage">${TL_DAYS.map((d, i) => `<label class="check"><input type="checkbox" data-wd="${i + 1}" ${days.includes(i + 1) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div>
+      <div class="tl-wd" role="group" aria-label="Arbeitstage">${DAY_SHORT.map((d, i) => `<label class="check"><input type="checkbox" data-wd="${i + 1}" ${days.includes(i + 1) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div>
       <div class="small" data-err aria-live="polite"></div>
     </form>
     <div class="dlg-foot"><span class="spacer"></span><button class="btn gray" type="button" data-close>Abbrechen</button><button class="btn" type="button" data-save>Speichern</button></div>`, "wide");
-  qs("[data-close]", dlg).onclick = () => dlg.close();
   qs("[data-form]", dlg).addEventListener("submit", (e) => e.preventDefault());
   qs("[data-save]", dlg).onclick = async () => {
     const btn = qs("[data-save]", dlg);
@@ -4423,8 +4406,7 @@ function timelineDialog(it, saved) {
   const runs = (it.runs || []).slice().reverse();
   const edit = it.editable && can("admin");
   const simple = it.simple || null;
-  const dlg = openDialog(`<div class="dlg-head"><span class="dlg-ic">${icon("clock")}</span><div class="grow"><div class="dlg-title">${esc(it.title)}</div>
-      <p class="dlg-text">${esc(it.sub)} · ${esc(it.text || it.schedule)}</p></div></div>
+  const dlg = openDialog(`${dlgHead({ ic: "clock", title: esc(it.title), text: `${esc(it.sub)} · ${esc(it.text || it.schedule)}` })}
     <form class="dlg-body" data-form novalidate>
       <div class="small">${it.estimated ? `Noch kein Lauf bekannt – im Plan mit geschätzten ${fmtSecs(it.duration)} eingezeichnet.`
         : `Der letzte Lauf dauerte <b>${fmtSecs(it.duration)}</b>${it.typical && runs.length >= 3 ? `, üblich sind ${fmtSecs(it.typical)} (Mittel der letzten ${runs.length} Läufe)` : ""}.`}</div>
@@ -4434,7 +4416,7 @@ function timelineDialog(it, saved) {
       ${edit ? `<fieldset class="tl-edit"><legend>Uhrzeit ändern</legend>
         <div data-simple ${simple ? "" : "hidden"}><div class="flex" style="gap:12px;flex-wrap:wrap;align-items:center">
           <input type="time" data-time value="${esc(simple ? simple.time : "02:00")}" style="width:130px" aria-label="Uhrzeit">
-          <div class="tl-wd" role="group" aria-label="Wochentage">${TL_DAYS.map((d, i) => `<label class="check"><input type="checkbox" data-wd="${i + 1}" ${!simple || simple.weekdays.includes(i + 1) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div></div></div>
+          <div class="tl-wd" role="group" aria-label="Wochentage">${DAY_SHORT.map((d, i) => `<label class="check"><input type="checkbox" data-wd="${i + 1}" ${!simple || simple.weekdays.includes(i + 1) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div></div></div>
         <div data-cal ${simple ? "hidden" : ""}><input type="text" class="mono" data-spec value="${esc(it.schedule)}" aria-label="Zeitplan im Proxmox-Format" spellcheck="false">
           <div class="hint small muted" style="margin-top:6px">Proxmox-Format, z. B. <code>mon..fri 21:00</code>, <code>sat 04:00</code> oder <code>*-*-01 03:00</code>.</div></div>
         <button class="link-btn small" type="button" data-mode>${simple ? "Eigener Zeitplan im Proxmox-Format" : "Einfach: Uhrzeit und Wochentage"}</button>
@@ -4442,7 +4424,6 @@ function timelineDialog(it, saved) {
       : it.editable ? "" : `<div class="small muted">Diese Zeit wird auf ihrer eigenen Seite eingestellt.</div>`}
     </form>
     <div class="dlg-foot"><a class="btn gray" href="${esc(it.link)}" data-go data-close>Zur Seite</a><span class="spacer"></span><button class="btn gray" type="button" data-close>Schließen</button>${edit ? `<button class="btn" type="button" data-save>Speichern</button>` : ""}</div>`, "wide");
-  qsa("[data-close]", dlg).forEach((b) => b.addEventListener("click", () => dlg.close()));
   if (!edit) return;
   let mode = simple ? "simple" : "cal";
   const body = () => mode === "simple"
@@ -4454,7 +4435,7 @@ function timelineDialog(it, saved) {
     const q = b.schedule !== undefined ? `schedule=${enc(b.schedule)}` : `time=${enc(b.time)}&weekdays=${b.weekdays.join(",")}`;
     try {
       const r = await GET(`/api/zeitplan/preview?${q}`);
-      if (my === seq) box.innerHTML = `<b>${esc(r.text)}</b> – nächste Läufe: ${r.next.map((t) => { const d = new Date(t * 1000); return `${TL_DAYS[(d.getDay() + 6) % 7]} ${d.getDate()}.${d.getMonth() + 1}. ${hhmm(t)}`; }).join(", ") || "keine"}`;
+      if (my === seq) box.innerHTML = `<b>${esc(r.text)}</b> – nächste Läufe: ${r.next.map((t) => { const d = new Date(t * 1000); return `${DAY_SHORT[(d.getDay() + 6) % 7]} ${d.getDate()}.${d.getMonth() + 1}. ${hmOf(t)}`; }).join(", ") || "keine"}`;
     } catch (e) { if (my === seq) box.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
   };
   qs("[data-mode]", dlg).onclick = () => {
@@ -4496,7 +4477,7 @@ PAGES["/jobs"] = async (el, token) => {
     el.innerHTML = pageHead("Sicherungsjobs", "Zeitgesteuerte Sicherungen in Proxmox VE (Rechenzentrum → Backup). Ziel ist ein Backup-Speicher, z. B. ein Datastore dieser Appliance.") +
       all.map(({ c, r, err, mail }) => `<div class="panel flush"><div class="panel-head"><div class="panel-title">${esc(c.name)}</div><div class="actions"><button class="btn" type="button" data-add="${c.id}">${icon("plus")} Job anlegen</button></div></div>
         ${mail && r && r.jobs.length ? mailStrip(c, mail) : ""}
-        ${err ? `<div style="padding:0 16px 16px">${err.includes("fehlen Rechte") ? permCallout(c, (err.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean)) : callout("red", "Nicht erreichbar", esc(err))}</div>` : r.jobs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Job</th><th>Zeitplan</th><th>Was</th><th>Ziel</th><th>Aufbewahrung</th><th></th></tr></thead><tbody>
+        ${err ? `<div class="flush-pad">${err.includes("fehlen Rechte") ? permCallout(c, (err.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean)) : callout("red", "Nicht erreichbar", esc(err))}</div>` : r.jobs.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Job</th><th>Zeitplan</th><th>Was</th><th>Ziel</th><th>Aufbewahrung</th><th></th></tr></thead><tbody>
         ${r.jobs.map((j) => { const names = Object.fromEntries(r.guests.map((g) => [String(g.vmid), g.name])); const ids = (j.vmid || j.exclude || "").split(",").filter(Boolean);
           return `<tr class="${j.enabled === 0 ? "off" : ""}"><td data-l="Job"><div class="t-main">${esc(j.comment || j.id)} ${j.enabled === 0 ? pill("aus") : ""}</div><div class="t-sub mono">${esc(j.id)}</div></td>
           <td data-l="Zeitplan"><span class="mono">${esc(j.schedule)}</span>${j["next-run"] ? `<div class="t-sub">nächster: ${fmtTime(j["next-run"])}</div>` : ""}</td>
@@ -4506,7 +4487,7 @@ PAGES["/jobs"] = async (el, token) => {
           <td class="act"><div class="row-actions"><button class="btn gray sm" type="button" data-run="${c.id}|${esc(j.id)}">${icon("play")} Jetzt</button>
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${c.id}|${esc(j.id)}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${c.id}|${esc(j.id)}">${icon("trash")}</button></div></td></tr>`; }).join("")}</tbody></table></div>` :
-          `<div style="padding:0 16px 16px">${empty("Noch kein Sicherungsjob", "Zum Beispiel jede Nacht um 21:00 alle VMs auf den Backup-Server.", "", "calendar")}</div>`}</div>`).join("");
+          `<div class="flush-pad">${empty("Noch kein Sicherungsjob", "Zum Beispiel jede Nacht um 21:00 alle VMs auf den Backup-Server.", "", "calendar")}</div>`}</div>`).join("");
     bindPveMail(el, draw);
     bindCopy(el);
     const find = (v) => { const [cid, jid] = v.split("|"); const x = all.find((a) => a.c.id === cid); return { x, job: x.r?.jobs.find((j) => j.id === jid), jid }; };
@@ -4540,7 +4521,7 @@ function jobForm(x, j, done) {
       <div class="seg" role="group" aria-label="Art">${[["", "Alle"], ["qemu", "VMs"], ["lxc", "Container"], ["sel", "Ausgewählt"]].map(([k, l]) => `<button type="button" data-gtype="${k}" aria-pressed="${k === ""}">${l}</button>`).join("")}</div>
       <button class="btn gray sm" type="button" data-gall title="Alle angezeigten auswählen">Alle an</button><button class="btn gray sm" type="button" data-gnone title="Alle angezeigten abwählen">Alle aus</button></div>
     <div class="section guest-list" style="max-height:240px;overflow:auto;gap:6px">
-    ${guests.map((g) => `<label class="check" data-g="${esc((g.vmid + " " + g.name + " " + g.node + " " + (g.type === "lxc" ? "ct container" : "vm")).toLowerCase())}" data-gt="${g.type === "lxc" ? "lxc" : "qemu"}"><input type="checkbox" class="plain" data-vm="${g.vmid}" ${chosen.has(String(g.vmid)) ? "checked" : ""}><span>${g.vmid} ${esc(g.name)} <span class="muted small">${g.type === "lxc" ? "CT" : "VM"} · ${esc(g.node)}</span></span></label>`).join("")}
+    ${guests.map((g) => `<label class="check" data-g="${esc((g.vmid + " " + g.name + " " + g.node + " " + (g.type === "lxc" ? "ct container" : "vm")).toLowerCase())}" data-gt="${g.type === "lxc" ? "lxc" : "qemu"}"><input type="checkbox" class="plain" data-vm="${g.vmid}" ${chosen.has(String(g.vmid)) ? "checked" : ""}><span>${g.vmid} ${esc(g.name)} <span class="muted small">${guestKind(g.type)} · ${esc(g.node)}</span></span></label>`).join("")}
     <div class="muted small" data-gempty hidden>Nichts gefunden.</div></div><span class="err" hidden></span></div>`;
   formDialog({
     title: edit ? "Sicherungsjob bearbeiten" : `Sicherungsjob in ${c.name}`, ic: "calendar",
@@ -4730,7 +4711,7 @@ async function hostDetail(el, token, clusterID, node) {
     (n.state.last_error ? callout("red", "Letzte Sicherung fehlgeschlagen", esc(n.state.last_error)) : "") +
     `<div class="grid grid-restore">
       <div class="panel flush"><div class="panel-head"><div class="panel-title">Stände</div></div>
-        ${!t || !t.server_id ? `<div style="padding:0 16px 16px">${empty("Stände hier nicht sichtbar", "Der Backup-Server des Ziels ist nicht unter Verbindungen eingetragen.", "", "database")}</div>` :
+        ${!t || !t.server_id ? `<div class="flush-pad">${empty("Stände hier nicht sichtbar", "Der Backup-Server des Ziels ist nicht unter Verbindungen eingetragen.", "", "database")}</div>` :
         `<div class="rows" style="max-height:62vh;overflow:auto">${n.snapshots.map((s, i) => `
           <label class="row" style="cursor:pointer;align-items:center"><input type="radio" name="snap" value="${s.time}" ${i === 0 ? "checked" : ""} style="accent-color:var(--c600)">
             <div class="grow"><div class="title"><b>${fmtTime(s.time, true)}</b> ${i === 0 ? pill("neueste", "blue") : ""}</div><div class="t-sub">${fmtAgo(s.time)} · ${fmtBytes(s.size)}</div></div>
@@ -5247,13 +5228,13 @@ async function sysUpdatesPanel(box) {
       text: "Zum Termin lädt die Appliance die Paketlisten und spielt vorhandene Updates ein – am besten zu einer Zeit ohne Sicherungen. Läuft beim Neustart gerade eine Sicherung, Kopie oder Prüfung, wartet sie bis zu drei Stunden; sonst bleibt der Neustart bis zum nächsten Termin liegen.",
       fields: [
         { name: "enabled", label: "Updates automatisch einspielen", type: "checkbox", value: a.enabled, wide: true },
-        { type: "html", name: "weekdays", html: `<span class="fl">Wochentage</span><div class="daypick" data-wd>${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${a.weekdays.includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+        { type: "html", name: "weekdays", html: `<span class="fl">Wochentage</span>${dayPick(a.weekdays, "data-wd")}<span class="err" hidden></span>` },
         { name: "time", label: "Uhrzeit", type: "time", value: a.time },
         { name: "reboot", label: "Danach neu starten, wenn ein neuer Kernel es braucht", type: "checkbox", value: a.reboot, wide: true,
           hint: s.local ? "Die Appliance ist dabei ein bis zwei Minuten nicht erreichbar." : "Der Backup-Server ist dabei ein bis zwei Minuten nicht erreichbar." },
       ],
       submit: async (v, d) => {
-        v.weekdays = qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value));
+        v.weekdays = pickedDays(d);
         await PUT(`/api/pbs/${enc(s.server_id)}/autoupdate`, v);
         toast(v.enabled ? "Automatische Updates eingeschaltet." : "Automatische Updates ausgeschaltet.");
         await load();
@@ -5348,8 +5329,8 @@ SET_PAGES.zugriff = async (box) => {
   const [sys, set] = await Promise.all([GET("/api/system"), GET("/api/settings")]);
   box.innerHTML = `<div class="settings-narrow"><div class="panel"><div class="panel-head"><div class="panel-title">Adresse und Reverse Proxy</div></div>
     <form class="form" data-access novalidate><div class="form-error" hidden></div>
-      ${set.seen_proxy && set.seen_proxy.url ? `<div class="callout" style="margin:0"><div class="ct"><div class="ch">Reverse Proxy erkannt</div><div class="cb">${esc(set.seen_proxy.url)} über ${esc(set.seen_proxy.proxy_ip)}</div></div>
-        <div class="flex"><button class="btn gray sm" type="button" data-adopt>Übernehmen</button></div></div>` : ""}
+      ${set.seen_proxy && set.seen_proxy.url ? callout("", "Reverse Proxy erkannt", `${esc(set.seen_proxy.url)} über ${esc(set.seen_proxy.proxy_ip)}`,
+        `<button class="btn gray sm" type="button" data-adopt>Übernehmen</button>`, "flat") : ""}
       <div class="form-grid">
         ${field({ name: "public_url", label: "Adresse der Oberfläche", value: set.access.public_url, placeholder: set.public_url, mono: true, wide: true, hint: "Für die Links in Mails und Push-Nachrichten. Leer = automatisch (jetzt: " + set.public_url + ")." })}
         ${field({ name: "trusted_proxies", label: "IP des Reverse Proxys", value: (set.access.trusted_proxies || []).join(", "), mono: true, wide: true, placeholder: "z. B. 192.168.1.2", hint: "Dann gilt die Login-Sperre für die echte Adresse des Aufrufers statt für den Proxy. Du kommst gerade von " + set.client_ip + (set.client_ip !== set.remote_ip ? " (über " + set.remote_ip + ")" : "") + "." })}
@@ -5414,9 +5395,11 @@ SET_PAGES.verschluesselung = async (box) => {
   box.innerHTML = `<div class="settings-narrow">
     <div class="panel"><div class="panel-head"><div class="panel-title">Verschlüsselte Sicherungen</div></div>
       <p class="panel-intro">Proxmox VE verschlüsselt jede Sicherung, bevor sie den Knoten verlässt (AES-256-GCM). Auf dem Backup-Server, den Wechsel- und Archiv-Platten und in Kopien liegen dann nur verschlüsselte Daten – wer eine Platte findet, kann damit nichts anfangen. Prüfen, Aufräumen und Kopieren funktionieren wie bisher; für Wiederherstellungen und Restore-Tests trägt die Appliance den passenden Schlüssel selbst ein.</p>
-      ${(r.errors || []).map((e) => `<div class="callout red" style="margin:0 0 12px"><div class="ct"><div class="ch">Proxmox VE nicht erreichbar</div><div class="cb">${esc(e)}</div></div></div>`).join("")}
-      ${missing.length ? `<div class="callout yellow" style="margin:0 0 12px"><div class="ct"><div class="ch">${missing.length === 1 ? "Ein Speicher verschlüsselt" : missing.length + " Speicher verschlüsseln"} mit einem Schlüssel, den die Appliance nicht hat</div><div class="cb">Fällt Proxmox VE aus, sind diese Sicherungen ohne den Schlüssel verloren. Bitte importieren – Proxmox VE hat ihn auf jedem Knoten unter <code>/etc/pve/priv/storage/&lt;speicher&gt;.enc</code>.</div></div></div>` : ""}
-      ${unsaved.length ? `<div class="callout yellow" style="margin:0 0 12px"><div class="ct"><div class="ch">${unsaved.length === 1 ? "Ein Schlüssel ist" : unsaved.length + " Schlüssel sind"} noch nicht außer Haus gesichert</div><div class="cb">Die Appliance verwahrt die Schlüssel und nimmt sie in ihre eigene Sicherung auf. Für den Fall, dass alles weg ist, gehört zusätzlich eine Kopie in den Tresor: ausdrucken oder im Passwort-Manager ablegen.</div></div></div>` : ""}
+      ${(r.errors || []).map((e) => callout("red", "Proxmox VE nicht erreichbar", esc(e), "", "mb12")).join("")}
+      ${missing.length ? callout("yellow", `${missing.length === 1 ? "Ein Speicher verschlüsselt" : missing.length + " Speicher verschlüsseln"} mit einem Schlüssel, den die Appliance nicht hat`,
+        "Fällt Proxmox VE aus, sind diese Sicherungen ohne den Schlüssel verloren. Bitte importieren – Proxmox VE hat ihn auf jedem Knoten unter <code>/etc/pve/priv/storage/&lt;speicher&gt;.enc</code>.", "", "mb12") : ""}
+      ${unsaved.length ? callout("yellow", `${unsaved.length === 1 ? "Ein Schlüssel ist" : unsaved.length + " Schlüssel sind"} noch nicht außer Haus gesichert`,
+        "Die Appliance verwahrt die Schlüssel und nimmt sie in ihre eigene Sicherung auf. Für den Fall, dass alles weg ist, gehört zusätzlich eine Kopie in den Tresor: ausdrucken oder im Passwort-Manager ablegen.", "", "mb12") : ""}
       ${r.storages.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Speicher in Proxmox VE</th><th>Ziel</th><th>Verschlüsselung</th><th></th></tr></thead><tbody>${stRows}</tbody></table></div>`
         : `<div class="empty">${icon("database")}<b>Kein PBS-Speicher in Proxmox VE</b><p>Unter Verbindungen → Proxmox VE → Backup-Speicher eintragen.</p></div>`}
       ${plain.length && !missing.length ? `<p class="hint mt">Beim Einschalten überträgt die nächste Sicherung jedes Gasts noch einmal alles (verschlüsselte Daten lassen sich nicht mit den bisherigen zusammenlegen) und braucht entsprechend Platz. Die alten, unverschlüsselten Stände verschwinden nach und nach über die Aufbewahrung.</p>` : ""}
@@ -5471,7 +5454,7 @@ SET_PAGES.loeschschutz = async (box) => {
   box.innerHTML = `<div class="settings-narrow">
     <div class="panel"><div class="panel-head"><div class="panel-title">Proxmox VE darf nicht löschen</div>${open > 1 ? `<button class="btn sm" type="button" data-all>${icon("shield")} Alle schützen</button>` : ""}</div>
       <p class="panel-intro">Übernimmt jemand Proxmox VE – etwa Erpressersoftware mit Root-Zugang –, kann er über dessen Zugang zum Backup-Server auch die Sicherungen löschen. Mit Löschschutz darf Proxmox VE nur noch sichern und lesen (Rolle <code>DatastoreBackup</code> statt <code>DatastorePowerUser</code>). Wiederherstellen geht weiter; das Aufräumen alter Stände übernimmt der Backup-Server nach der Aufbewahrung des Datastores.</p>
-      ${(r.errors || []).map((e) => `<div class="callout red" style="margin:0 0 12px"><div class="ct"><div class="ch">Nicht erreichbar</div><div class="cb">${esc(e)}</div></div></div>`).join("")}
+      ${(r.errors || []).map((e) => callout("red", "Nicht erreichbar", esc(e), "", "mb12")).join("")}
       ${r.storages.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Speicher in Proxmox VE</th><th>Ziel und Zugang</th><th>Löschrecht</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
         : `<div class="empty">${icon("database")}<b>Kein PBS-Speicher in Proxmox VE</b></div>`}
       <form class="form mt" data-newst novalidate>${field({ name: "new_storages", type: "checkbox", value: set.new_storages, wide: true, label: "Neue Speicher gleich ohne Löschrecht eintragen", hint: "Gilt für Speicher, die die Appliance in Proxmox VE einträgt – auch die für Wiederherstellungen." })}</form>
@@ -5559,8 +5542,7 @@ async function keyDialog(id, reload, fresh) {
   let k;
   try { k = await GET(`/api/enckeys/${id}`); } catch (err) { return toastErr(err); }
   const d = openDialog(`
-    <div class="dlg-head"><span class="dlg-ic">${icon("key")}</span><div class="grow"><div class="dlg-title">${fresh ? "Neuen Schlüssel sichern" : `Schlüssel „${esc(k.name)}“`}</div>
-      <p class="dlg-text">Ohne diesen Schlüssel lassen sich die verschlüsselten Sicherungen nicht wiederherstellen – auch nicht von den USB-Platten. Die Appliance verwahrt ihn und nimmt ihn in ihre eigene Sicherung auf. <b>Zusätzlich gehört eine Kopie in den Tresor:</b> ausdrucken oder als Datei im Passwort-Manager ablegen, getrennt von den Platten.</p></div></div>
+    ${dlgHead({ ic: "key", title: fresh ? "Neuen Schlüssel sichern" : `Schlüssel „${esc(k.name)}“`, text: "Ohne diesen Schlüssel lassen sich die verschlüsselten Sicherungen nicht wiederherstellen – auch nicht von den USB-Platten. Die Appliance verwahrt ihn und nimmt ihn in ihre eigene Sicherung auf. <b>Zusätzlich gehört eine Kopie in den Tresor:</b> ausdrucken oder als Datei im Passwort-Manager ablegen, getrennt von den Platten." })}
     <div class="dlg-body"><div class="totp-setup"><div class="qr-box" title="Papierschlüssel als QR-Code">${k.qr}</div>
       <div><table class="kv"><tr><td>Name</td><td>${esc(k.name)}</td></tr><tr><td>Fingerabdruck</td><td class="mono small" style="word-break:break-all">${esc(k.fingerprint)}</td></tr>
         <tr><td>Erstellt</td><td>${esc(fmtTime(k.created, true))}</td></tr><tr><td>Kopie außer Haus</td><td>${k.saved ? pill("gesichert am " + fmtTime(k.saved, true), "green") : pill("noch nicht", "amber")}</td></tr></table>
@@ -5575,7 +5557,6 @@ async function keyDialog(id, reload, fresh) {
     a.download = `pk95-schluessel-${k.fingerprint.replaceAll(":", "").slice(0, 8)}.json`;
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
-  qs("[data-close]", d).onclick = () => d.close();
   const sv = qs("[data-saved]", d);
   if (sv) sv.onclick = () => run(sv, async () => { await PUT(`/api/enckeys/${id}`, { saved: true }); d.close(); }, "Vermerkt.");
   d.addEventListener("close", () => { if (reload) reload(); });
@@ -5652,7 +5633,7 @@ SET_PAGES.protokoll = async (box) => {
       ${r.entries.map((e) => `<tr><td data-l="Zeit" class="nowrap small">${esc(fmtTime(e.ts, true))}</td><td data-l="Konto">${esc(e.user)}</td>
         <td data-l="Was"><div>${esc(e.action)}</div>${e.target ? `<div class="t-sub mono">${esc(e.target)}</div>` : ""}</td>
         <td data-l="Ergebnis">${e.status < 300 ? pill("ok", "green") : e.status === 403 ? pill("keine Rechte", "amber") : e.status === 401 ? pill("abgelehnt", "rose") : pill("Fehler " + e.status, "rose")}</td>
-        <td data-l="Von" class="mono small">${esc(e.ip)}</td></tr>`).join("")}</tbody></table></div>` : `<div style="padding:0 16px 16px">${empty("Noch keine Einträge")}</div>`}</div>`;
+        <td data-l="Von" class="mono small">${esc(e.ip)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="flush-pad">${empty("Noch keine Einträge")}</div>`}</div>`;
     qs("[data-auser]", box).onchange = (ev) => draw(ev.target.value);
   };
   await draw("");
@@ -5707,8 +5688,7 @@ async function totpSetup(reload) {
 function recoveryDialog(codes, reload, fresh) {
   const text = codes.join("\n");
   const d = openDialog(`
-    <div class="dlg-head"><span class="dlg-ic">${icon("key")}</span><div class="grow"><div class="dlg-title">${fresh ? "Eingeschaltet – Wiederherstellungscodes sichern" : "Neue Wiederherstellungscodes"}</div>
-      <p class="dlg-text">Mit diesen Codes kommst du hinein, wenn das Telefon verloren oder kaputt ist. Jeder Code gilt einmal. <b>Sie werden nur jetzt angezeigt</b> – bitte ausdrucken oder im Passwort-Manager ablegen.</p></div></div>
+    ${dlgHead({ ic: "key", title: fresh ? "Eingeschaltet – Wiederherstellungscodes sichern" : "Neue Wiederherstellungscodes", text: "Mit diesen Codes kommst du hinein, wenn das Telefon verloren oder kaputt ist. Jeder Code gilt einmal. <b>Sie werden nur jetzt angezeigt</b> – bitte ausdrucken oder im Passwort-Manager ablegen." })}
     <div class="dlg-body"><div class="recovery-codes">${codes.map((c) => `<span>${esc(c)}</span>`).join("")}</div></div>
     <div class="dlg-foot"><button class="btn gray" type="button" data-copy="${esc(text)}">${icon("copy")} Kopieren</button><button class="btn gray" type="button" data-file>${icon("download")} Als Datei laden</button><span class="spacer"></span><button class="btn" type="button" data-done>Codes sind gesichert</button></div>`);
   d.dataset.busy = "1"; // no close by clicking beside it
@@ -5757,11 +5737,11 @@ function selfAutoForm(u, done) {
     text: "Zum Termin sieht die Appliance bei GitHub nach und installiert eine neue Version selbst. Sie startet dabei neu und ist etwa eine Minute nicht erreichbar; Sicherungen in Proxmox VE laufen weiter. Kopiert sie gerade auf eine USB- oder Archiv-Platte, läuft ein Restore-Test oder ein Systemupdate, wartet sie bis zu drei Stunden – sonst folgt das Update zum nächsten Termin. Startet die neue Version nicht, kehrt sie von selbst zur bisherigen zurück.",
     fields: [
       { name: "enabled", label: "Neue Versionen automatisch installieren", type: "checkbox", value: a.enabled, wide: true },
-      { type: "html", name: "weekdays", html: `<span class="fl">Wochentage</span><div class="daypick" data-wd>${DAY_SHORT.map((l, i) => `<label><input type="checkbox" value="${i + 1}" ${(a.weekdays || []).includes(i + 1) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div><span class="err" hidden></span>` },
+      { type: "html", name: "weekdays", html: `<span class="fl">Wochentage</span>${dayPick(a.weekdays, "data-wd")}<span class="err" hidden></span>` },
       { name: "time", label: "Uhrzeit", type: "time", value: a.time || "05:00", hint: "Am besten eine Zeit ohne Sicherungen und USB-Kopien." },
     ],
     submit: async (v, d) => {
-      v.weekdays = qsa("[data-wd] input", d).filter((x) => x.checked).map((x) => Number(x.value));
+      v.weekdays = pickedDays(d);
       await PUT("/api/update/auto", v);
       toast(v.enabled ? "Neue Versionen werden automatisch installiert." : "Automatisches Installieren ausgeschaltet.");
       await done();

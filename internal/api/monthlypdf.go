@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -181,33 +182,6 @@ func (l *layout) table(cols []pcol, rows [][]pcell) {
 	l.y += 4
 }
 
-func statusWord(st string) string {
-	return map[string]string{"ok": "In Ordnung", "warning": "Hinweis", "error": "Handlungsbedarf", "unknown": "Keine Werte", "cancelled": "Abgebrochen"}[st]
-}
-
-func pdfDay(ts int64) string {
-	if ts == 0 {
-		return "–"
-	}
-	return time.Unix(ts, 0).Format("02.01.2006")
-}
-
-func pdfDayTime(ts int64) string {
-	if ts == 0 {
-		return "–"
-	}
-	return time.Unix(ts, 0).Format("02.01.2006 15:04")
-}
-
-func firstNonEmptyStr(v ...string) string {
-	for _, s := range v {
-		if strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	return ""
-}
-
 // renderMonthlyPDF writes the monthly report as PDF.
 func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 	set := s.C.Monthly()
@@ -219,7 +193,7 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 			logo, logoW, logoH = id, w, h
 		}
 	}
-	from := firstNonEmptyStr(set.Company, "PK95 ProxBackup")
+	from := cmp.Or(set.Company, "PK95 ProxBackup")
 	l := &layout{d: d, w: pdf.PageW - mLeft - mRight}
 	l.header = func() {
 		x := mLeft
@@ -235,7 +209,7 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 		d.Text(x, 51, from, pdf.Bold, 14, cBrand)
 		right := "Monatsbericht " + rep.Title
 		d.Text(pdf.PageW-mRight-pdf.Width(right, pdf.Bold, 9), 44, right, pdf.Bold, 9, cInk)
-		sub := firstNonEmptyStr(set.Customer, rep.Host)
+		sub := cmp.Or(set.Customer, rep.Host)
 		d.Text(pdf.PageW-mRight-pdf.Width(sub, pdf.Regular, 8), 56, sub, pdf.Regular, 8, cMuted)
 		d.Line(mLeft, 72, pdf.PageW-mRight, 72, 0.6, cLine)
 	}
@@ -310,14 +284,14 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 	}
 	cfg := "wird nicht gesichert"
 	if rep.ConfigBackupOn {
-		cfg = "gesichert, zuletzt " + pdfDay(rep.ConfigBackup)
+		cfg = "gesichert, zuletzt " + reportDay(rep.ConfigBackup)
 	}
 	usb := fmt.Sprint(copies)
 	if len(rep.USB) > 0 {
 		usb += fmt.Sprintf(" auf %d Platten", len(rep.USB))
 	}
 	facts := [][2]string{
-		{"Zeitraum", pdfDay(rep.From) + " – " + pdfDay(rep.To-1)},
+		{"Zeitraum", reportDay(rep.From) + " – " + reportDay(rep.To-1)},
 		{"Sicherungsläufe", fmt.Sprintf("%d, davon %d ohne Fehler", rep.BackupRuns, rep.BackupRunsOK)},
 		{"Gesicherte Server", fmt.Sprint(len(rep.Guests))},
 		{"USB-Kopien", usb},
@@ -345,7 +319,7 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 		var rows [][]pcell
 		for _, g := range rep.Guests {
 			rows = append(rows, []pcell{{text: g.ID + " " + g.Name, bold: true, sub: g.Kind}, {status: g.Status},
-				{text: fmt.Sprint(g.OK)}, {text: fmt.Sprint(g.Failed), red: g.Failed > 0}, {text: pdfDayTime(g.LastOK)}, {text: g.LastError, red: g.LastError != ""}})
+				{text: fmt.Sprint(g.OK)}, {text: fmt.Sprint(g.Failed), red: g.Failed > 0}, {text: reportDayTime(g.LastOK)}, {text: g.LastError, red: g.LastError != ""}})
 		}
 		l.table([]pcol{{"Server", .25, false}, {"Status", .17, false}, {"Gesichert", .11, true}, {"Fehler", .09, true}, {"Zuletzt gesichert", .17, false}, {"Hinweis", .21, false}}, rows)
 	}
@@ -357,7 +331,7 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 			if u.Health != "" {
 				health = pcell{status: u.Health, sub: u.HealthDetail}
 			}
-			rows = append(rows, []pcell{{text: u.Label, bold: true, sub: u.Set}, {status: u.Status}, {text: fmt.Sprint(u.Copies)}, {text: fmt.Sprint(u.Failed), red: u.Failed > 0}, {text: pdfDayTime(u.LastOK)}, health})
+			rows = append(rows, []pcell{{text: u.Label, bold: true, sub: u.Set}, {status: u.Status}, {text: fmt.Sprint(u.Copies)}, {text: fmt.Sprint(u.Failed), red: u.Failed > 0}, {text: reportDayTime(u.LastOK)}, health})
 		}
 		l.table([]pcol{{"Platte", .24, false}, {"Status", .17, false}, {"Kopien", .09, true}, {"Fehler", .09, true}, {"Zuletzt", .17, false}, {"Zustand der Platte", .24, false}}, rows)
 	}
@@ -367,15 +341,15 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 	} else {
 		var rows [][]pcell
 		for _, x := range rep.RestoreTests {
-			rows = append(rows, []pcell{{text: pdfDayTime(x.Start)}, {text: x.Plan, bold: true}, {status: x.Status}, {text: fmt.Sprintf("%d von %d", x.OK, x.All)}})
+			rows = append(rows, []pcell{{text: reportDayTime(x.Start)}, {text: x.Plan, bold: true}, {status: x.Status}, {text: fmt.Sprintf("%d von %d", x.OK, x.All)}})
 		}
 		l.table([]pcol{{"Datum", .2, false}, {"Plan", .38, false}, {"Ergebnis", .2, false}, {"Server gestartet", .22, true}}, rows)
 	}
 	if len(rep.Disks) > 0 {
-		l.heading("Festplatten (Stand " + pdfDay(rep.Built) + ")")
+		l.heading("Festplatten (Stand " + reportDay(rep.Built) + ")")
 		var rows [][]pcell
 		for _, x := range rep.Disks {
-			find := firstNonEmptyStr(x.Note, x.Info, "keine Fehler")
+			find := cmp.Or(x.Note, x.Info, "keine Fehler")
 			if len(x.Problems) > 0 {
 				find = strings.Join(x.Problems, " · ")
 			}
@@ -405,7 +379,7 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 		l.heading("Archiv-Platten")
 		var rows [][]pcell
 		for _, a := range rep.Archives {
-			last := pdfDay(a.LastSeen)
+			last := reportDay(a.LastSeen)
 			if a.Stale {
 				last += " – bitte einmal anstecken"
 			}
@@ -419,11 +393,7 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 	} else {
 		var rows [][]pcell
 		for _, p := range rep.Problems {
-			st := "warning"
-			if p.Severity == "critical" {
-				st = "error"
-			}
-			rows = append(rows, []pcell{{status: st}, {text: p.Title}, {text: p.Source}, {text: fmt.Sprint(p.Count)}, {text: pdfDayTime(p.Last)}})
+			rows = append(rows, []pcell{{status: sevStatus(p.Severity)}, {text: p.Title}, {text: p.Source}, {text: fmt.Sprint(p.Count)}, {text: reportDayTime(p.Last)}})
 		}
 		l.table([]pcol{{"Art", .17, false}, {"Meldung", .4, false}, {"Quelle", .17, false}, {"Anzahl", .09, true}, {"Zuletzt", .17, false}}, rows)
 	}
@@ -438,7 +408,7 @@ func (s *Server) renderMonthlyPDF(rep core.MonthlyReport) []byte {
 	for i := 0; i < n; i++ {
 		d.SetPage(i)
 		d.Line(mLeft, pdf.PageH-42, pdf.PageW-mRight, pdf.PageH-42, 0.4, cLine)
-		d.Text(mLeft, pdf.PageH-28, "Erstellt am "+pdfDayTime(rep.Built)+" · "+rep.Host, pdf.Regular, 7.5, cMuted)
+		d.Text(mLeft, pdf.PageH-28, "Erstellt am "+reportDayTime(rep.Built)+" · "+rep.Host, pdf.Regular, 7.5, cMuted)
 		right := fmt.Sprintf("Seite %d von %d", i+1, n)
 		d.Text(pdf.PageW-mRight-pdf.Width(right, pdf.Regular, 7.5), pdf.PageH-28, right, pdf.Regular, 7.5, cMuted)
 	}

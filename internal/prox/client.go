@@ -327,7 +327,7 @@ func (c *Client) waitTask(ctx context.Context, statusPath string, timeout time.D
 			return st, err
 		}
 		if st.Status == "stopped" {
-			if st.ExitStatus != "OK" && !strings.HasPrefix(st.ExitStatus, "WARNINGS") {
+			if !TaskOK(st.ExitStatus) {
 				return st, fmt.Errorf("Aufgabe fehlgeschlagen: %s", st.ExitStatus)
 			}
 			return st, nil
@@ -341,4 +341,9 @@ func (c *Client) waitTask(ctx context.Context, statusPath string, timeout time.D
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// TaskOK tells whether a finished task ended well ("OK", or "WARNINGS: n").
+func TaskOK(status string) bool {
+	return status == "OK" || strings.HasPrefix(status, "WARNINGS")
 }

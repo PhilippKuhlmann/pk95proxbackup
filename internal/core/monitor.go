@@ -272,6 +272,7 @@ func (c *Core) Run(ctx context.Context) {
 		c.scheduleMaintPlans(ctx, time.Now())
 		hold := c.InMaintenance() // no work of its own during a maintenance
 		ov := c.BuildOverview(ctx)
+		c.noteDirectBusy(&ov)
 		c.check(ctx, prev, &ov)
 		c.followRestarts(&ov, time.Now())
 		c.recordJobRuns(ctx, &ov, time.Now())
@@ -436,7 +437,7 @@ func (c *Core) checkFailedTasks(ctx context.Context, cur *Overview) {
 	}
 	now := time.Now()
 	for _, t := range tasks {
-		if t.EndTime == 0 || t.Status == "" || t.Status == "OK" || strings.HasPrefix(t.Status, "WARNINGS") {
+		if t.EndTime == 0 || t.Status == "" || prox.TaskOK(t.Status) {
 			continue
 		}
 		keep[t.UPID] = true

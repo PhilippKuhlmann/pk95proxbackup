@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -77,7 +78,7 @@ func (c *Core) recordJobRuns(ctx context.Context, ov *Overview, now time.Time) {
 	// A backup that ended since the last look is read at once (a direct USB disk waits for it).
 	ended := false
 	for _, t := range ov.Tasks {
-		if t.Type == "vzdump" && t.EndTime > c.jobRuns.at.Unix() && !c.jobRuns.at.IsZero() {
+		if t.Type == "vzdump" && t.EndTime >= c.jobRuns.at.Unix() && !c.jobRuns.at.IsZero() {
 			ended = true
 		}
 	}
@@ -159,7 +160,7 @@ func (c *Core) recordBackupRuns(ctx context.Context, ov *Overview, s *jobRunsSta
 			if t.EndTime > run.End {
 				run.End = t.EndTime
 			}
-			if t.Status != "OK" && !strings.HasPrefix(t.Status, "WARNINGS") {
+			if !prox.TaskOK(t.Status) {
 				failedTask = true
 			}
 			lines, err := pve.TaskLog(ctx, t.UPID)
@@ -168,6 +169,9 @@ func (c *Core) recordBackupRuns(ctx context.Context, ov *Overview, s *jobRunsSta
 				break
 			}
 			vj, vok := prox.ParseVzdumpJob(lines)
+			if jobID == "" {
+				jobID = c.startedJob(t.UPID) // "run now" from the appliance
+			}
 			if vok && jobID == "" {
 				jobID = matchBackupJob(jobs[clusterID], vj)
 			}
@@ -395,7 +399,7 @@ func (c *Core) buildJobCards(ctx context.Context) []JobCard {
 			}
 		}
 		for _, j := range jobs {
-			card := JobCard{Key: "pve:" + cl.ID + ":" + j.ID, Kind: "pve", Title: firstNonEmpty(j.Comment, j.ID), Sub: "Proxmox VE · " + cl.Name,
+			card := JobCard{Key: "pve:" + cl.ID + ":" + j.ID, Kind: "pve", Title: cmp.Or(j.Comment, j.ID), Sub: "Proxmox VE · " + cl.Name,
 				Schedule: j.Schedule, NextRun: j.NextRun, Retention: strings.ReplaceAll(j.PruneBackups, ",", ", "), Link: "/jobs"}
 			switch {
 			case j.All == 1 && j.Exclude != "":
@@ -441,8 +445,8 @@ func (c *Core) buildJobCards(ctx context.Context) []JobCard {
 			if j.Remote != "" {
 				from = j.Remote + " / " + j.RemoteStore
 			}
-			card := JobCard{Key: "sync:" + srv.ID + ":" + j.ID, Kind: "sync", Title: firstNonEmpty(j.Comment, j.ID), Sub: "Kopierjob · " + srv.Name,
-				What: from, Target: srv.Name + " / " + j.Store, Schedule: firstNonEmpty(j.Schedule, "von Hand"), NextRun: j.NextRun, Link: "/kopierjobs?server=" + srv.ID}
+			card := JobCard{Key: "sync:" + srv.ID + ":" + j.ID, Kind: "sync", Title: cmp.Or(j.Comment, j.ID), Sub: "Kopierjob · " + srv.Name,
+				What: from, Target: srv.Name + " / " + j.Store, Schedule: cmp.Or(j.Schedule, "von Hand"), NextRun: j.NextRun, Link: "/kopierjobs?server=" + srv.ID}
 			if j.TransferLast > 0 {
 				card.Retention = "nur die neuesten " + strconv.Itoa(j.TransferLast) + " Stände"
 			}

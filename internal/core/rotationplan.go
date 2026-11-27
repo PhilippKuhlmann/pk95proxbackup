@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,7 +83,7 @@ func (d RotDisk) PlanText() string {
 		}
 	}
 	days := strings.Join(names, ", ")
-	if len(d.Days) == 5 && !contains(d.Days, 6) && !contains(d.Days, 7) {
+	if len(d.Days) == 5 && !slices.Contains(d.Days, 6) && !slices.Contains(d.Days, 7) {
 		days = "Montag bis Freitag"
 	}
 	switch d.Week {
@@ -94,15 +95,6 @@ func (d RotDisk) PlanText() string {
 		return days + " in geraden Kalenderwochen"
 	}
 	return d.Week + ". " + days + " im Monat"
-}
-
-func contains(xs []int, v int) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 // ValidatePlan checks the assignment: valid days and weeks, and no day with two disks.
@@ -221,17 +213,7 @@ func (c *Core) checkPlan(r Rotation, st RotationState, now time.Time) {
 	if ps.Today == "" {
 		return
 	}
-	day := now.Format("2006-01-02")
-	once := func(what string) bool {
-		key := "plan:" + r.ID + ":" + what
-		var last string
-		_ = c.St.GetSetting(key, &last)
-		if last == day {
-			return false
-		}
-		_ = c.St.SetSetting(key, day)
-		return true
-	}
+	once := func(what string) bool { return c.oncePerDay("plan:"+r.ID+":"+what, now) }
 	det := func(status string) *notify.Details {
 		var rows []notify.Row
 		for _, d := range r.Disks {

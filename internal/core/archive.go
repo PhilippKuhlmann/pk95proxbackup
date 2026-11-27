@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -377,7 +376,7 @@ func (c *Core) runArchive(ctx context.Context, id string, check bool) {
 	// 4. Read everything back.
 	var verifySecs int64
 	if a.Verify || check {
-		upid, err := pbs.StartTask(ctx, "/admin/datastore/"+url.PathEscape(a.Store)+"/verify", prox.Params{"ignore-verified": false})
+		upid, err := pbs.VerifyAll(ctx, a.Store)
 		if err == nil {
 			c.setArchivePhase(id, "verifying", upid)
 			t0 := time.Now()

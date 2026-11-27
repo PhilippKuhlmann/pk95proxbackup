@@ -656,13 +656,6 @@ func permHint(tokenID string, missing []string) string {
 		"Auf einem Knoten ausführen: " + cmd + " – ein Token hat nie mehr Rechte als sein Benutzer."
 }
 
-func emptyNil(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
 // ---- guests ----
 
 // guests lists all guests with their backups and their backup chain (backup → second server →
@@ -716,7 +709,7 @@ func (s *Server) backupGuest(w http.ResponseWriter, r *http.Request) {
 	if req.Mode == "" {
 		req.Mode = "snapshot"
 	}
-	upid, err := pve.Vzdump(r.Context(), req.Node, prox.Params{"vmid": req.VMID, "storage": req.Storage, "mode": req.Mode, "notes-template": emptyNil(req.Notes)})
+	upid, err := pve.Vzdump(r.Context(), req.Node, prox.Params{"vmid": req.VMID, "storage": req.Storage, "mode": req.Mode, "notes-template": prox.EmptyNil(req.Notes)})
 	if err != nil {
 		fail(w, err)
 		return
@@ -746,12 +739,6 @@ func (s *Server) guestSnapshots(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Time > out[j].Time })
 	writeJSON(w, http.StatusOK, map[string]any{"snapshots": out})
-}
-
-// pveStorageFor finds the storage of a cluster that points to a datastore of a Backup Server.
-func (s *Server) pveStorageFor(ctx context.Context, pve *prox.PVE, srv core.PBSServer, store string) (string, error) {
-	st, err := s.pveStorageEntry(ctx, pve, srv, store)
-	return st.Storage, err
 }
 
 func (s *Server) pveStorageEntry(ctx context.Context, pve *prox.PVE, srv core.PBSServer, store string) (prox.Storage, error) {
@@ -948,18 +935,7 @@ func (s *Server) restoreDownload(w http.ResponseWriter, r *http.Request) {
 	raw, _ := base64.StdEncoding.DecodeString(path)
 	s.C.Event("info", v.cluster.Name, "Dateien wiederhergestellt: "+name,
 		fmt.Sprintf("%s %s, Sicherung vom %s: %s (%s) heruntergeladen von %s.", strings.ToUpper(v.typ), v.id,
-			time.Unix(v.time, 0).Format("02.01.2006 15:04"), string(raw), humanBytes(n), currentUser(r).Username))
-}
-
-func humanBytes(n int64) string {
-	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
-	f := float64(n)
-	i := 0
-	for f >= 1024 && i < len(units)-1 {
-		f /= 1024
-		i++
-	}
-	return strings.Replace(fmt.Sprintf("%.1f %s", f, units[i]), ".", ",", 1)
+			time.Unix(v.time, 0).Format("02.01.2006 15:04"), string(raw), core.HumanSize(n), currentUser(r).Username))
 }
 
 func (s *Server) restore(w http.ResponseWriter, r *http.Request) {

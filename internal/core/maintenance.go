@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -57,11 +58,19 @@ func (c *Core) MaintenanceState() Maintenance {
 	return m
 }
 
-func (c *Core) saveMaintenance(m Maintenance) {
+// updateMaintenance changes the state in memory and in the store, one change after the other,
+// so that the store always holds the newest state.
+func (c *Core) updateMaintenance(f func(m *Maintenance)) Maintenance {
+	c.maintWrite.Lock()
+	defer c.maintWrite.Unlock()
+	_ = c.MaintenanceState() // loaded
 	c.mu.Lock()
+	m := *c.maint
+	f(&m)
 	c.maint = &m
 	c.mu.Unlock()
 	_ = c.St.SetSetting("maintenance", m)
+	return m
 }
 
 // InMaintenance tells whether the appliance holds still (no scheduled work of its own).
@@ -72,36 +81,50 @@ func (c *Core) InMaintenance() bool {
 
 // muteNotice reports whether a notification is held back, and counts it.
 func (c *Core) muteNotice() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.maint == nil || !c.maint.Active || !c.maint.Mute {
+	if m := c.MaintenanceState(); !m.Active || !m.Mute {
 		return false
 	}
-	c.maint.Muted++
-	m := *c.maint
-	go func() { _ = c.St.SetSetting("maintenance", m) }()
-	return true
+	muted := false
+	c.updateMaintenance(func(m *Maintenance) {
+		if m.Active && m.Mute {
+			m.Muted++
+			muted = true
+		}
+	})
+	return muted
 }
 
 // StartMaintenance begins (or, when one is on, changes the end of) the maintenance mode.
 func (c *Core) StartMaintenance(ctx context.Context, until time.Time, reason, by string, pauseJobs, mute bool) (Maintenance, error) {
+	m, _, err := c.startMaintenance(ctx, until, reason, by, pauseJobs, mute, false)
+	return m, err
+}
+
+// startMaintenance does StartMaintenance; onlyNew leaves a running maintenance as it is
+// (started false), as a planned window does.
+func (c *Core) startMaintenance(ctx context.Context, until time.Time, reason, by string, pauseJobs, mute, onlyNew bool) (Maintenance, bool, error) {
+	c.maintOp.Lock()
+	defer c.maintOp.Unlock()
 	now := time.Now()
 	if !until.After(now) {
-		return Maintenance{}, errors.New("Das Ende muss in der Zukunft liegen.")
+		return Maintenance{}, false, errors.New("Das Ende muss in der Zukunft liegen.")
 	}
 	if until.Sub(now) > maintenanceMax {
-		return Maintenance{}, errors.New("Höchstens 14 Tage am Stück.")
+		return Maintenance{}, false, errors.New("Höchstens 14 Tage am Stück.")
 	}
-	cur := c.MaintenanceState()
-	if cur.Active {
-		// Only the end, the reason and muting change; the jobs stay as they are.
-		cur.Until, cur.Mute = until.Unix(), mute
-		if strings.TrimSpace(reason) != "" {
-			cur.Reason = strings.TrimSpace(reason)
+	if cur := c.MaintenanceState(); cur.Active {
+		if onlyNew {
+			return cur, false, nil
 		}
-		c.saveMaintenance(cur)
+		// Only the end, the reason and muting change; the jobs stay as they are.
+		cur = c.updateMaintenance(func(m *Maintenance) {
+			m.Until, m.Mute = until.Unix(), mute
+			if strings.TrimSpace(reason) != "" {
+				m.Reason = strings.TrimSpace(reason)
+			}
+		})
 		c.Record("info", "Wartung", "Wartung geändert: bis "+fmtWhen(until.Unix()), "von "+by)
-		return cur, nil
+		return cur, true, nil
 	}
 	m := Maintenance{Active: true, Start: now.Unix(), Until: until.Unix(), Reason: strings.TrimSpace(reason), By: by, PauseJobs: pauseJobs, Mute: mute}
 	if pauseJobs {
@@ -127,9 +150,9 @@ func (c *Core) StartMaintenance(ctx context.Context, until time.Time, reason, by
 	}
 	// Sent before muting starts, so that everyone knows.
 	c.EventDetails("warning", "Wartung", "Wartung begonnen", body, det)
-	c.saveMaintenance(m)
+	m = c.updateMaintenance(func(cur *Maintenance) { *cur = m })
 	c.RequestRefresh()
-	return m, nil
+	return m, true, nil
 }
 
 // pauseJobs switches off every scheduled job that is on and returns them.
@@ -150,7 +173,7 @@ func (c *Core) pauseJobs(ctx context.Context) (paused []PausedJob, problems []st
 				problems = append(problems, cl.Name+" / "+j.ID+": "+err.Error())
 				continue
 			}
-			paused = append(paused, PausedJob{Kind: "pve", Server: cl.ID, Type: "backup", ID: j.ID, Name: cl.Name + ": " + firstNonEmpty(j.Comment, j.ID)})
+			paused = append(paused, PausedJob{Kind: "pve", Server: cl.ID, Type: "backup", ID: j.ID, Name: cl.Name + ": " + cmp.Or(j.Comment, j.ID)})
 		}
 	}
 	servers, _ := c.Servers()
@@ -170,7 +193,7 @@ func (c *Core) pauseJobs(ctx context.Context) (paused []PausedJob, problems []st
 					problems = append(problems, srv.Name+" / "+j.ID+": "+err.Error())
 					continue
 				}
-				paused = append(paused, PausedJob{Kind: "pbs", Server: srv.ID, Type: kind, ID: j.ID, Name: srv.Name + ": " + firstNonEmpty(j.Comment, j.ID)})
+				paused = append(paused, PausedJob{Kind: "pbs", Server: srv.ID, Type: kind, ID: j.ID, Name: srv.Name + ": " + cmp.Or(j.Comment, j.ID)})
 			}
 		}
 	}
@@ -179,6 +202,8 @@ func (c *Core) pauseJobs(ctx context.Context) (paused []PausedJob, problems []st
 
 // EndMaintenance switches the paused jobs on again and reports what happened meanwhile.
 func (c *Core) EndMaintenance(ctx context.Context, why string) (Maintenance, error) {
+	c.maintOp.Lock()
+	defer c.maintOp.Unlock()
 	m := c.MaintenanceState()
 	if !m.Active {
 		return m, errors.New("Es läuft keine Wartung.")
@@ -204,9 +229,8 @@ func (c *Core) EndMaintenance(ctx context.Context, why string) (Maintenance, err
 			left = append(left, p)
 		}
 	}
-	ended := m
-	ended.Active, ended.Paused = false, left
-	c.saveMaintenance(ended)
+	ended := c.updateMaintenance(func(cur *Maintenance) { cur.Active, cur.Paused = false, left })
+	m.Muted = ended.Muted // counted until now
 	// What happened during the maintenance (warnings and errors).
 	var rows []notify.Row
 	if evs, err := c.St.EventsBetween(ctx, m.Start, time.Now().Unix()+1); err == nil {
@@ -220,7 +244,7 @@ func (c *Core) EndMaintenance(ctx context.Context, why string) (Maintenance, err
 			}
 		}
 	}
-	body := fmt.Sprintf("Die Wartung (%s) ist %s. ", firstNonEmpty(m.Reason, "ohne Angabe"), why)
+	body := fmt.Sprintf("Die Wartung (%s) ist %s. ", cmp.Or(m.Reason, "ohne Angabe"), why)
 	if m.PauseJobs {
 		body += fmt.Sprintf("%d Jobs sind wieder eingeschaltet, die nächsten Sicherungen laufen nach Plan. ", len(m.Paused)-len(left))
 	}

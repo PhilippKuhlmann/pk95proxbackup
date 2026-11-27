@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -125,7 +126,7 @@ func (c *Core) BuildMonthlyReport(ctx context.Context, month string) (MonthlyRep
 		return rep, err
 	}
 	guests := map[string]*GuestMonth{}
-	usb := map[string]*USBMonth{} // label → disk
+	usb := map[string]*USBMonth{} // "<set>/<disk>" (older events: "label:<label>") → disk
 	problems := map[string]*ProblemLine{}
 	for _, e := range evs {
 		var d notify.Details
@@ -142,7 +143,7 @@ func (c *Core) BuildMonthlyReport(ctx context.Context, month string) (MonthlyRep
 				rep.BackupRunsFailed++
 			}
 			for _, r := range d.Rows {
-				key := strings.ToLower(r.Kind) + "/" + r.ID
+				key := e.Source + "|" + strings.ToLower(r.Kind) + "/" + r.ID // VM 100 of two clusters are two
 				g := guests[key]
 				if g == nil {
 					g = &GuestMonth{Kind: r.Kind, ID: r.ID}
@@ -159,18 +160,24 @@ func (c *Core) BuildMonthlyReport(ctx context.Context, month string) (MonthlyRep
 					g.LastError = r.Info
 				}
 			}
-		case e.Source == rotationSource && strings.Contains(e.Title, "USB-Sicherung"):
+		case d.Kind == "usb-done" || d.Kind == "usb-failed" ||
+			d.Kind == "" && e.Source == rotationSource && strings.Contains(e.Title, "USB-Sicherung"):
+			// by set and disk; events from before versions with Kind: by the disk's label
 			label := strings.Trim(factValue(&d, "Festplatte"), "„“")
+			key := d.Ref
+			if key == "" {
+				key = "label:" + label
+			}
 			if label != "" {
-				u := usb[label]
+				u := usb[key]
 				if u == nil {
 					u = &USBMonth{Label: label}
-					usb[label] = u
+					usb[key] = u
 				}
-				if strings.Contains(e.Title, "fertig") {
+				if d.Kind == "usb-done" || d.Kind == "" && strings.Contains(e.Title, "fertig") {
 					u.Copies++
 					u.LastOK = e.TS
-				} else if strings.Contains(e.Title, "fehlgeschlagen") {
+				} else if d.Kind == "usb-failed" || strings.Contains(e.Title, "fehlgeschlagen") {
 					u.Failed++
 				}
 			}
@@ -215,9 +222,12 @@ func (c *Core) BuildMonthlyReport(ctx context.Context, month string) (MonthlyRep
 		for _, r := range rots {
 			for _, d := range r.Disks {
 				u := USBMonth{Set: r.Name, Label: d.Label}
-				if x := usb[d.Label]; x != nil {
-					u.Copies, u.Failed, u.LastOK = x.Copies, x.Failed, x.LastOK
-					delete(usb, d.Label)
+				for _, k := range []string{rtKey(r, d), "label:" + d.Label} {
+					if x := usb[k]; x != nil {
+						u.Copies, u.Failed = u.Copies+x.Copies, u.Failed+x.Failed
+						u.LastOK = max(u.LastOK, x.LastOK)
+						delete(usb, k)
+					}
 				}
 				if h := hidx.rotation[r.ID+"/"+d.Key]; h != nil {
 					u.Health = h.Status
@@ -393,29 +403,39 @@ func (c *Core) SetMonthly(n MonthlySettings) error {
 	if n.CustomerOnly && strings.TrimSpace(n.To) == "" {
 		return errors.New("Für den Versand nur an den Kunden dessen Adresse eintragen.")
 	}
+	c.monthlyMu.Lock()
+	defer c.monthlyMu.Unlock()
 	n.LastSent = c.Monthly().LastSent
 	n.To, n.Company, n.Customer = strings.TrimSpace(n.To), strings.TrimSpace(n.Company), strings.TrimSpace(n.Customer)
 	n.Contact = strings.TrimSpace(n.Contact)
 	return c.St.SetSetting("monthly", n)
 }
 
+// scheduleMonthly sends the report of the month before on the 1st from 07:00. When that fails
+// (mail server down) it tries again every hour until the 3rd; the warning comes once a day.
 func (c *Core) scheduleMonthly(now time.Time) {
 	s := c.Monthly()
-	if !s.Enabled || now.Day() != 1 || now.Hour() < 7 {
+	if !s.Enabled || now.Day() > 3 || now.Day() == 1 && now.Hour() < 7 {
 		return
 	}
 	month := PreviousMonth(now)
-	if s.LastSent == month {
+	if s.LastSent == month || !c.tryNow("monthly", time.Hour, now) {
 		return
 	}
-	s.LastSent = month
-	_ = c.St.SetSetting("monthly", s)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if err := c.SendMonthlyReport(ctx, month); err != nil {
-			c.Event("warning", "Appliance", "Monatsbericht nicht versandt", err.Error())
+			if c.oncePerDay("monthly-failed", now) {
+				c.Event("warning", "Appliance", "Monatsbericht nicht versandt", err.Error()+" – die Appliance versucht es stündlich weiter, bis zum 3. des Monats.")
+			}
+			return
 		}
+		c.monthlyMu.Lock()
+		defer c.monthlyMu.Unlock()
+		s := c.Monthly()
+		s.LastSent = month
+		_ = c.St.SetSetting("monthly", s)
 	}()
 }
 
@@ -468,7 +488,7 @@ func (c *Core) SendMonthlyReport(ctx context.Context, month string) error {
 			to = append(to, ns.MailTo)
 		}
 	}
-	d.Facts = append(d.Facts, notify.Fact{Label: "Verschickt an", Value: firstNonEmpty(strings.Join(to, ", "), "Telegram / Push")})
+	d.Facts = append(d.Facts, notify.Fact{Label: "Verschickt an", Value: cmp.Or(strings.Join(to, ", "), "Telegram / Push")})
 	if b, err := json.Marshal(d); err == nil {
 		_, _ = c.St.AddEvent(store.Event{Severity: "info", Source: "Monatsbericht", Title: "Monatsbericht " + rep.Title + " versandt", Body: rep.Headline, Details: b})
 	}
@@ -499,7 +519,7 @@ func (c *Core) SendMonthlyTest(ctx context.Context, month, to string) (string, e
 	ns.MailTo = to
 	msg.Details.Link = ""
 	msg.Title = "[Test] " + title
-	msg.Details.Note = "Testversand: So erhält " + firstNonEmpty(set.Customer, "der Empfänger") + " den Monatsbericht. " + msg.Details.Note
+	msg.Details.Note = "Testversand: So erhält " + cmp.Or(set.Customer, "der Empfänger") + " den Monatsbericht. " + msg.Details.Note
 	if err := notify.Send(ctx, ns, msg); err != nil {
 		return "", err
 	}

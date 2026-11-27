@@ -187,7 +187,7 @@ func (c *Core) StartDiskRestore(ctx context.Context, req DiskRestoreRequest) (Di
 		if s.Storage == req.Storage {
 			found = true
 			if s.Avail > 0 && s.Avail < all {
-				errs["storage"] = fmt.Sprintf("Zu wenig Platz: für den Umweg über die ganze VM braucht es %s, frei sind %s.", humanSize(all), humanSize(s.Avail))
+				errs["storage"] = fmt.Sprintf("Zu wenig Platz: für den Umweg über die ganze VM braucht es %s, frei sind %s.", HumanSize(all), HumanSize(s.Avail))
 			}
 		}
 	}
@@ -225,7 +225,8 @@ func (c *Core) StartDiskRestore(ctx context.Context, req DiskRestoreRequest) (Di
 	return started, nil, nil
 }
 
-func humanSize(n int64) string {
+// HumanSize writes a size with one decimal, binary units: "1,5 GiB".
+func HumanSize(n int64) string {
 	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
 	f := float64(n)
 	i := 0
@@ -241,7 +242,7 @@ func (c *Core) waitWithProgress(ctx context.Context, pve *prox.PVE, j *DiskResto
 	for {
 		st, err := pve.TaskStatus(ctx, upid)
 		if err == nil && st.Status == "stopped" {
-			if st.ExitStatus != "OK" && !strings.HasPrefix(st.ExitStatus, "WARNINGS") {
+			if !prox.TaskOK(st.ExitStatus) {
 				return errors.New(st.ExitStatus)
 			}
 			return nil

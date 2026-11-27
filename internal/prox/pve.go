@@ -171,7 +171,7 @@ type NodeStorage struct {
 // NodeStorages lists the storages of a node, optionally filtered by content type.
 func (p *PVE) NodeStorages(ctx context.Context, node, content string) ([]NodeStorage, error) {
 	var out []NodeStorage
-	err := p.Do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/storage", Params{"content": emptyNil(content), "enabled": 1}, &out)
+	err := p.Do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/storage", Params{"content": EmptyNil(content), "enabled": 1}, &out)
 	return out, err
 }
 
@@ -180,8 +180,8 @@ func (p *PVE) NodeStorages(ctx context.Context, node, content string) ([]NodeSto
 func (p *PVE) AddPBSStorage(ctx context.Context, name, server string, port int, datastore, username, password, fingerprint, namespace, encKey string) error {
 	params := Params{
 		"storage": name, "type": "pbs", "server": server, "datastore": datastore, "username": username,
-		"password": password, "fingerprint": fingerprint, "content": "backup", "namespace": emptyNil(namespace),
-		"encryption-key": emptyNil(encKey),
+		"password": password, "fingerprint": fingerprint, "content": "backup", "namespace": EmptyNil(namespace),
+		"encryption-key": EmptyNil(encKey),
 	}
 	if port != 0 && port != 8007 {
 		params["port"] = port
@@ -389,18 +389,6 @@ func (p *PVE) USBDevices(ctx context.Context, node string) ([]USBDevice, error) 
 	var out []USBDevice
 	err := p.Do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/hardware/usb", nil, &out)
 	return out, err
-}
-
-// VMConfig returns the configuration of a VM as raw key/value map.
-func (p *PVE) VMConfig(ctx context.Context, node string, vmid int) (map[string]any, error) {
-	var out map[string]any
-	err := p.Do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(node)+"/qemu/"+strconv.Itoa(vmid)+"/config", nil, &out)
-	return out, err
-}
-
-// SetVMConfig changes VM options.
-func (p *PVE) SetVMConfig(ctx context.Context, node string, vmid int, params Params) error {
-	return p.Do(ctx, http.MethodPut, "/nodes/"+url.PathEscape(node)+"/qemu/"+strconv.Itoa(vmid)+"/config", params, nil)
 }
 
 // ResizeDisk enlarges a disk of a VM to size ("2048G"). Newer Proxmox VE versions answer

@@ -113,7 +113,7 @@ func (c *Core) reportBackupRun(ctx context.Context, tasks []TaskInfo) {
 		if t.EndTime > end {
 			end = t.EndTime
 		}
-		if t.Status != "OK" && !strings.HasPrefix(t.Status, "WARNINGS") {
+		if !prox.TaskOK(t.Status) {
 			taskFailed = true
 		}
 		lines, err := pve.TaskLog(ctx, t.UPID)

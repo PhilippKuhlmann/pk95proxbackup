@@ -141,6 +141,8 @@ func (c *Core) SaveMaintPlan(p MaintPlan) (MaintPlan, map[string]string) {
 	if errs := p.Validate(); len(errs) > 0 {
 		return p, errs
 	}
+	c.planMu.Lock()
+	defer c.planMu.Unlock()
 	ps := c.MaintPlans()
 	if p.ID == "" {
 		p.ID = NewID(3)
@@ -162,6 +164,8 @@ func (c *Core) SaveMaintPlan(p MaintPlan) (MaintPlan, map[string]string) {
 
 // DeleteMaintPlan removes a plan (a maintenance it started goes on until its end).
 func (c *Core) DeleteMaintPlan(id string) error {
+	c.planMu.Lock()
+	defer c.planMu.Unlock()
 	ps := c.MaintPlans()
 	keep := ps[:0]
 	for _, p := range ps {
@@ -171,6 +175,11 @@ func (c *Core) DeleteMaintPlan(id string) error {
 	}
 	if len(keep) == len(ps) {
 		return errors.New("Nicht gefunden.")
+	}
+	var st map[string]maintPlanState
+	if c.St.GetSetting("maintplan-state", &st) == nil && st != nil {
+		delete(st, id)
+		_ = c.St.SetSetting("maintplan-state", st)
 	}
 	return c.St.SetSetting("maintplans", keep)
 }
@@ -202,13 +211,16 @@ func (c *Core) scheduleMaintPlans(ctx context.Context, now time.Time) {
 		w, s := ws[0], st[p.ID]
 		switch {
 		case now.Unix() >= w[0] && s.Started != w[0]:
-			if c.MaintenanceState().Active {
-				continue // one is on already; this window starts when it ends (if still open)
+			// A maintenance that is on already stays as it is; this window starts when it ends
+			// (if still open).
+			_, started, err := c.startMaintenance(ctx, time.Unix(w[1], 0), p.Reason, "Zeitplan", p.PauseJobs, p.Mute, true)
+			if !started && err == nil {
+				continue
 			}
 			s.Started = w[0]
 			st[p.ID] = s
 			_ = c.St.SetSetting("maintplan-state", st)
-			if _, err := c.StartMaintenance(ctx, time.Unix(w[1], 0), p.Reason, "Zeitplan", p.PauseJobs, p.Mute); err != nil {
+			if err != nil {
 				c.Event("warning", "Wartung", "Geplante Wartung nicht gestartet", p.Reason+": "+err.Error())
 			}
 		case now.Unix() < w[0] && p.AnnounceHours > 0 && w[0]-now.Unix() <= int64(p.AnnounceHours)*3600 && s.Announced != w[0]:

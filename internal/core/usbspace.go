@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -173,6 +174,9 @@ func (c *Core) setGuests(ctx context.Context, r Rotation) ([]guestSize, error) {
 			if g.Template != 0 || len(only) > 0 && !only[id] {
 				continue
 			}
+			// this cluster's guest, not one with the same number elsewhere
+			own := st[r.Cluster+"/"+id]
+			byID[id] = own
 			out = append(out, from(id, g.Name, g.MaxDisk))
 		}
 		return out, nil
@@ -387,12 +391,15 @@ func (c *Core) checkRotationSpace(ctx context.Context, r Rotation, st RotationSt
 	dayKey := "usbspace-day:" + r.ID
 	var day string
 	_ = c.St.GetSetting(dayKey, &day)
-	if day == now.Format("2006-01-02") {
+	if day == now.Format("2006-01-02") || !c.tryNow(dayKey, 30*time.Minute, now) {
 		return
 	}
-	_ = c.St.SetSetting(dayKey, now.Format("2006-01-02"))
 	e, err := c.RotationSpace(ctx, r, &st)
-	if err != nil || e.Fits != "no" {
+	if err != nil {
+		return // server not reachable: again in half an hour
+	}
+	_ = c.St.SetSetting(dayKey, now.Format("2006-01-02"))
+	if e.Fits != "no" {
 		return
 	}
 	key := "usbspace-warned:" + r.ID
@@ -403,7 +410,7 @@ func (c *Core) checkRotationSpace(ctx context.Context, r Rotation, st RotationSt
 	}
 	_ = c.St.SetSetting(key, now.Unix())
 	msg := fmt.Sprintf("Auf jede Platte des Satzes „%s“ kommen bei der eingestellten Aufbewahrung (%s) voraussichtlich etwa %s – die kleinste Platte („%s“) hat %s. Sie wird volllaufen, dann schlagen die Sicherungen fehl.",
-		r.Name, firstNonEmpty(keepWords(rotKeep(r)), "alles behalten"), fmtBytes(e.Need), e.Label, fmtBytes(e.Smallest))
+		r.Name, cmp.Or(keepWords(rotKeep(r)), "alles behalten"), fmtBytes(e.Need), e.Label, fmtBytes(e.Smallest))
 	var tips []string
 	if e.Suggest != "" {
 		tips = append(tips, "die Aufbewahrung auf „"+e.Suggest+"“ verringern")

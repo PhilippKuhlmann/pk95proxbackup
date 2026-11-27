@@ -44,7 +44,7 @@ func (c *Core) checkUnplugged(ctx context.Context, r Rotation, st RotationState,
 		}
 		body += "."
 		c.EventDetails("warning", rotationSource, "Festplatte „"+d.Label+"“ wurde abgezogen, ohne ausgehängt zu werden", body,
-			&notify.Details{Status: "warning", Link: "/wechselplatten", Facts: []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Satz", Value: r.Name}, {Label: "Bemerkt", Value: fmtWhen(now.Unix())}}})
+			&notify.Details{Status: "warning", Link: "/wechselplatten", Facts: []notify.Fact{diskFact(d.RotDisk), {Label: "Satz", Value: r.Name}, {Label: "Bemerkt", Value: fmtWhen(now.Unix())}}})
 		// Remove the stale mount so that the disk mounts again when it is plugged back in.
 		if c.tryBusy(key) {
 			go func(store string) {

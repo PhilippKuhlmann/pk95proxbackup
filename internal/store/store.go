@@ -152,6 +152,15 @@ func (s *Store) DeleteSetting(key string) error {
 	return err
 }
 
+// DeleteSettingsPrefix removes all keys that start with prefix (e.g. "plan:<id>:").
+func (s *Store) DeleteSettingsPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	_, err := s.db.Exec("DELETE FROM settings WHERE substr(key, 1, ?) = ?", len(prefix), prefix)
+	return err
+}
+
 // ---- objects ----
 
 // Put inserts or replaces an object.

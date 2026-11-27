@@ -171,7 +171,7 @@ func (s *Server) renderReport(run core.RestoreTestRun, images func(file string) 
 		}
 		row := reportRow{RestoreTestResult: res, Kind: kind, StatusWord: st[0], StatusClass: st[1], BackupAt: clock(res.BackupTime, true),
 			StartAt: clock(res.Started, false), RestoreEndAt: clock(res.RestoreEnd, false), EndAt: clock(res.Finished, false),
-			RestoreDur: secs(res.Restore), BootDur: secs(res.Boot), TotalDur: secs(total), Size: humanBytes(res.DiskBytes)}
+			RestoreDur: secs(res.Restore), BootDur: secs(res.Boot), TotalDur: secs(total), Size: core.HumanSize(res.DiskBytes)}
 		if res.DiskBytes == 0 {
 			row.Size = "–"
 		}

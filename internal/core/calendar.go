@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -217,7 +218,7 @@ func (c Calendar) Between(from, to time.Time, max int) []time.Time {
 		if !c.weekdays[(int(day.Weekday())+6)%7] || !c.months[int(day.Month())] || !c.days[day.Day()] {
 			continue
 		}
-		if c.years != nil && !containsInt(c.years, day.Year()) {
+		if c.years != nil && !slices.Contains(c.years, day.Year()) {
 			continue
 		}
 		for h := 0; h < 24; h++ {
@@ -239,15 +240,6 @@ func (c Calendar) Between(from, to time.Time, max int) []time.Time {
 		}
 	}
 	return out
-}
-
-func containsInt(xs []int, x int) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 // Simple returns time and weekdays (1 = Monday) of a plan that runs once on chosen weekdays

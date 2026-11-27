@@ -17,6 +17,10 @@ type Details struct {
 	Images []Image `json:"images,omitempty"`
 	// Note is a closing remark, e.g. "Der vollständige Bericht hängt an."
 	Note string `json:"note,omitempty"`
+	// Kind and Ref say what an event is about for the appliance itself (not shown), e.g.
+	// "usb-done" and "<set>/<disk>" – the monthly report counts by them, not by titles.
+	Kind string `json:"kind,omitempty"`
+	Ref  string `json:"ref,omitempty"`
 }
 
 // Image is a picture in the mail.

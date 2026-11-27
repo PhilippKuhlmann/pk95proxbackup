@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -445,9 +446,9 @@ func (c *Core) BuildHandbook(ctx context.Context) Handbook {
 		for _, b := range append(append([]BackupRef{}, g.Backups...), g.Seen...) {
 			switch b.Kind {
 			case "usb":
-				add(&hg.USB, firstNonEmpty(b.Label, b.Store))
+				add(&hg.USB, cmp.Or(b.Label, b.Store))
 			case "archive":
-				add(&hg.Archive, firstNonEmpty(b.Label, b.Store))
+				add(&hg.Archive, cmp.Or(b.Label, b.Store))
 			default:
 				add(&hg.Fixed, b.ServerName+" / "+b.Store)
 			}
@@ -505,15 +506,6 @@ func (c *Core) BuildHandbook(ctx context.Context) Handbook {
 	_ = c.St.GetSetting(handbookState, &st)
 	h.Status = handbookStatus(h.Settings, h.Hashes, st.CheckedAt, time.Now())
 	return h
-}
-
-func firstNonEmpty(xs ...string) string {
-	for _, x := range xs {
-		if x != "" {
-			return x
-		}
-	}
-	return ""
 }
 
 // sectionHashes hash what belongs on paper: names, addresses, places and plans – not sizes

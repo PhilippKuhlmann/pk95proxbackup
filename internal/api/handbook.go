@@ -16,7 +16,7 @@ import (
 var handbookFuncs = template.FuncMap{
 	"day":     monthlyFuncs["day"],
 	"dayTime": monthlyFuncs["dayTime"],
-	"bytes":   humanBytes,
+	"bytes":   core.HumanSize,
 	"join":    strings.Join,
 	"role": func(r string) string {
 		return map[string]string{"admin": "Administrator", "operator": "Bediener", "files": "Dateien wiederherstellen", "viewer": "Nur lesen"}[r]

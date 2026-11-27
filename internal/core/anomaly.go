@@ -159,7 +159,7 @@ func (c *Core) scanServerAnomalies(ctx context.Context, srv PBSServer, now time.
 	if last := st.LastScan[srv.ID]; last > 0 && !st.Behind[srv.ID] {
 		since = max(since, last-24*3600)
 	}
-	tasks, err := pbs.BackupTasks(ctx, since)
+	tasks, err := pbs.TasksOfType(ctx, "backup", since)
 	if err != nil {
 		return
 	}

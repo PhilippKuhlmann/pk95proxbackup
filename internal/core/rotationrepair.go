@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -31,7 +30,7 @@ func damageOf(lines []prox.TaskLine) string {
 			if i := strings.Index(t, ": "); i > 0 && i < 30 && strings.Contains(t[:i], "T") {
 				t = t[i+2:]
 			}
-			return truncateText(t, 300)
+			return notify.TruncateRunes(t, 300)
 		}
 	}
 	return ""
@@ -165,7 +164,7 @@ func (c *Core) rebuildDisk(ctx context.Context, r Rotation, d RotDisk, rt *diskR
 	}
 	c.EventDetails("info", rotationSource, "Festplatte „"+d.Label+"“ neu aufgesetzt",
 		how+" wurde die Platte neu formatiert. Jetzt wird sie neu befüllt und danach vollständig zurückgelesen, um zu prüfen, ob sie zuverlässig speichert.",
-		&notify.Details{Status: "ok", Link: "/wechselplatten", Facts: []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"},
+		&notify.Details{Status: "ok", Link: "/wechselplatten", Facts: []notify.Fact{diskFact(d),
 			{Label: "Gerät", Value: strings.TrimSpace(disk.Vendor+" "+disk.Model) + " (" + disk.Name + ")"}}})
 	return nil
 }
@@ -197,7 +196,7 @@ func (c *Core) checkRebuilt(ctx context.Context, pbs *prox.PBS, r Rotation, d Ro
 	if _, err := pbs.WaitTask(ctx, mupid, 5*time.Minute); err != nil {
 		return "Wieder einhängen: " + err.Error()
 	}
-	upid, err = pbs.StartTask(ctx, "/admin/datastore/"+url.PathEscape(d.Store)+"/verify", prox.Params{"ignore-verified": false})
+	upid, err = pbs.VerifyAll(ctx, d.Store)
 	if err != nil {
 		return "Prüfung starten: " + err.Error()
 	}
@@ -274,16 +273,7 @@ func (c *Core) resumeRotations(ctx context.Context) {
 				continue
 			}
 			c.saveRuntime(key, rt)
-			go func(r Rotation, d RotDisk, rt *diskRuntime) {
-				for i := 0; !c.tryBusy(rtKey(r, d)); i++ {
-					if i > 600 {
-						return
-					}
-					time.Sleep(time.Second)
-				}
-				defer c.doneBusy(rtKey(r, d))
-				c.aftercare(context.WithoutCancel(ctx), pbs, r, d, rt)
-			}(r, d, rt)
+			c.aftercareWhenFree(ctx, pbs, r, d, rt)
 		}
 	}
 }

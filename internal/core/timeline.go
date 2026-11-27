@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"sort"
@@ -262,7 +263,7 @@ func (c *Core) Timeline(ctx context.Context, now time.Time) Timeline {
 			}
 		}
 		for _, j := range jobs {
-			it := TimelineItem{Key: "pve:" + cl.ID + ":" + j.ID, Group: "backup", Title: firstNonEmpty(j.Comment, j.ID),
+			it := TimelineItem{Key: "pve:" + cl.ID + ":" + j.ID, Group: "backup", Title: cmp.Or(j.Comment, j.ID),
 				Sub: "Sicherungsjob · " + cl.Name, Editable: true, Enabled: j.IsEnabled(), Link: "/jobs"}
 			if t := target[j.Storage]; t != "" {
 				it.Stores = []string{t}
@@ -299,7 +300,7 @@ func (c *Core) Timeline(ctx context.Context, now time.Time) Timeline {
 				}
 				switch kind {
 				case "sync":
-					it.Group, it.Title, it.Sub, it.Link = "copy", firstNonEmpty(j.Comment, j.ID), "Kopierjob · "+srv.Name+" / "+j.Store, "/kopierjobs?server="+srv.ID
+					it.Group, it.Title, it.Sub, it.Link = "copy", cmp.Or(j.Comment, j.ID), "Kopierjob · "+srv.Name+" / "+j.Store, "/kopierjobs?server="+srv.ID
 					if j.Remote == "" && j.RemoteStore != "" {
 						it.Stores = append(it.Stores, srv.ID+"/"+j.RemoteStore)
 					}

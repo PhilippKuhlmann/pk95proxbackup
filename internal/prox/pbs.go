@@ -231,6 +231,11 @@ func (p *PBS) Verify(ctx context.Context, store string) (string, error) {
 	return p.StartTask(ctx, "/admin/datastore/"+url.PathEscape(store)+"/verify", nil)
 }
 
+// VerifyAll reads every backup of a datastore back, also those verified before.
+func (p *PBS) VerifyAll(ctx context.Context, store string) (string, error) {
+	return p.StartTask(ctx, "/admin/datastore/"+url.PathEscape(store)+"/verify", Params{"ignore-verified": false})
+}
+
 // Snapshot is an entry of /admin/datastore/{store}/snapshots.
 type Snapshot struct {
 	Type         string         `json:"backup-type"`
@@ -257,21 +262,21 @@ type SnapshotFile struct {
 // Snapshots lists all snapshots of a datastore (root namespace or ns).
 func (p *PBS) Snapshots(ctx context.Context, store, ns string) ([]Snapshot, error) {
 	var out []Snapshot
-	err := p.Do(ctx, http.MethodGet, "/admin/datastore/"+url.PathEscape(store)+"/snapshots", Params{"ns": emptyNil(ns)}, &out)
+	err := p.Do(ctx, http.MethodGet, "/admin/datastore/"+url.PathEscape(store)+"/snapshots", Params{"ns": EmptyNil(ns)}, &out)
 	return out, err
 }
 
 // DeleteSnapshot removes one snapshot.
 func (p *PBS) DeleteSnapshot(ctx context.Context, store, ns, typ, id string, t int64) error {
 	return p.Do(ctx, http.MethodDelete, "/admin/datastore/"+url.PathEscape(store)+"/snapshots",
-		Params{"ns": emptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t}, nil)
+		Params{"ns": EmptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t}, nil)
 }
 
 // DeleteGroup removes all snapshots of a guest from a datastore. With protected snapshots the
 // Backup Server removes the others and fails.
 func (p *PBS) DeleteGroup(ctx context.Context, store, ns, typ, id string) error {
 	return p.Do(ctx, http.MethodDelete, "/admin/datastore/"+url.PathEscape(store)+"/groups",
-		Params{"ns": emptyNil(ns), "backup-type": typ, "backup-id": id}, nil)
+		Params{"ns": EmptyNil(ns), "backup-type": typ, "backup-id": id}, nil)
 }
 
 // ChangeOwner hands a backup group to another user or token: only its owner may add backups
@@ -376,7 +381,7 @@ func (p *PBS) Remotes(ctx context.Context) ([]Remote, error) {
 
 // PutRemote creates or updates a remote.
 func (p *PBS) PutRemote(ctx context.Context, r Remote, password string) error {
-	params := Params{"host": r.Host, "auth-id": r.AuthID, "password": password, "fingerprint": r.Fingerprint, "comment": emptyNil(r.Comment)}
+	params := Params{"host": r.Host, "auth-id": r.AuthID, "password": password, "fingerprint": r.Fingerprint, "comment": EmptyNil(r.Comment)}
 	if r.Port != 0 && r.Port != 8007 {
 		params["port"] = r.Port
 	}
@@ -616,7 +621,7 @@ func (p *PBS) S3Buckets(ctx context.Context, id string) ([]string, error) {
 
 // S3Check tests whether the endpoint can write to a bucket (with the datastore name as prefix).
 func (p *PBS) S3Check(ctx context.Context, id, bucket, prefix string) error {
-	return p.DoSlow(ctx, http.MethodPut, "/admin/s3/"+url.PathEscape(id)+"/check", Params{"bucket": bucket, "store-prefix": emptyNil(prefix)}, nil)
+	return p.DoSlow(ctx, http.MethodPut, "/admin/s3/"+url.PathEscape(id)+"/check", Params{"bucket": bucket, "store-prefix": EmptyNil(prefix)}, nil)
 }
 
 // RemoveACL takes a role on a path away from a user or token.
@@ -643,10 +648,11 @@ func (p *PBS) ACLs(ctx context.Context) ([]ACL, error) {
 // SetProtected protects a snapshot from pruning and deletion (or lifts the protection).
 func (p *PBS) SetProtected(ctx context.Context, store, ns, typ, id string, t int64, on bool) error {
 	return p.Do(ctx, http.MethodPut, "/admin/datastore/"+url.PathEscape(store)+"/protected",
-		Params{"ns": emptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t, "protected": on}, nil)
+		Params{"ns": EmptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t, "protected": on}, nil)
 }
 
-func emptyNil(s string) any {
+// EmptyNil sends an empty value as "not given" (nil) instead of an empty parameter.
+func EmptyNil(s string) any {
 	if s == "" {
 		return nil
 	}
@@ -669,7 +675,7 @@ func (p *PBS) SnapshotFile(ctx context.Context, store, ns, typ, id string, t int
 // SnapshotFileMax is SnapshotFile for files up to max bytes (larger ones are an error).
 func (p *PBS) SnapshotFileMax(ctx context.Context, store, ns, typ, id string, t int64, file string, max int64) ([]byte, error) {
 	resp, err := p.Stream(ctx, "/admin/datastore/"+url.PathEscape(store)+"/download-decoded", Params{
-		"ns": emptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t, "file-name": file,
+		"ns": EmptyNil(ns), "backup-type": typ, "backup-id": id, "backup-time": t, "file-name": file,
 	})
 	if err != nil {
 		return nil, err

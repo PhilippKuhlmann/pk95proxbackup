@@ -934,11 +934,7 @@ func guestNeeds(conf, typ string) (disk, mem int64) {
 		if !diskKey.MatchString(k) || strings.Contains(v, "media=cdrom") || strings.HasPrefix(v, "/") {
 			continue
 		}
-		if m := sizeRe.FindStringSubmatch(v); m != nil {
-			f, _ := strconv.ParseFloat(m[1], 64)
-			mult := map[string]float64{"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}[m[2]]
-			disk += int64(f * mult)
-		}
+		disk += driveSize(v)
 	}
 	if mem == 0 && typ == "lxc" {
 		mem = 512 << 20

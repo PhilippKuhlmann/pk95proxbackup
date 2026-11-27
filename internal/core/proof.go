@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -157,7 +158,7 @@ func (c *Core) BuildProof(ctx context.Context, req ProofRequest) (ProofReport, e
 			continue
 		}
 		a := get(key, kind, strconv.Itoa(gc.VMID))
-		a.g.Name = firstNonEmpty(gc.Name, a.g.Name)
+		a.g.Name = cmp.Or(gc.Name, a.g.Name)
 		for _, b := range gc.Backups {
 			a.g.Copies = append(a.g.Copies, proofCopy(b, false))
 			if b.Kind != "fixed" || b.Server != main {
@@ -195,7 +196,7 @@ func (c *Core) BuildProof(ctx context.Context, req ProofRequest) (ProofReport, e
 			}
 			if run.Start >= a.g.TestAt {
 				a.g.TestAt, a.g.TestOK = run.Start, x.Status
-				a.g.TestNote = firstNonEmpty(x.OS, x.Info)
+				a.g.TestNote = cmp.Or(x.OS, x.Info)
 			}
 		}
 	}

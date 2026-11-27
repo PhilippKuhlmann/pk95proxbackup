@@ -56,8 +56,10 @@ func (r *Rotation) validateDirect(errs map[string]string) {
 	}
 }
 
+// directJobParams are the settings of the backup job of a direct set. Whether the job is on is
+// left alone (a maintenance or an administrator may have switched it off); a new job starts on.
 func directJobParams(r Rotation, storage string) prox.Params {
-	p := prox.Params{"schedule": r.Time, "storage": storage, "mode": "snapshot", "enabled": 1,
+	p := prox.Params{"schedule": r.Time, "storage": storage, "mode": "snapshot",
 		"comment": "PK95 USB direkt: " + r.Name, "notes-template": "{{guestname}}"}
 	if r.Guests == "" {
 		p["all"] = 1
@@ -74,7 +76,11 @@ func (r Rotation) owns(storage string) bool {
 
 // applyDirect creates or updates the backup job of a direct set. Without a disk there is no
 // job yet: it comes with the first disk.
-func (c *Core) applyDirect(ctx context.Context, r Rotation) error {
+func (c *Core) applyDirect(ctx context.Context, r Rotation) error { return c.applyDirectTo(ctx, r, "") }
+
+// applyDirectTo is applyDirect with the disk (storage) the job is to point at ("" = keep its
+// disk, else the first of the set).
+func (c *Core) applyDirectTo(ctx context.Context, r Rotation, want string) error {
 	pve, _, err := c.PVE(r.Cluster)
 	if err != nil {
 		return err
@@ -90,7 +96,9 @@ func (c *Core) applyDirect(ctx context.Context, r Rotation) error {
 		}
 	}
 	storage := ""
-	if cur != nil && r.owns(cur.Storage) {
+	if r.owns(want) {
+		storage = want
+	} else if cur != nil && r.owns(cur.Storage) {
 		storage = cur.Storage
 	}
 	for _, d := range r.Disks {
@@ -108,7 +116,7 @@ func (c *Core) applyDirect(ctx context.Context, r Rotation) error {
 		}
 		err = pve.UpdateBackupJob(ctx, r.BackupJobID(), p)
 	} else {
-		p["id"] = r.BackupJobID()
+		p["id"], p["enabled"] = r.BackupJobID(), 1
 		err = pve.CreateBackupJob(ctx, p)
 	}
 	if err != nil {
@@ -213,7 +221,9 @@ func (c *Core) scheduleDirect(ctx context.Context, ov *Overview, now time.Time) 
 					continue
 				}
 				if want := !d.Present; off[d.Storage] != want {
-					_ = pve.SetStorageDisabled(ctx, d.Storage, want)
+					if err := pve.SetStorageDisabled(ctx, d.Storage, want); err != nil {
+						c.directProblem(r, "Speicher von „"+d.Label+"“ nicht umgeschaltet", err)
+					}
 				}
 			}
 		}
@@ -254,6 +264,46 @@ func (c *Core) scheduleDirect(ctx context.Context, ov *Overview, now time.Time) 
 	c.mu.Lock()
 	c.directBusy = busy
 	c.mu.Unlock()
+}
+
+// noteDirectBusy forgets that a disk was being backed up onto once no backup runs at all
+// (scheduleDirect, which keeps the marks, does not run during a maintenance).
+func (c *Core) noteDirectBusy(ov *Overview) {
+	for _, t := range ov.Tasks {
+		if t.Type == "vzdump" && t.EndTime == 0 {
+			return
+		}
+	}
+	c.mu.Lock()
+	c.directBusy = nil
+	c.mu.Unlock()
+}
+
+// removeDirectDisk takes a disk out of a direct set: a job that points at it moves to another
+// disk of the set, or is deleted when none is left. The storage stays (for restoring).
+func (c *Core) removeDirectDisk(ctx context.Context, r Rotation, d RotDisk) error {
+	pve, _, err := c.PVE(r.Cluster)
+	if err != nil {
+		return err
+	}
+	jobs, err := pve.BackupJobs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		if j.ID != r.BackupJobID() || j.Storage != d.Storage || d.Storage == "" {
+			continue
+		}
+		rest := r
+		rest.Disks = slices.DeleteFunc(slices.Clone(r.Disks), func(x RotDisk) bool { return x.Key == d.Key })
+		for _, x := range rest.Disks {
+			if x.Storage != "" {
+				return pve.UpdateBackupJob(ctx, r.BackupJobID(), prox.Params{"storage": x.Storage})
+			}
+		}
+		return c.RemoveDirect(ctx, r)
+	}
+	return nil
 }
 
 // copyOwner owns what the copy jobs of the sets write (PBS default of a sync job).
@@ -298,16 +348,31 @@ func (c *Core) handOver(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDis
 
 // handOverForCopy gives the groups on a disk back to the copy job when the set backed up
 // directly before (a disk that never left the copy set is not touched).
-func (c *Core) handOverForCopy(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDisk) {
-	rt := c.runtime(rtKey(r, d))
-	c.mu.Lock()
-	pending := rt.Owner != "" && rt.Owner != copyOwner
-	c.mu.Unlock()
-	if pending {
-		if err := c.handOver(ctx, pbs, r, d, copyOwner); err != nil {
-			c.directProblem(r, "Sicherungen auf „"+d.Label+"“ nicht übergeben", err)
+// When the copy starts on mounting, that is switched off for the disk until then (see
+// syncParams) and switched on again afterwards. It reports whether it handed over now.
+func (c *Core) handOverForCopy(ctx context.Context, pbs *prox.PBS, r Rotation, d RotDisk) bool {
+	if !c.copyOwnerPending(r, d) {
+		return false
+	}
+	if err := c.handOver(ctx, pbs, r, d, copyOwner); err != nil {
+		c.directProblem(r, "Sicherungen auf „"+d.Label+"“ nicht übergeben", err)
+		return false
+	}
+	if r.RunOnMount && !r.Direct() {
+		if err := c.ApplyRotation(ctx, r); err != nil {
+			c.directProblem(r, "Kopierjob von „"+d.Label+"“ nicht angepasst", err)
 		}
 	}
+	return true
+}
+
+// copyOwnerPending tells whether the backups on a disk still belong to someone else than the
+// copy jobs (the set backed up directly onto it before).
+func (c *Core) copyOwnerPending(r Rotation, d RotDisk) bool {
+	rt := c.runtime(rtKey(r, d))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return rt.Owner != "" && rt.Owner != copyOwner
 }
 
 // storageOwner is the PBS user or token Proxmox VE writes with through a storage.
@@ -361,14 +426,9 @@ func (c *Core) warnNoDisk(r Rotation, st RotationState, next, now time.Time) {
 
 // directProblem reports a failed step of a direct set once a day.
 func (c *Core) directProblem(r Rotation, what string, err error) {
-	key := "directproblem:" + r.ID + ":" + what
-	day := time.Now().Format("2006-01-02")
-	var last string
-	_ = c.St.GetSetting(key, &last)
-	if last == day {
+	if !c.oncePerDay("directproblem:"+r.ID+":"+what, time.Now()) {
 		return
 	}
-	_ = c.St.SetSetting(key, day)
 	c.EventDetails("warning", rotationSource, r.Name+": "+what, "Die direkte USB-Sicherung braucht hier Hilfe. Bitte leiten Sie diese Nachricht an Ihren IT-Betreuer weiter.",
 		&notify.Details{Status: "warning", Link: "/wechselplatten", Log: []string{err.Error()}})
 }
@@ -446,8 +506,8 @@ func (c *Core) noteDirectRuns(ctx context.Context, clusterID string, runs map[st
 			if dr.ok == 0 {
 				c.EventDetails("critical", rotationSource, "USB-Sicherung auf „"+d.Label+"“ fehlgeschlagen",
 					"Die Server konnten nicht auf die Festplatte „"+d.Label+"“ gesichert werden. Bitte lassen Sie die Festplatte angeschlossen und leiten Sie diese Nachricht an Ihren IT-Betreuer weiter.",
-					&notify.Details{Status: "error", Link: "/wechselplatten", Log: dr.log, Facts: []notify.Fact{
-						{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Zeitpunkt", Value: fmtWhen(dr.end)}}})
+					&notify.Details{Status: "error", Link: "/wechselplatten", Log: dr.log, Kind: "usb-failed", Ref: rtKey(r, d), Facts: []notify.Fact{
+						diskFact(d), {Label: "Zeitpunkt", Value: fmtWhen(dr.end)}}})
 				continue
 			}
 			if dr.failed > 0 {
@@ -459,16 +519,7 @@ func (c *Core) noteDirectRuns(ctx context.Context, clusterID string, runs map[st
 			if err != nil {
 				continue
 			}
-			go func() {
-				for i := 0; !c.tryBusy(key); i++ {
-					if i >= 1800 {
-						return
-					}
-					time.Sleep(time.Second)
-				}
-				defer c.doneBusy(key)
-				c.aftercare(context.WithoutCancel(ctx), pbs, r, d, rt)
-			}()
+			c.aftercareWhenFree(ctx, pbs, r, d, rt)
 		}
 	}
 }
@@ -496,6 +547,12 @@ func (c *Core) runDirect(ctx context.Context, r Rotation, d RotDisk) error {
 	if d.Storage == "" {
 		return errors.New("Die Platte ist in Proxmox VE noch nicht eingetragen – den Satz einmal speichern.")
 	}
+	// Not while the disk is still tidied up after the last backup (that ends with unmounting).
+	key := rtKey(r, d)
+	if !c.tryBusy(key) {
+		return errors.New("Die Platte wird gerade noch aufgeräumt – bitte gleich noch einmal versuchen.")
+	}
+	defer c.doneBusy(key)
 	pbs, _, err := c.PBS(r.ServerID)
 	if err != nil {
 		return err
@@ -507,18 +564,22 @@ func (c *Core) runDirect(ctx context.Context, r Rotation, d RotDisk) error {
 	if err != nil {
 		return err
 	}
-	_ = pve.SetStorageDisabled(ctx, d.Storage, false)
-	if storages, err := pve.Storages(ctx); err == nil {
-		if err := c.handOver(ctx, pbs, r, d, storageOwner(storages, d.Storage)); err != nil {
-			return err
-		}
+	if err := pve.SetStorageDisabled(ctx, d.Storage, false); err != nil {
+		return fmt.Errorf("Speicher %s in Proxmox VE einschalten: %w", d.Storage, err)
+	}
+	storages, err := pve.Storages(ctx)
+	if err != nil {
+		return err
+	}
+	if err := c.handOver(ctx, pbs, r, d, storageOwner(storages, d.Storage)); err != nil {
+		return err
 	}
 	if err := pve.UpdateBackupJob(ctx, r.BackupJobID(), prox.Params{"storage": d.Storage}); err != nil {
-		// The job may be gone (removed in Proxmox VE): set it up again first.
-		if err := c.applyDirect(ctx, r); err != nil {
-			return err
+		if !prox.IsStatus(err, 404) && !strings.Contains(err.Error(), "does not exist") {
+			return fmt.Errorf("Sicherungsjob auf %s umstellen: %w", d.Label, err)
 		}
-		if err := pve.UpdateBackupJob(ctx, r.BackupJobID(), prox.Params{"storage": d.Storage}); err != nil {
+		// The job was removed in Proxmox VE: set it up again, pointing at this disk.
+		if err := c.applyDirectTo(ctx, r, d.Storage); err != nil {
 			return err
 		}
 	}
@@ -583,7 +644,10 @@ func (c *Core) RunBackupJob(ctx context.Context, clusterID, jobID string) (upids
 		return nil, nil, ErrJobEmpty
 	}
 	for node, ids := range perNode {
-		p := prox.Params{"vmid": strings.Join(ids, ","), "storage": job.Storage, "mode": job.Mode}
+		p := prox.Params{"vmid": strings.Join(ids, ","), "storage": job.Storage}
+		if job.Mode != "" { // else the default of Proxmox VE (an empty mode is refused)
+			p["mode"] = job.Mode
+		}
 		if job.NotesTemplate != "" {
 			p["notes-template"] = job.NotesTemplate
 		}
@@ -600,7 +664,42 @@ func (c *Core) RunBackupJob(ctx context.Context, clusterID, jobID string) (upids
 	if len(upids) == 0 {
 		return nil, errs, errors.New(strings.Join(errs, "; "))
 	}
+	c.noteJobStarts(upids, jobID)
 	return upids, errs, nil
+}
+
+// noteJobStarts remembers which job the appliance started tasks for: the task log of a backup
+// started that way does not name its job (see recordBackupRuns).
+func (c *Core) noteJobStarts(upids []string, jobID string) {
+	c.jobRuns.mu.Lock()
+	defer c.jobRuns.mu.Unlock()
+	var m map[string]jobStart
+	_ = c.St.GetSetting("jobstarts", &m)
+	if m == nil {
+		m = map[string]jobStart{}
+	}
+	now := time.Now().Unix()
+	for u, s := range m {
+		if now-s.T > 14*24*3600 {
+			delete(m, u)
+		}
+	}
+	for _, u := range upids {
+		m[u] = jobStart{Job: jobID, T: now}
+	}
+	_ = c.St.SetSetting("jobstarts", m)
+}
+
+type jobStart struct {
+	Job string `json:"job"`
+	T   int64  `json:"t"`
+}
+
+// startedJob is the job the appliance started a task for ("" when it did not).
+func (c *Core) startedJob(upid string) string {
+	var m map[string]jobStart
+	_ = c.St.GetSetting("jobstarts", &m)
+	return m[upid].Job
 }
 
 func idSet(list string) map[string]bool {

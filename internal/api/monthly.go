@@ -14,28 +14,39 @@ import (
 
 // Monthly report: view (any month), send now, settings.
 
+// The same words and dates in the report page and the PDF (monthlypdf.go).
+
+func statusWord(st string) string {
+	return map[string]string{"ok": "In Ordnung", "warning": "Hinweis", "error": "Handlungsbedarf", "unknown": "Keine Werte", "cancelled": "Abgebrochen"}[st]
+}
+
+// sevStatus is the status of a warning or error event (critical → error).
+func sevStatus(sev string) string {
+	if sev == "critical" {
+		return "error"
+	}
+	return "warning"
+}
+
+func reportDay(ts int64) string {
+	if ts == 0 {
+		return "–"
+	}
+	return time.Unix(ts, 0).Format("02.01.2006")
+}
+
+func reportDayTime(ts int64) string {
+	if ts == 0 {
+		return "–"
+	}
+	return time.Unix(ts, 0).Format("02.01.2006 15:04")
+}
+
 var monthlyFuncs = template.FuncMap{
-	"day": func(ts int64) string {
-		if ts == 0 {
-			return "–"
-		}
-		return time.Unix(ts, 0).Format("02.01.2006")
-	},
-	"dayTime": func(ts int64) string {
-		if ts == 0 {
-			return "–"
-		}
-		return time.Unix(ts, 0).Format("02.01.2006 15:04")
-	},
-	"word": func(st string) string {
-		return map[string]string{"ok": "In Ordnung", "warning": "Hinweis", "error": "Handlungsbedarf", "unknown": "Keine Werte", "cancelled": "Abgebrochen"}[st]
-	},
-	"sev": func(s string) string {
-		if s == "critical" {
-			return "error"
-		}
-		return "warning"
-	},
+	"day":     reportDay,
+	"dayTime": reportDayTime,
+	"word":    statusWord,
+	"sev":     sevStatus,
 	"years": func(h int64) string {
 		switch {
 		case h < 0:

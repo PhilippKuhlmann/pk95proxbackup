@@ -90,9 +90,6 @@ type Attachment struct {
 
 var rank = map[string]int{"info": 0, "warning": 1, "error": 2, "critical": 2}
 
-// Wants reports whether a message of that severity should be sent.
-func (s Settings) Wants(sev string) bool { return rank[sev] >= rank[s.MinSeverity] }
-
 // Send delivers the message to all enabled channels and joins their errors.
 func Send(ctx context.Context, s Settings, m Message) error {
 	var errs []error

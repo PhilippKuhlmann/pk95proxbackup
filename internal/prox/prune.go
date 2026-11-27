@@ -19,12 +19,46 @@ func (k Keep) Any() bool {
 	return k.Last+k.Hourly+k.Daily+k.Weekly+k.Monthly+k.Yearly > 0
 }
 
+func (k Keep) rules() map[string]int {
+	return map[string]int{"keep-last": k.Last, "keep-hourly": k.Hourly, "keep-daily": k.Daily, "keep-weekly": k.Weekly, "keep-monthly": k.Monthly, "keep-yearly": k.Yearly}
+}
+
 func (k Keep) params(p Params) {
-	for name, v := range map[string]int{"last": k.Last, "hourly": k.Hourly, "daily": k.Daily, "weekly": k.Weekly, "monthly": k.Monthly, "yearly": k.Yearly} {
+	for name, v := range k.rules() {
 		if v > 0 {
-			p["keep-"+name] = v
+			p[name] = v
 		}
 	}
+}
+
+// Params are the keep-* parameters of the rules in use.
+func (k Keep) Params() Params {
+	p := Params{}
+	k.params(p)
+	return p
+}
+
+// Unset lists the keep-* parameters of the rules not in use, to remove them from a job
+// (keep-hourly is left alone: the appliance never sets it).
+func (k Keep) Unset() []string {
+	var out []string
+	for name, v := range k.rules() {
+		if v <= 0 && name != "keep-hourly" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// PruneDatastore cleans up a whole datastore (or namespace) with these rules and returns the
+// task.
+func (p *PBS) PruneDatastore(ctx context.Context, store, ns string, k Keep) (string, error) {
+	params := k.Params()
+	if ns != "" {
+		params["ns"] = ns
+	}
+	return p.StartTask(ctx, "/admin/datastore/"+url.PathEscape(store)+"/prune-datastore", params)
 }
 
 // PruneItem is one backup in a (simulated) cleanup of a group.
@@ -39,7 +73,7 @@ type PruneItem struct {
 // PruneDryRun asks the Backup Server which backups of a guest a cleanup with these rules
 // would keep – nothing is deleted.
 func (p *PBS) PruneDryRun(ctx context.Context, store, ns, typ, id string, k Keep) ([]PruneItem, error) {
-	params := Params{"backup-type": typ, "backup-id": id, "dry-run": true, "ns": emptyNil(ns)}
+	params := Params{"backup-type": typ, "backup-id": id, "dry-run": true, "ns": EmptyNil(ns)}
 	k.params(params)
 	var out []PruneItem
 	err := p.Do(ctx, http.MethodPost, "/admin/datastore/"+url.PathEscape(store)+"/prune", params, &out)

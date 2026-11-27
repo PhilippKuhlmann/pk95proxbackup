@@ -3,9 +3,11 @@ package core_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"pk95proxbackup/internal/core"
 	"pk95proxbackup/internal/prox"
 )
 
@@ -89,5 +91,46 @@ func TestMaintenance(t *testing.T) {
 	}
 	if _, err := c.StartMaintenance(ctx, time.Now().Add(15*24*time.Hour), "", "admin", true, true); err == nil {
 		t.Fatal("more than 14 days accepted")
+	}
+}
+
+// Two starts at the same time (a click and a planned window): the jobs that were switched off
+// are remembered once and switched on again at the end.
+func TestMaintenanceConcurrentStart(t *testing.T) {
+	c := newCore(t)
+	ctx := context.Background()
+	pve, _, _ := c.PVE("cluster")
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.StartMaintenance(ctx, time.Now().Add(time.Hour), "Umbau", "admin", true, true)
+		}()
+	}
+	wg.Wait()
+	if m := c.MaintenanceState(); !m.Active || len(m.Paused) == 0 {
+		t.Fatalf("paused jobs lost: %+v", m)
+	}
+	// Notifications held back while it ends are counted, the store holds the end.
+	var mw sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		mw.Add(1)
+		go func() { defer mw.Done(); c.EventDetails("warning", "Test", "Meldung", "", nil) }()
+	}
+	if _, err := c.EndMaintenance(ctx, "beendet"); err != nil {
+		t.Fatal(err)
+	}
+	mw.Wait()
+	jobs, _ := pve.BackupJobs(ctx)
+	for _, j := range jobs {
+		if j.ID == "backup-nightly" && !j.IsEnabled() {
+			t.Fatal("backup job left off")
+		}
+	}
+	var stored core.Maintenance
+	_ = c.St.GetSetting("maintenance", &stored)
+	if stored.Active {
+		t.Fatal("store says the maintenance is still on")
 	}
 }

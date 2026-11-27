@@ -22,7 +22,6 @@ import (
 	"pk95proxbackup/internal/notify"
 	"pk95proxbackup/internal/prox"
 	"pk95proxbackup/internal/shares"
-	"pk95proxbackup/internal/store"
 )
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -517,7 +516,7 @@ func (s *Server) sampleRestoreTest() notify.Message {
 		if r.OS != "" {
 			info += " (" + r.OS + ")"
 		}
-		d.Rows = append(d.Rows, notify.Row{Kind: kind, ID: r.VMID, Name: r.Name, Status: "ok", Size: humanBytes(r.DiskBytes), Info: info,
+		d.Rows = append(d.Rows, notify.Row{Kind: kind, ID: r.VMID, Name: r.Name, Status: "ok", Size: core.HumanSize(r.DiskBytes), Info: info,
 			Duration: fmt.Sprintf("Restore %s · Start %s", secs(r.Restore), secs(r.Boot))})
 		if b := shots[r.Screenshot]; b != nil {
 			cid := "shot-" + r.VMID + "@pk95"
@@ -893,6 +892,7 @@ func (s *Server) deleteRotation(w http.ResponseWriter, r *http.Request) {
 		body = "Der Sicherungsjob in Proxmox VE ist gelöscht. Die Platten, ihre Sicherungen und ihre Speicher in Proxmox VE (zum Wiederherstellen) bleiben erhalten."
 	}
 	_ = s.C.St.Delete(core.KindRotation, rot.ID)
+	s.C.ForgetRotation(rot)
 	s.C.Event("warning", "Wechselplatten", "Satz „"+rot.Name+"“ entfernt", body)
 	s.C.RequestRefresh()
 	ok(w)
@@ -1022,6 +1022,7 @@ func (s *Server) removeRotationDisk(w http.ResponseWriter, r *http.Request) {
 	}
 	rot.Disks = keep
 	_ = s.C.St.Put(core.KindRotation, rot.ID, rot)
+	s.C.ForgetRotationDisk(rot, d)
 	s.C.Event("info", "Wechselplatten", "Platte "+d.Label+" aus „"+rot.Name+"“ entfernt", "Der Datastore "+d.Store+" und die Daten auf der Platte bleiben erhalten.")
 	s.C.RequestRefresh()
 	ok(w)
@@ -1203,7 +1204,7 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request) {
 // otherwise the answer carries the command for the shell of the host. It reports success;
 // on failure it has answered already.
 func (s *Server) setAsRoot(w http.ResponseWriter, r *http.Request, pve *prox.PVE, self *selfVM, params prox.Params, password, command string) bool {
-	err := pve.SetVMConfig(r.Context(), self.Node, self.VMID, params)
+	err := pve.SetGuestConfig(r.Context(), self.Node, "qemu", self.VMID, params)
 	if err == nil {
 		return true
 	}
@@ -1221,14 +1222,12 @@ func (s *Server) setAsRoot(w http.ResponseWriter, r *http.Request, pve *prox.PVE
 		writeJSON(w, http.StatusConflict, map[string]any{"need_root": true, "node": self.Node, "command": command, "error": err.Error()})
 		return false
 	}
-	if err := root.SetVMConfig(r.Context(), self.Node, self.VMID, params); err != nil {
+	if err := root.SetGuestConfig(r.Context(), self.Node, "qemu", self.VMID, params); err != nil {
 		writeJSON(w, http.StatusConflict, map[string]any{"need_root": true, "node": self.Node, "command": command, "error": err.Error()})
 		return false
 	}
 	return true
 }
-
-var _ = store.ErrNotFound
 
 // overviewJobs lists the jobs with their last runs for the overview.
 func (s *Server) overviewJobs(w http.ResponseWriter, r *http.Request) {

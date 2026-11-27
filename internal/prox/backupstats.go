@@ -90,13 +90,6 @@ func nsFromPath(p []string) string {
 	return strings.Join(out, "/")
 }
 
-// BackupTasks lists the backup tasks since a unix time, newest first.
-func (p *PBS) BackupTasks(ctx context.Context, since int64) ([]Task, error) {
-	var out []Task
-	err := p.Do(ctx, http.MethodGet, "/nodes/localhost/tasks", Params{"typefilter": "backup", "since": since, "limit": 1000}, &out)
-	return out, err
-}
-
 // TasksOfType lists the tasks of one type (e.g. syncjob) since a time.
 func (p *PBS) TasksOfType(ctx context.Context, typ string, since int64) ([]Task, error) {
 	var out []Task

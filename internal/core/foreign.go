@@ -404,7 +404,7 @@ func (c *Core) adoptDisk(ctx context.Context, r Rotation, d RotDisk, rt *diskRun
 	dev := strings.TrimSpace(disk.Vendor+" "+disk.Model) + " (/dev/" + devName + ")"
 	c.EventDetails("info", rotationSource, "Festplatte „"+d.Label+"“ neu aufgesetzt",
 		"Die angesteckte Platte gehörte zu keinem Datastore. Sie wurde als „"+d.Label+"“ formatiert, wird jetzt neu befüllt und danach vollständig zurückgelesen.",
-		&notify.Details{Status: "ok", Link: "/wechselplatten", Facts: []notify.Fact{{Label: "Festplatte", Value: "„" + d.Label + "“"}, {Label: "Gerät", Value: dev}}})
+		&notify.Details{Status: "ok", Link: "/wechselplatten", Facts: []notify.Fact{diskFact(d), {Label: "Gerät", Value: dev}}})
 	return nil
 }
 

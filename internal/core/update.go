@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"pk95proxbackup/internal/notify"
 )
 
 // Updates: the appliance looks for new releases on GitHub and installs one on request. The
@@ -254,16 +256,8 @@ func (c *Core) fetchRelease(ctx context.Context, st *updateState) error {
 		return fmt.Errorf("ungewöhnliches Release %q", rel.Tag)
 	}
 	st.Tag, st.Latest = rel.Tag, strings.TrimPrefix(rel.Tag, "v")
-	st.Notes, st.URL, st.Published = truncateText(strings.TrimSpace(rel.Body), 4000), rel.URL, rel.Published.Unix()
+	st.Notes, st.URL, st.Published = notify.TruncateRunes(strings.TrimSpace(rel.Body), 4000), rel.URL, rel.Published.Unix()
 	return nil
-}
-
-func truncateText(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
 }
 
 func (c *Core) setUpdatePhase(phase, errMsg string) {

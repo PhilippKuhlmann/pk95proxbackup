@@ -2,12 +2,14 @@ package core_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"pk95proxbackup/internal/core"
 	"pk95proxbackup/internal/fake"
+	"pk95proxbackup/internal/prox"
 )
 
 // directSet replaces the demo's copy set by a set whose disks Proxmox VE backs up onto directly:
@@ -331,5 +333,74 @@ func TestRotationSpace(t *testing.T) {
 	c.CheckSpaceForTest(ctx, rot, *st, time.Now().Add(36*time.Hour).Truncate(24*time.Hour).Add(10*time.Hour))
 	if n := strings.Count(eventTitles(t, c), "werden zu klein"); n != 1 {
 		t.Fatalf("warned %d times:\n%s", n, eventTitles(t, c))
+	}
+}
+
+// Saving a set leaves a switched-off job off; taking the job's disk out moves the job; a disk
+// that is still being tidied up is not backed up onto.
+func TestDirectUSBJobKeptInLine(t *testing.T) {
+	c := newCore(t)
+	ctx := context.Background()
+	orig := directSet(t, c)
+	rot := orig
+	rot.Disks = slices.Clone(orig.Disks)
+	pve, _, _ := c.PVE("cluster")
+	job := func() prox.BackupJob {
+		jobs, _ := pve.BackupJobs(ctx)
+		for _, j := range jobs {
+			if j.ID == rot.BackupJobID() {
+				return j
+			}
+		}
+		return prox.BackupJob{}
+	}
+	if err := pve.UpdateBackupJob(ctx, rot.BackupJobID(), prox.Params{"enabled": 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ApplyRotation(ctx, rot); err != nil {
+		t.Fatal(err)
+	}
+	if job().IsEnabled() {
+		t.Fatal("saving switched the job on again")
+	}
+	// The job points at A; A leaves the set: it moves to B.
+	if err := c.RemoveRotationDisk(ctx, rot, rot.Disks[0]); err != nil {
+		t.Fatal(err)
+	}
+	if j := job(); j.Storage != "pk95-usb-b" {
+		t.Fatalf("job still on %q", j.Storage)
+	}
+	// B leaves as well: no disk, no job.
+	rot.Disks = rot.Disks[1:]
+	if err := c.RemoveRotationDisk(ctx, rot, rot.Disks[0]); err != nil {
+		t.Fatal(err)
+	}
+	if j := job(); j.ID != "" {
+		t.Fatalf("job left without disk: %+v", j)
+	}
+	// A disk that is still being tidied up
+	rot2 := orig
+	key := "usb/a"
+	if !c.TryBusyForTest(key) {
+		t.Fatal("busy")
+	}
+	err := c.RunRotationDisk(ctx, rot2, rot2.Disks[0])
+	c.DoneBusyForTest(key)
+	if err == nil || !strings.Contains(err.Error(), "aufgeräumt") {
+		t.Fatalf("backup onto a busy disk: %v", err)
+	}
+}
+
+// Back to copying: the copy does not start on mounting before the groups are handed over.
+func TestCopyWaitsForHandOver(t *testing.T) {
+	c := newCore(t)
+	rot, _ := c.Rotation("demo")
+	d := rot.Disks[0]
+	_ = c.St.SetSetting("rt:demo/"+d.Key, map[string]any{"owner": "pk95-pve@pbs!usb"})
+	if p := c.SyncParamsForTest(rot, d); p["run-on-mount"] != false {
+		t.Fatalf("run-on-mount while handed to Proxmox VE: %v", p["run-on-mount"])
+	}
+	if p := c.SyncParamsForTest(rot, rot.Disks[1]); p["run-on-mount"] != true {
+		t.Fatalf("other disk: %v", p["run-on-mount"])
 	}
 }

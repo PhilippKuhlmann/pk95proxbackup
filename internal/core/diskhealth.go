@@ -135,22 +135,6 @@ func (c *Core) DiskHealths() []DiskHealthState {
 	return out
 }
 
-// HealthByUUID returns the record of the disk holding a partition (datastore backing device).
-func (c *Core) HealthByUUID(uuid string) (DiskHealth, bool) {
-	if uuid == "" {
-		return DiskHealth{}, false
-	}
-	list, _ := store.List[DiskHealth](c.St, KindDiskHealth)
-	for _, h := range list {
-		for _, u := range h.UUIDs {
-			if strings.EqualFold(u, uuid) {
-				return h, true
-			}
-		}
-	}
-	return DiskHealth{}, false
-}
-
 // ForgetDiskHealth deletes the record of a disk that is gone for good.
 func (c *Core) ForgetDiskHealth(id string) error { return c.St.Delete(KindDiskHealth, id) }
 

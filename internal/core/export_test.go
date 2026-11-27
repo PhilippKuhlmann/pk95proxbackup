@@ -116,3 +116,15 @@ func (c *Core) CheckMaintenanceForTest(ctx context.Context, now time.Time) {
 func (c *Core) ScheduleMaintPlansForTest(ctx context.Context, now time.Time) {
 	c.scheduleMaintPlans(ctx, now)
 }
+
+// TryBusyForTest and DoneBusyForTest mark a disk as being worked on.
+func (c *Core) TryBusyForTest(key string) bool { return c.tryBusy(key) }
+func (c *Core) DoneBusyForTest(key string)     { c.doneBusy(key) }
+
+// SyncParamsForTest exposes syncParams.
+func (c *Core) SyncParamsForTest(r Rotation, d RotDisk) map[string]any {
+	return c.syncParams(r, d, "")
+}
+
+// StartedJobForTest exposes startedJob.
+func (c *Core) StartedJobForTest(upid string) string { return c.startedJob(upid) }

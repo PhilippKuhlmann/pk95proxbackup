@@ -208,7 +208,7 @@ func telegramText(m Message) string {
 	text += "\n\n" + foot
 	if utf8.RuneCountInString(text) > 4096 {
 		// Very many long rows: title, text and footer only.
-		short := head + "\n\n" + e(truncateRunes(strings.TrimSpace(m.Body), 3500))
+		short := head + "\n\n" + e(TruncateRunes(strings.TrimSpace(m.Body), 3500))
 		text = short + "\n\n" + foot
 	}
 	return text
@@ -253,7 +253,7 @@ func sendTelegram(ctx context.Context, s Settings, m Message) error {
 		w := multipart.NewWriter(&b)
 		_ = w.WriteField("chat_id", s.TelegramChat)
 		if caption != "" {
-			_ = w.WriteField("caption", truncateRunes(caption, 1000))
+			_ = w.WriteField("caption", TruncateRunes(caption, 1000))
 		}
 		fw, err := w.CreateFormFile(field, a.Name)
 		if err != nil {
@@ -268,7 +268,8 @@ func sendTelegram(ctx context.Context, s Settings, m Message) error {
 	return nil
 }
 
-func truncateRunes(s string, n int) string {
+// TruncateRunes shortens s to n characters (the last one an ellipsis).
+func TruncateRunes(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
