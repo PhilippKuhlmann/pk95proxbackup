@@ -424,16 +424,100 @@ func (c *Core) scheduleMonthly(now time.Time) {
 // recipients if set); "only to the customer" sends one mail to the customer and, if wished, a
 // copy to the usual recipients.
 func (c *Core) SendMonthlyReport(ctx context.Context, month string) error {
-	rep, err := c.BuildMonthlyReport(ctx, month)
+	rep, msg, title, err := c.monthlyMessage(ctx, month)
 	if err != nil {
 		return err
 	}
-	if c.MonthlyPDF == nil {
-		return errors.New("Bericht kann nicht erzeugt werden")
-	}
+	d := msg.Details
 	set := c.Monthly()
 	ns := c.NotifySettings()
 	ns.MinSeverity = "info"
+	var to []string
+	if set.CustomerOnly {
+		if !ns.MailEnabled || ns.SMTPHost == "" {
+			return errors.New("E-Mail ist nicht eingerichtet (Benachrichtigungen → E-Mail).")
+		}
+		own := ns.MailTo
+		ns.HookEnabled, ns.TelegramEnabled, ns.MailLinks, ns.Channels = false, false, false, nil
+		d.Link = ""
+		ns.MailTo = set.To
+		if err := notify.Send(ctx, ns, msg); err != nil {
+			return err
+		}
+		to = append(to, set.To)
+		if set.CopyToMe && strings.TrimSpace(own) != "" {
+			ns.MailTo = own
+			cp := msg
+			cp.Title = title + " (Kopie)"
+			if err := notify.Send(ctx, ns, cp); err != nil {
+				return fmt.Errorf("an den Kunden verschickt, die Kopie nicht: %w", err)
+			}
+			to = append(to, own)
+		}
+	} else {
+		if set.To != "" {
+			ns.MailTo = set.To
+		}
+		if !ns.MailEnabled && !ns.HookEnabled && !ns.TelegramEnabled {
+			return errors.New("Keine Benachrichtigung eingerichtet (E-Mail, Telegram oder Push).")
+		}
+		if err := notify.Send(ctx, ns, msg); err != nil {
+			return err
+		}
+		if ns.MailEnabled {
+			to = append(to, ns.MailTo)
+		}
+	}
+	d.Facts = append(d.Facts, notify.Fact{Label: "Verschickt an", Value: firstNonEmpty(strings.Join(to, ", "), "Telegram / Push")})
+	if b, err := json.Marshal(d); err == nil {
+		_, _ = c.St.AddEvent(store.Event{Severity: "info", Source: "Monatsbericht", Title: "Monatsbericht " + rep.Title + " versandt", Body: rep.Headline, Details: b})
+	}
+	return nil
+}
+
+// SendMonthlyTest sends the report as the customer gets it (logo, PDF, no link to the
+// appliance), but only by mail to one address ("" = the recipients of the notifications),
+// marked as test. Nothing else changes: the customer gets nothing.
+func (c *Core) SendMonthlyTest(ctx context.Context, month, to string) (string, error) {
+	ns := c.NotifySettings()
+	if !ns.MailEnabled || ns.SMTPHost == "" {
+		return "", errors.New("E-Mail ist nicht eingerichtet (Benachrichtigungen → E-Mail).")
+	}
+	if to = strings.TrimSpace(to); to == "" {
+		to = ns.MailTo
+	}
+	if to == "" {
+		return "", errors.New("Keine Adresse für den Test – bitte eine eintragen.")
+	}
+	rep, msg, title, err := c.monthlyMessage(ctx, month)
+	if err != nil {
+		return "", err
+	}
+	set := c.Monthly()
+	ns.MinSeverity = "info"
+	ns.HookEnabled, ns.TelegramEnabled, ns.MailLinks, ns.Channels = false, false, false, nil
+	ns.MailTo = to
+	msg.Details.Link = ""
+	msg.Title = "[Test] " + title
+	msg.Details.Note = "Testversand: So erhält " + firstNonEmpty(set.Customer, "der Empfänger") + " den Monatsbericht. " + msg.Details.Note
+	if err := notify.Send(ctx, ns, msg); err != nil {
+		return "", err
+	}
+	c.Record("info", "Monatsbericht", "Monatsbericht "+rep.Title+" als Test an "+to+" verschickt", "")
+	return to, nil
+}
+
+// monthlyMessage builds the report of a month as message: summary in the text, the full
+// report as PDF, the IT service's name and logo when set.
+func (c *Core) monthlyMessage(ctx context.Context, month string) (MonthlyReport, notify.Message, string, error) {
+	rep, err := c.BuildMonthlyReport(ctx, month)
+	if err != nil {
+		return rep, notify.Message{}, "", err
+	}
+	if c.MonthlyPDF == nil {
+		return rep, notify.Message{}, "", errors.New("Bericht kann nicht erzeugt werden")
+	}
+	set := c.Monthly()
 	plain := rep.Plain(set.Company)
 
 	d := &notify.Details{Status: rep.Status, Link: "/", RowsTitle: "Server im " + rep.Title}
@@ -490,45 +574,5 @@ func (c *Core) SendMonthlyReport(ctx context.Context, month string) error {
 			msg.Attachments = append(msg.Attachments, notify.Attachment{Name: "logo" + ext, ContentType: logo.Type, Data: logo.Data, ContentID: "brand-logo"})
 		}
 	}
-	var to []string
-	if set.CustomerOnly {
-		if !ns.MailEnabled || ns.SMTPHost == "" {
-			return errors.New("E-Mail ist nicht eingerichtet (Benachrichtigungen → E-Mail).")
-		}
-		own := ns.MailTo
-		ns.HookEnabled, ns.TelegramEnabled, ns.MailLinks, ns.Channels = false, false, false, nil
-		d.Link = ""
-		ns.MailTo = set.To
-		if err := notify.Send(ctx, ns, msg); err != nil {
-			return err
-		}
-		to = append(to, set.To)
-		if set.CopyToMe && strings.TrimSpace(own) != "" {
-			ns.MailTo = own
-			cp := msg
-			cp.Title = title + " (Kopie)"
-			if err := notify.Send(ctx, ns, cp); err != nil {
-				return fmt.Errorf("an den Kunden verschickt, die Kopie nicht: %w", err)
-			}
-			to = append(to, own)
-		}
-	} else {
-		if set.To != "" {
-			ns.MailTo = set.To
-		}
-		if !ns.MailEnabled && !ns.HookEnabled && !ns.TelegramEnabled {
-			return errors.New("Keine Benachrichtigung eingerichtet (E-Mail, Telegram oder Push).")
-		}
-		if err := notify.Send(ctx, ns, msg); err != nil {
-			return err
-		}
-		if ns.MailEnabled {
-			to = append(to, ns.MailTo)
-		}
-	}
-	d.Facts = append(d.Facts, notify.Fact{Label: "Verschickt an", Value: firstNonEmpty(strings.Join(to, ", "), "Telegram / Push")})
-	if b, err := json.Marshal(d); err == nil {
-		_, _ = c.St.AddEvent(store.Event{Severity: "info", Source: "Monatsbericht", Title: "Monatsbericht " + rep.Title + " versandt", Body: rep.Headline, Details: b})
-	}
-	return nil
+	return rep, msg, title, nil
 }

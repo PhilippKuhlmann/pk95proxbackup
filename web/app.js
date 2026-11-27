@@ -5141,6 +5141,7 @@ async function monthlyPanel(p) {
       <a href="/api/report/monthly.pdf?month=${esc(m.previous)}" target="_blank" rel="noopener">${icon("external")} PDF ${esc(prevName)} ansehen</a>
       <a href="/api/report/monthly?month=${esc(m.previous)}" target="_blank" rel="noopener">${icon("external")} Als Webseite</a>
       <a href="/api/report/monthly.pdf?month=${esc(new Date().toISOString().slice(0, 7))}" target="_blank" rel="noopener">${icon("external")} Laufender Monat bis heute</a>
+      <a href="#" data-mtest>${icon("eye")} Test an mich senden</a>
       <a href="#" data-msend>${icon("bell")} Bericht ${esc(prevName)} jetzt senden</a></div>
     ${m.last_sent ? `<p class="small muted mt">Zuletzt automatisch versandt: ${esc(m.last_sent)}</p>` : ""}`;
   const f = qs("[data-mform]", p);
@@ -5164,6 +5165,15 @@ async function monthlyPanel(p) {
   }, "Logo gespeichert.");
   qsa("[data-logodel]", p).forEach((b) => b.onclick = () => run(b, async () => { await DEL("/api/report/monthly/logo"); await monthlyPanel(p); }, "Logo entfernt."));
   qs("[data-msend]", p).onclick = (e) => { e.preventDefault(); run(null, async () => { await POST("/api/report/monthly/send?month=" + m.previous); }, "Monatsbericht verschickt."); };
+  qs("[data-mtest]", p).onclick = (e) => {
+    e.preventDefault();
+    formDialog({
+      title: "Test an mich senden", ic: "eye", button: "Test senden",
+      text: `Der Bericht ${esc(prevName)} geht so, wie ihn der Kunde bekommt – mit Logo, Kurzfassung und PDF –, aber nur an die Adresse unten und mit „[Test]“ im Betreff. Gespeicherte Änderungen oben gelten schon; der Kunde bekommt nichts.`,
+      fields: [{ name: "to", label: "An", placeholder: "Empfänger der Benachrichtigungen", wide: true, hint: "Leer = an die Empfänger der übrigen Benachrichtigungen." }],
+      submit: async (v) => { const r = await POST("/api/report/monthly/test?month=" + m.previous, { to: v.to }); toast("Test an " + r.to + " verschickt."); },
+    });
+  };
 }
 
 SET_PAGES.sicherung = async (box) => {

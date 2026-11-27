@@ -165,6 +165,7 @@ func (s *Server) routes() {
 	a("PUT /api/report/monthly/logo", s.putLogo)
 	a("DELETE /api/report/monthly/logo", s.deleteLogo)
 	a("POST /api/report/monthly/send", s.sendMonthly)
+	a("POST /api/report/monthly/test", s.testMonthly)
 	a("GET /api/report/monthly/settings", s.getMonthly)
 	a("PUT /api/report/monthly/settings", s.putMonthly)
 	a("POST /api/pbs/{id}/health", s.checkServerHealth)

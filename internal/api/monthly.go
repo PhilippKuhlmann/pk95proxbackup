@@ -192,6 +192,32 @@ func (s *Server) sendMonthly(w http.ResponseWriter, r *http.Request) {
 	ok(w)
 }
 
+// testMonthly sends the report as the customer gets it, only to one address.
+func (s *Server) testMonthly(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		To string `json:"to"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if to := strings.TrimSpace(req.To); to != "" && (!strings.Contains(to, "@") || strings.ContainsAny(to, ",; ")) {
+		fieldErrs(w, map[string]string{"to": "Eine Adresse, z. B. du@example.de."})
+		return
+	}
+	month := r.URL.Query().Get("month")
+	if month == "" {
+		month = core.PreviousMonth(time.Now())
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	to, err := s.C.SendMonthlyTest(ctx, month, req.To)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"to": to})
+}
+
 func (s *Server) getMonthly(w http.ResponseWriter, r *http.Request) {
 	m := s.C.Monthly()
 	_, logo := s.C.Logo()

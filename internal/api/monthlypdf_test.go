@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -187,10 +188,33 @@ func TestMonthlyPDFForCustomer(t *testing.T) {
 	if code, out := cl.do("POST", "/api/report/monthly/send?month="+month, nil, true); code != 200 {
 		t.Fatalf("send: %d %v", code, out)
 	}
+	// A test: only to the given address (or the usual recipients), nothing to the customer.
+	if code, out := cl.do("POST", "/api/report/monthly/test?month="+month, map[string]string{"to": "a@b.example, c@d.example"}, true); code != 422 {
+		t.Fatalf("two addresses: %d %v", code, out)
+	}
+	if code, out := cl.do("POST", "/api/report/monthly/test?month="+month, map[string]string{"to": "ich@service.example"}, true); code != 200 || out["to"] != "ich@service.example" {
+		t.Fatalf("test: %d %v", code, out)
+	}
+	if code, out := cl.do("POST", "/api/report/monthly/test?month="+month, map[string]string{}, true); code != 200 || out["to"] != "it@service.example" {
+		t.Fatalf("test to the usual recipients: %d %v", code, out)
+	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	if len(sink.mails) != 2 || sink.mails[0].to[0] != "chef@kunde.example" || sink.mails[1].to[0] != "it@service.example" {
+	if len(sink.mails) != 4 || sink.mails[0].to[0] != "chef@kunde.example" || sink.mails[1].to[0] != "it@service.example" ||
+		len(sink.mails[2].to) != 1 || sink.mails[2].to[0] != "ich@service.example" || sink.mails[3].to[0] != "it@service.example" {
 		t.Fatalf("mails: %+v", sink.mails)
+	}
+	if !strings.Contains(sink.mails[2].data, "application/pdf") || !strings.Contains(sink.mails[2].data, "Content-ID: <brand-logo>") {
+		t.Fatal("the test is not the customer's mail")
+	}
+	subject := ""
+	for _, l := range strings.Split(sink.mails[2].data, "\r\n") {
+		if strings.HasPrefix(l, "Subject: ") {
+			subject, _ = new(mime.WordDecoder).DecodeHeader(strings.TrimPrefix(l, "Subject: "))
+		}
+	}
+	if !strings.Contains(subject, "[IT-Service Muster]") || !strings.Contains(subject, "[Test] Monatsbericht") || !strings.Contains(subject, "Musterfirma GmbH") {
+		t.Fatalf("subject: %q", subject)
 	}
 	m := sink.mails[0].data
 	if !strings.Contains(m, "application/pdf") || !strings.Contains(m, "Monatsbericht-"+month+".pdf") || !strings.Contains(m, "Content-ID: <brand-logo>") {
