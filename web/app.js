@@ -5036,22 +5036,49 @@ async function monthlyPanel(p) {
   const m = await GET("/api/report/monthly/settings");
   const prevName = new Date(m.previous + "-01T12:00:00").toLocaleDateString("de-DE", { month: "long", year: "numeric" });
   p.innerHTML = `<div class="panel-head"><div class="panel-title">Monatsbericht</div></div>
-    <p class="panel-intro">Am 1. jedes Monats: alle Sicherungen, USB-Kopien, Restore-Tests, Festplatten und Hinweise des Vormonats – in der Nachricht kurz, als Datei vollständig (druckbar als PDF).</p>
+    <p class="panel-intro">Am 1. jedes Monats: oben eine Kurzfassung in einfachen Worten für die Geschäftsführung, darunter alle Sicherungen, USB-Kopien, Restore-Tests, Festplatten und Hinweise des Vormonats – in der Mail kurz, vollständig als PDF im Anhang.</p>
     <div class="form" data-mform><div class="form-error" hidden></div>
       ${field({ name: "m_enabled", label: "Monatsbericht senden", type: "checkbox", value: m.enabled, wide: true })}
-      ${field({ name: "to", label: "An (optional)", value: m.to, placeholder: "Empfänger der Benachrichtigungen", hint: "Andere Adressen für den Bericht, z. B. die Geschäftsführung. Leer = wie die übrigen Mails; Telegram und Push bekommen ihn auch.", wide: true })}
+      <div class="section-title">Absender und Kunde</div>
+      ${field({ name: "company", label: "Ihre Firma", value: m.company, placeholder: "z. B. IT-Service Muster GmbH", hint: "Steht statt „PK95 ProxBackup“ oben im Bericht, im Betreff und im Kopf der Mail. Die Absender-Adresse bleibt die der Benachrichtigungen." })}
+      ${field({ name: "customer", label: "Kunde", value: m.customer, placeholder: "z. B. Musterfirma GmbH", hint: "Für wen der Bericht ist – steht auf dem Bericht und im Betreff." })}
+      ${field({ name: "contact", label: "Kontakt bei Fragen", type: "textarea", rows: 3, value: m.contact, placeholder: "Telefon 0123 456789\nservice@example.de", hint: "Steht am Ende des Berichts und in der Mail.", wide: true })}
+      <div class="field wide" data-field="logo"><span class="fl">Logo</span>
+        <div class="logo-row"><div class="logo-prev" data-logoprev>${m.logo ? `<img src="/api/report/monthly/logo?t=${Date.now()}" alt="Logo">` : `<span class="muted small">kein Logo</span>`}</div>
+          <label class="btn gray sm">${icon("download")} Logo wählen<input type="file" accept="image/png,image/jpeg" data-logofile hidden></label>
+          ${m.logo ? `<button class="btn gray sm" type="button" data-logodel>${icon("trash")} Entfernen</button>` : ""}</div>
+        <span class="hint">PNG oder JPEG, höchstens 512 KB – am besten quer und mit durchsichtigem Hintergrund.</span><span class="err" hidden></span></div>
+      <div class="section-title">Empfänger</div>
+      ${field({ name: "to", label: "An", value: m.to, placeholder: "Empfänger der Benachrichtigungen", hint: "Andere Adressen für den Bericht, z. B. die Geschäftsführung des Kunden. Leer = wie die übrigen Mails.", wide: true })}
+      ${field({ name: "customer_only", label: "Nur an diese Adressen schicken", type: "checkbox", value: m.customer_only, wide: true, hint: "Der Bericht geht nur per Mail an die Adressen oben – nicht an Telegram, Push oder die Empfänger der übrigen Benachrichtigungen. Ohne Link zur Appliance." })}
+      ${field({ name: "copy_to_me", label: "Mir eine Kopie schicken", type: "checkbox", value: m.copy_to_me, wide: true, hint: "Eine zweite Mail an die Empfänger der übrigen Benachrichtigungen." })}
       <div class="flex"><button class="btn" type="button" data-msave>Speichern</button></div></div>
     <div class="preview-links mt">
-      <a href="/api/report/monthly?month=${esc(m.previous)}" target="_blank" rel="noopener">${icon("external")} Bericht ${esc(prevName)} ansehen</a>
-      <a href="/api/report/monthly?month=${esc(new Date().toISOString().slice(0, 7))}" target="_blank" rel="noopener">${icon("external")} Laufender Monat bis heute</a>
+      <a href="/api/report/monthly.pdf?month=${esc(m.previous)}" target="_blank" rel="noopener">${icon("external")} PDF ${esc(prevName)} ansehen</a>
+      <a href="/api/report/monthly?month=${esc(m.previous)}" target="_blank" rel="noopener">${icon("external")} Als Webseite</a>
+      <a href="/api/report/monthly.pdf?month=${esc(new Date().toISOString().slice(0, 7))}" target="_blank" rel="noopener">${icon("external")} Laufender Monat bis heute</a>
       <a href="#" data-msend>${icon("bell")} Bericht ${esc(prevName)} jetzt senden</a></div>
     ${m.last_sent ? `<p class="small muted mt">Zuletzt automatisch versandt: ${esc(m.last_sent)}</p>` : ""}`;
   const f = qs("[data-mform]", p);
+  const only = qs('[name="customer_only"]', f), copy = qs('[data-field="copy_to_me"]', f);
+  const show = () => { copy.hidden = !only.checked; };
+  only.onchange = show; show();
+  const values = () => ({ enabled: qs('[name="m_enabled"]', f).checked, to: qs('[name="to"]', f).value, company: qs('[name="company"]', f).value,
+    customer: qs('[name="customer"]', f).value, contact: qs('[name="contact"]', f).value, customer_only: only.checked, copy_to_me: qs('[name="copy_to_me"]', f).checked });
   qs("[data-msave]", p).onclick = (e) => run(e.currentTarget, async () => {
     showErrors(f, null);
-    try { await PUT("/api/report/monthly/settings", { enabled: qs('[name="m_enabled"]', f).checked, to: qs('[name="to"]', f).value }); toast("Gespeichert."); }
+    try { await PUT("/api/report/monthly/settings", values()); toast("Gespeichert."); }
     catch (err) { showErrors(f, err); }
   });
+  qs("[data-logofile]", p).onchange = (e) => run(null, async () => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 512 * 1024) throw new Error("Das Logo darf höchstens 512 KB groß sein.");
+    const r = await fetch("/api/report/monthly/logo", { method: "PUT", headers: { "X-PK95": "1", "Content-Type": file.type || "application/octet-stream" }, body: file });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Logo nicht gespeichert.");
+    await monthlyPanel(p);
+  }, "Logo gespeichert.");
+  qsa("[data-logodel]", p).forEach((b) => b.onclick = () => run(b, async () => { await DEL("/api/report/monthly/logo"); await monthlyPanel(p); }, "Logo entfernt."));
   qs("[data-msend]", p).onclick = (e) => { e.preventDefault(); run(null, async () => { await POST("/api/report/monthly/send?month=" + m.previous); }, "Monatsbericht verschickt."); };
 }
 

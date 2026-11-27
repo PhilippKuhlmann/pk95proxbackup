@@ -68,6 +68,16 @@ type Message struct {
 	Time     time.Time
 	// Attachments go along with the mail (Inline ones are shown in the HTML via cid:).
 	Attachments []Attachment
+	// Brand replaces "PK95 ProxBackup" in a mail with the IT service that sends it (reports for
+	// customers).
+	Brand *Brand
+}
+
+// Brand is who a mail comes from for its readers.
+type Brand struct {
+	Name    string
+	Contact string // lines: phone, mail, web
+	LogoCID string // inline attachment with the logo ("" = none)
 }
 
 // Attachment is a file sent with a mail.

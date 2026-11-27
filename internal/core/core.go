@@ -87,8 +87,9 @@ type Core struct {
 	// ReportHTML renders the restore test report; images returns the picture of a result
 	// as content type and data (set by the API).
 	ReportHTML func(run RestoreTestRun, images func(file string) (string, []byte)) []byte
-	// MonthlyHTML renders the monthly report as HTML page (set by the API).
+	// MonthlyHTML renders the monthly report as HTML page, MonthlyPDF as PDF (set by the API).
 	MonthlyHTML func(rep MonthlyReport) []byte
+	MonthlyPDF  func(rep MonthlyReport) []byte
 	// Restart stops the program so that it starts again (set by the app; nil = not possible).
 	Restart func()
 	// InstallBinary replaces the program with a downloaded release (nil = swap the file on

@@ -48,6 +48,7 @@ func New(c *core.Core, web fs.FS, secure bool) *Server {
 	s.routes()
 	c.EnsureStorage = s.ensurePVEStorage
 	c.MonthlyHTML = func(rep core.MonthlyReport) []byte { return s.renderMonthly(rep, false) }
+	c.MonthlyPDF = s.renderMonthlyPDF
 	c.ReportHTML = func(run core.RestoreTestRun, images func(string) (string, []byte)) []byte {
 		b, _ := s.renderReport(run, images, false)
 		return b
@@ -159,6 +160,10 @@ func (s *Server) routes() {
 	a("POST /api/pbs/{id}/ssh", s.enableSSH)
 	a("GET /api/serverhealth", s.listServerHealth)
 	a("GET /api/report/monthly", s.monthlyReport)
+	a("GET /api/report/monthly.pdf", s.monthlyPDF)
+	a("GET /api/report/monthly/logo", s.getLogo)
+	a("PUT /api/report/monthly/logo", s.putLogo)
+	a("DELETE /api/report/monthly/logo", s.deleteLogo)
 	a("POST /api/report/monthly/send", s.sendMonthly)
 	a("GET /api/report/monthly/settings", s.getMonthly)
 	a("PUT /api/report/monthly/settings", s.putMonthly)

@@ -82,10 +82,12 @@ footer { margin-top:24px; padding:16px 28px; border-top:1px solid var(--line); c
 .tools .primary { background:var(--c600); color:#fff; border-color:var(--c600); }
 @media print { body { background:#fff; } .page { margin:0; border:0; max-width:none; } .tools { display:none; } tr { break-inside:avoid; } }
 </style></head><body>
-{{if .Tools}}<div class="tools"><button type="button" onclick="window.print()">Drucken / als PDF</button><a class="primary" href="?month={{.R.Month}}&amp;download=1">HTML herunterladen</a></div>{{end}}
+{{if .Tools}}<div class="tools"><button type="button" onclick="window.print()">Drucken</button><a href="?month={{.R.Month}}&amp;download=1">HTML herunterladen</a><a class="primary" href="/api/report/monthly.pdf?month={{.R.Month}}&amp;download=1">PDF herunterladen</a></div>{{end}}
 <div class="page">
-<header><div class="brand"><span class="logo">↓</span>PK95 ProxBackup</div><div class="meta">Monatsbericht<br>{{.R.Host}}</div></header>
+<header><div class="brand">{{if .Company}}{{.Company}}{{else}}<span class="logo">↓</span>PK95 ProxBackup{{end}}</div><div class="meta">Monatsbericht<br>{{if .Customer}}{{.Customer}}{{else}}{{.R.Host}}{{end}}</div></header>
 <div class="band {{.R.Status}}"><div class="k">{{word .R.Status}} · Datensicherung</div><h1>Monatsbericht {{.R.Title}}</h1><p>{{.R.Headline}}</p></div>
+<section><h2>Kurz gesagt</h2><p style="margin:0 0 6px;font-weight:700;">{{.Plain.Lead}}</p><ul style="margin:0;padding-left:18px;">{{range .Plain.Points}}<li>{{.}}</li>{{end}}</ul>
+{{if .Plain.Todo}}<div style="margin-top:10px;padding:10px 14px;background:#fef3c7;border-left:4px solid #d97706;color:#78350f;"><b>Was ist zu tun?</b><ul style="margin:4px 0 0;padding-left:18px;">{{range .Plain.Todo}}<li>{{.}}</li>{{end}}</ul></div>{{end}}</section>
 <section><div class="facts">
   <div class="fact"><span>Zeitraum</span><b>{{day .R.From}} – {{day .Last}}</b></div>
   <div class="fact"><span>Sicherungsläufe</span><b>{{.R.BackupRuns}}, davon {{.R.BackupRunsOK}} ohne Fehler</b></div>
@@ -148,7 +150,9 @@ func (s *Server) renderMonthly(rep core.MonthlyReport, tools bool) []byte {
 		}
 	}
 	var b bytes.Buffer
-	_ = monthlyTmpl.Execute(&b, map[string]any{"R": rep, "Tools": tools, "Copies": copies, "TestsOK": passed, "Last": rep.To - 1, "Version": s.C.Version})
+	set := s.C.Monthly()
+	_ = monthlyTmpl.Execute(&b, map[string]any{"R": rep, "Tools": tools, "Copies": copies, "TestsOK": passed, "Last": rep.To - 1, "Version": s.C.Version,
+		"Plain": rep.Plain(set.Company), "Company": set.Company, "Customer": set.Customer})
 	return b.Bytes()
 }
 
@@ -190,14 +194,13 @@ func (s *Server) sendMonthly(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getMonthly(w http.ResponseWriter, r *http.Request) {
 	m := s.C.Monthly()
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": m.Enabled, "to": m.To, "last_sent": m.LastSent, "previous": core.PreviousMonth(time.Now())})
+	_, logo := s.C.Logo()
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": m.Enabled, "to": m.To, "last_sent": m.LastSent, "previous": core.PreviousMonth(time.Now()),
+		"company": m.Company, "contact": m.Contact, "customer": m.Customer, "customer_only": m.CustomerOnly, "copy_to_me": m.CopyToMe, "logo": logo})
 }
 
 func (s *Server) putMonthly(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Enabled bool   `json:"enabled"`
-		To      string `json:"to"`
-	}
+	var req core.MonthlySettings
 	if !decode(w, r, &req) {
 		return
 	}
@@ -207,7 +210,22 @@ func (s *Server) putMonthly(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.C.SetMonthly(req.Enabled, req.To); err != nil {
+	errs := map[string]string{}
+	for k, v := range map[string]string{"company": req.Company, "customer": req.Customer} {
+		if len([]rune(v)) > 80 {
+			errs[k] = "Höchstens 80 Zeichen."
+		}
+	}
+	if len([]rune(req.Contact)) > 400 {
+		errs["contact"] = "Höchstens 400 Zeichen."
+	}
+	if req.CustomerOnly && strings.TrimSpace(req.To) == "" {
+		errs["to"] = "Für den Versand nur an den Kunden dessen Adresse eintragen."
+	}
+	if fieldErrs(w, errs) {
+		return
+	}
+	if err := s.C.SetMonthly(req); err != nil {
 		fail(w, err)
 		return
 	}

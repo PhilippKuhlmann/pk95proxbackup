@@ -299,55 +299,86 @@ func (r MonthlyReport) verdict() (string, string) {
 	}
 	switch {
 	case r.BackupRuns == 0:
-		bad = append(bad, "keine Sicherung aufgezeichnet")
+		bad = append(bad, "es wurde keine Sicherung aufgezeichnet")
 	case guestsBad > 0:
-		bad = append(bad, fmt.Sprintf("%d Server zuletzt nicht gesichert", guestsBad))
+		bad = append(bad, fmt.Sprintf("%d Server wurden zuletzt nicht gesichert", guestsBad))
 	case r.BackupRunsFailed > 0:
-		bad = append(bad, fmt.Sprintf("%d von %d Sicherungsläufen ganz fehlgeschlagen", r.BackupRunsFailed, r.BackupRuns))
+		bad = append(bad, fmt.Sprintf("%d von %d Sicherungsläufen sind vollständig fehlgeschlagen", r.BackupRunsFailed, r.BackupRuns))
 	case r.BackupRunsOK < r.BackupRuns:
-		warn = append(warn, fmt.Sprintf("%d von %d Sicherungsläufen mit Fehlern", r.BackupRuns-r.BackupRunsOK, r.BackupRuns))
+		warn = append(warn, fmt.Sprintf("%d von %d Sicherungsläufen enthielten Fehler", r.BackupRuns-r.BackupRunsOK, r.BackupRuns))
 	}
 	for _, t := range r.RestoreTests {
 		if t.Status == "error" {
-			bad = append(bad, "ein Restore-Test ist fehlgeschlagen")
+			bad = append(bad, "ein Wiederherstellungstest ist fehlgeschlagen")
 			break
 		}
 	}
 	for _, u := range r.USB {
 		if u.Status == "error" {
-			bad = append(bad, "USB-Platte „"+u.Label+"“ fehlerhaft")
+			bad = append(bad, "die USB-Festplatte „"+u.Label+"“ meldet Fehler")
 		} else if u.Status == "warning" && u.Copies == 0 {
-			warn = append(warn, "USB-Platte „"+u.Label+"“ im ganzen Monat nicht benutzt")
+			warn = append(warn, "die USB-Festplatte „"+u.Label+"“ wurde im gesamten Monat nicht verwendet")
 		}
 	}
 	for _, d := range r.Disks {
 		if d.Status == "error" {
-			bad = append(bad, "Festplatte "+d.Label+" bald tauschen")
+			bad = append(bad, "die Festplatte "+d.Label+" sollte zeitnah getauscht werden")
 		} else if d.Status == "warning" {
-			warn = append(warn, "Festplatte "+d.Label+" beobachten")
+			warn = append(warn, "die Festplatte "+d.Label+" zeigt erste Auffälligkeiten")
 		}
 	}
 	for _, s := range r.Servers {
 		if s.RestartNeeded || s.RebootNeeded {
-			warn = append(warn, s.Name+": Neustart ausstehend")
+			warn = append(warn, "für "+s.Name+" steht ein Neustart aus")
 		}
 	}
 	switch {
 	case len(bad) > 0:
-		return "error", "Handlungsbedarf: " + strings.Join(dedupe(bad), ", ") + "."
+		return "error", "Es besteht Handlungsbedarf: " + strings.Join(dedupe(bad), "; ") + "."
 	case len(warn) > 0:
-		return "warning", "Im Großen und Ganzen in Ordnung, aber: " + strings.Join(dedupe(warn), ", ") + "."
+		return "warning", "Die Datensicherung lief ordnungsgemäß. Folgende Punkte sollten beachtet werden: " + strings.Join(dedupe(warn), "; ") + "."
 	case len(r.RestoreTests) == 0:
-		return "ok", "Alle Sicherungen erfolgreich. In diesem Monat lief kein Restore-Test."
+		return "ok", "Alle Sicherungen waren erfolgreich. In diesem Monat fand kein Wiederherstellungstest statt."
 	}
-	return "ok", "Alle Sicherungen erfolgreich, Restore-Tests bestanden, Platten in Ordnung."
+	return "ok", "Alle Sicherungen waren erfolgreich, die Wiederherstellungstests wurden bestanden und die Festplatten sind in Ordnung."
 }
 
-// MonthlySettings: whether and to whom the report goes.
+// MonthlySettings: whether and to whom the report goes, and who sends it.
 type MonthlySettings struct {
 	Enabled  bool   `json:"enabled"`
 	To       string `json:"to"` // mail recipients ("" = those of the notifications)
 	LastSent string `json:"last_sent"`
+	// The IT service the customer gets the report from (instead of "PK95 ProxBackup").
+	Company  string `json:"company"`
+	Contact  string `json:"contact"`  // lines: phone, mail, web
+	Customer string `json:"customer"` // the customer's name, on the report
+	// CustomerOnly sends the report only by mail to To – not to Telegram, push or the
+	// recipients of the notifications; CopyToMe sends those recipients a copy of the mail.
+	CustomerOnly bool `json:"customer_only"`
+	CopyToMe     bool `json:"copy_to_me"`
+}
+
+// ReportLogo is the logo of the IT service on the reports.
+type ReportLogo struct {
+	Type string `json:"type"` // image/png, image/jpeg
+	Data []byte `json:"data"`
+}
+
+// Logo returns the logo of the reports (ok false: none).
+func (c *Core) Logo() (ReportLogo, bool) {
+	var l ReportLogo
+	if err := c.St.GetSetting("monthly-logo", &l); err != nil || len(l.Data) == 0 {
+		return ReportLogo{}, false
+	}
+	return l, true
+}
+
+// SetLogo stores the logo (nil removes it).
+func (c *Core) SetLogo(l *ReportLogo) error {
+	if l == nil {
+		return c.St.SetSetting("monthly-logo", ReportLogo{})
+	}
+	return c.St.SetSetting("monthly-logo", *l)
 }
 
 // Monthly returns the settings of the monthly report.
@@ -357,11 +388,15 @@ func (c *Core) Monthly() MonthlySettings {
 	return s
 }
 
-// SetMonthly stores the settings of the monthly report.
-func (c *Core) SetMonthly(enabled bool, to string) error {
-	s := c.Monthly()
-	s.Enabled, s.To = enabled, strings.TrimSpace(to)
-	return c.St.SetSetting("monthly", s)
+// SetMonthly stores the settings of the monthly report (the last sent month stays).
+func (c *Core) SetMonthly(n MonthlySettings) error {
+	if n.CustomerOnly && strings.TrimSpace(n.To) == "" {
+		return errors.New("Für den Versand nur an den Kunden dessen Adresse eintragen.")
+	}
+	n.LastSent = c.Monthly().LastSent
+	n.To, n.Company, n.Customer = strings.TrimSpace(n.To), strings.TrimSpace(n.Company), strings.TrimSpace(n.Customer)
+	n.Contact = strings.TrimSpace(n.Contact)
+	return c.St.SetSetting("monthly", n)
 }
 
 func (c *Core) scheduleMonthly(now time.Time) {
@@ -384,26 +419,28 @@ func (c *Core) scheduleMonthly(now time.Time) {
 	}()
 }
 
-// SendMonthlyReport sends the report of a month (summary in the message, the full report
-// attached) by mail, Telegram and push, whatever severity is set for other messages.
+// SendMonthlyReport sends the report of a month: a short summary in the message, the full
+// report as PDF. Normally by mail, Telegram and push like other messages (to other mail
+// recipients if set); "only to the customer" sends one mail to the customer and, if wished, a
+// copy to the usual recipients.
 func (c *Core) SendMonthlyReport(ctx context.Context, month string) error {
 	rep, err := c.BuildMonthlyReport(ctx, month)
 	if err != nil {
 		return err
 	}
-	if c.MonthlyHTML == nil {
+	if c.MonthlyPDF == nil {
 		return errors.New("Bericht kann nicht erzeugt werden")
 	}
+	set := c.Monthly()
 	ns := c.NotifySettings()
-	if extra := c.Monthly().To; extra != "" {
-		ns.MailTo = extra
-	}
-	if !ns.MailEnabled && !ns.HookEnabled && !ns.TelegramEnabled {
-		return errors.New("Keine Benachrichtigung eingerichtet (E-Mail, Telegram oder Push).")
-	}
 	ns.MinSeverity = "info"
+	plain := rep.Plain(set.Company)
+
 	d := &notify.Details{Status: rep.Status, Link: "/", RowsTitle: "Server im " + rep.Title}
 	d.Facts = []notify.Fact{{Label: "Zeitraum", Value: rep.Title}, {Label: "Sicherungsläufe", Value: fmt.Sprintf("%d, davon %d ohne Fehler", rep.BackupRuns, rep.BackupRunsOK)}}
+	if set.Customer != "" {
+		d.Facts = append([]notify.Fact{{Label: "Für", Value: set.Customer}}, d.Facts...)
+	}
 	copies := 0
 	for _, u := range rep.USB {
 		copies += u.Copies
@@ -428,14 +465,68 @@ func (c *Core) SendMonthlyReport(ctx context.Context, month string) error {
 		}
 		d.Rows = append(d.Rows, notify.Row{Kind: g.Kind, ID: g.ID, Name: g.Name, Status: g.Status, Info: info})
 	}
-	d.Note = "Der vollständige Bericht mit USB-Platten, Restore-Tests, Festplatten und Hinweisen liegt als Datei bei."
-	sev := map[string]string{"ok": "info", "warning": "warning", "error": "critical"}[rep.Status]
-	msg := c.Message(sev, "Monatsbericht", "Monatsbericht "+rep.Title, rep.Headline, d)
-	msg.Category = "report"
-	msg.Attachments = []notify.Attachment{{Name: "Monatsbericht-" + month + ".html", ContentType: "text/html; charset=utf-8", Data: c.MonthlyHTML(rep)}}
-	if err := notify.Send(ctx, ns, msg); err != nil {
-		return err
+	d.Note = "Der vollständige Bericht mit USB-Platten, Restore-Tests, Festplatten und Hinweisen liegt als PDF bei."
+	body := plain.Lead
+	if len(plain.Todo) > 0 {
+		body += "\n\nWas ist zu tun?\n• " + strings.Join(plain.Todo, "\n• ")
 	}
+	sev := map[string]string{"ok": "info", "warning": "warning", "error": "critical"}[rep.Status]
+	title := "Monatsbericht " + rep.Title
+	if set.Customer != "" {
+		title += " – " + set.Customer
+	}
+	msg := c.Message(sev, "Monatsbericht", title, body, d)
+	msg.Category = "report"
+	name := "Monatsbericht-" + month + ".pdf"
+	msg.Attachments = []notify.Attachment{{Name: name, ContentType: "application/pdf", Data: c.MonthlyPDF(rep)}}
+	if set.Company != "" {
+		msg.Brand = &notify.Brand{Name: set.Company, Contact: set.Contact}
+		if logo, ok := c.Logo(); ok {
+			msg.Brand.LogoCID = "brand-logo"
+			ext := ".png"
+			if logo.Type == "image/jpeg" {
+				ext = ".jpg"
+			}
+			msg.Attachments = append(msg.Attachments, notify.Attachment{Name: "logo" + ext, ContentType: logo.Type, Data: logo.Data, ContentID: "brand-logo"})
+		}
+	}
+	var to []string
+	if set.CustomerOnly {
+		if !ns.MailEnabled || ns.SMTPHost == "" {
+			return errors.New("E-Mail ist nicht eingerichtet (Benachrichtigungen → E-Mail).")
+		}
+		own := ns.MailTo
+		ns.HookEnabled, ns.TelegramEnabled, ns.MailLinks, ns.Channels = false, false, false, nil
+		d.Link = ""
+		ns.MailTo = set.To
+		if err := notify.Send(ctx, ns, msg); err != nil {
+			return err
+		}
+		to = append(to, set.To)
+		if set.CopyToMe && strings.TrimSpace(own) != "" {
+			ns.MailTo = own
+			cp := msg
+			cp.Title = title + " (Kopie)"
+			if err := notify.Send(ctx, ns, cp); err != nil {
+				return fmt.Errorf("an den Kunden verschickt, die Kopie nicht: %w", err)
+			}
+			to = append(to, own)
+		}
+	} else {
+		if set.To != "" {
+			ns.MailTo = set.To
+		}
+		if !ns.MailEnabled && !ns.HookEnabled && !ns.TelegramEnabled {
+			return errors.New("Keine Benachrichtigung eingerichtet (E-Mail, Telegram oder Push).")
+		}
+		if err := notify.Send(ctx, ns, msg); err != nil {
+			return err
+		}
+		if ns.MailEnabled {
+			to = append(to, ns.MailTo)
+		}
+	}
+	d.Facts = append(d.Facts, notify.Fact{Label: "Verschickt an", Value: firstNonEmpty(strings.Join(to, ", "), "Telegram / Push")})
 	if b, err := json.Marshal(d); err == nil {
 		_, _ = c.St.AddEvent(store.Event{Severity: "info", Source: "Monatsbericht", Title: "Monatsbericht " + rep.Title + " versandt", Body: rep.Headline, Details: b})
 	}

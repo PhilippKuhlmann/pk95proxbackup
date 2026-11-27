@@ -19,7 +19,11 @@ var tones = map[string]struct{ Accent, Wash, Ink, Word, Mark string }{
 // Subject renders the mail subject with a status mark.
 func Subject(m Message) string {
 	mark := map[string]string{"ok": "✅", "warning": "⚠️", "error": "❌"}[m.Details.StatusOf(m.Severity)]
-	return "[PK95 ProxBackup] " + mark + " " + m.Title
+	from := "PK95 ProxBackup"
+	if m.Brand != nil && m.Brand.Name != "" {
+		from = m.Brand.Name
+	}
+	return "[" + from + "] " + mark + " " + m.Title
 }
 
 func rowStatus(s string) string {
@@ -124,8 +128,9 @@ var mailTmpl = template.Must(template.New("mail").Funcs(template.FuncMap{
   <tr><td style="padding:18px 24px;border-bottom:1px solid #e5e7eb;">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
       <td style="vertical-align:middle;">
+        {{if .Brand}}{{if .BrandLogo}}<img src="{{.BrandLogo}}" alt="" height="32" style="height:32px;max-width:180px;vertical-align:middle;border:0;margin-right:8px;">{{end}}<span style="font-size:19px;font-weight:700;color:#1f3d6e;vertical-align:middle;">{{.Brand.Name}}</span>{{else}}
         <span style="display:inline-block;width:26px;height:26px;background:#0d1e35;border-radius:3px;vertical-align:middle;text-align:center;line-height:26px;color:#bce0ff;font-weight:700;font-size:15px;">↓</span>
-        <span style="font-size:19px;font-weight:700;color:#1f3d6e;vertical-align:middle;margin-left:8px;">PK95 ProxBackup</span></td>
+        <span style="font-size:19px;font-weight:700;color:#1f3d6e;vertical-align:middle;margin-left:8px;">PK95 ProxBackup</span>{{end}}</td>
       <td align="right" style="font-size:12px;color:#6b7280;font-family:Menlo,Consolas,monospace;">{{.M.Host}}</td>
     </tr></table></td></tr>
   <tr><td style="background:{{.T.Wash}};border-left:6px solid {{.T.Accent}};padding:20px 24px;">
@@ -173,7 +178,7 @@ var mailTmpl = template.Must(template.New("mail").Funcs(template.FuncMap{
     <a href="{{.Link}}" style="display:inline-block;background:#1f73d6;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:10px 18px;border-radius:3px;">Details ansehen</a></td></tr>{{end}}
   <tr><td style="padding:24px;"><div style="border-top:1px solid #e5e7eb;padding-top:14px;font-size:12px;color:#6b7280;line-height:1.6;">
     Diese Nachricht wurde automatisch von Ihrer Datensicherung verschickt ({{.When}}).<br>
-    Bei Fragen wenden Sie sich bitte an Ihren IT-Betreuer.<br>
+    {{if .Brand}}Bei Fragen wenden Sie sich bitte an {{.Brand.Name}}.{{if .Brand.Contact}}<div style="white-space:pre-line;color:#374151;margin:4px 0;">{{.Brand.Contact}}</div>{{else}}<br>{{end}}{{else}}Bei Fragen wenden Sie sich bitte an Ihren IT-Betreuer.<br>{{end}}
     <span style="color:#9ca3af;">{{.M.Host}}{{if .M.Version}} · PK95 ProxBackup {{.M.Version}}{{end}}</span></div></td></tr>
 </table></td></tr></table></body></html>`))
 
@@ -215,6 +220,10 @@ func renderHTML(m Message, preview bool) string {
 		}
 	}
 	data["Imgs"] = imgs
+	if m.Brand != nil && m.Brand.Name != "" {
+		data["Brand"] = m.Brand
+		data["BrandLogo"] = imgs[m.Brand.LogoCID]
+	}
 	var b bytes.Buffer
 	if err := mailTmpl.Execute(&b, data); err != nil {
 		return "<pre>" + template.HTMLEscapeString(Text(m)) + "</pre>"

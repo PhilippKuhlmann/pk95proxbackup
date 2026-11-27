@@ -916,3 +916,8 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 @media (max-width: 640px) { .maint-btn .maint-text { display: none; } }
 .dlg-ic.yellow { background: var(--amber-bg); color: var(--amber-ink); }
 .plain-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+
+/* logo of the IT service (monthly report) */
+.logo-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.logo-prev { min-width: 120px; height: 44px; display: flex; align-items: center; padding: 4px 10px; border: 1px dashed var(--line); border-radius: var(--r-lg); background: #fff; }
+.logo-prev img { max-height: 36px; max-width: 180px; }
