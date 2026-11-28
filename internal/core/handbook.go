@@ -132,6 +132,7 @@ type HBGuest struct {
 	Archive  []string `json:"archive"`
 	Last     int64    `json:"last"`
 	LastTest int64    `json:"last_test"`
+	Restore  string   `json:"restore,omitempty"` // estimated recovery time (see rto.go)
 	InJob    bool     `json:"in_job"`
 }
 
@@ -435,6 +436,9 @@ func (c *Core) BuildHandbook(ctx context.Context) Handbook {
 		}
 		hg := HBGuest{ID: g.VMID, Name: g.Name, Type: map[bool]string{true: "CT", false: "VM"}[g.Type == "lxc"], Node: g.Node, Cluster: g.ClusterName,
 			Fixed: []string{}, USB: []string{}, Archive: []string{}, Last: g.LastBackup, LastTest: g.Chain.Test.Last, InJob: g.InJob}
+		if g.RTO != nil {
+			hg.Restore = "ca. " + rtoText(g.RTO.Total())
+		}
 		add := func(list *[]string, v string) {
 			for _, x := range *list {
 				if x == v {

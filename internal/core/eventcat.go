@@ -17,7 +17,7 @@ var eventRules = []struct {
 		return s == anomalySource && strings.HasPrefix(t, "Auffällige Sicherung") || strings.HasPrefix(t, "Löschschutz") || massDeleteRe.MatchString(t)
 	}},
 	{"checks", func(s, t string) bool {
-		return s == "Wiederherstellungstest" || strings.HasPrefix(t, "Beschädigte Sicherungen") || strings.HasPrefix(t, "Prüfung von") ||
+		return s == "Wiederherstellungstest" || s == rtoSource || strings.HasPrefix(t, "Beschädigte Sicherungen") || strings.HasPrefix(t, "Prüfung von") ||
 			strings.HasPrefix(t, "Prüfjob") || strings.HasPrefix(t, "Prüfung fehlgeschlagen")
 	}},
 	{"usb", func(s, t string) bool {

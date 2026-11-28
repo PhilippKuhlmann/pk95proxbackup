@@ -129,10 +129,10 @@ footer { margin-top:24px; padding:16px 28px; border-top:1px solid var(--line); c
 </tbody></table>{{end}}{{else}}<p class="empty">Kein Proxmox VE verbunden.</p>{{end}}</section>
 
 <section><h2>6. Wo liegt welcher Server</h2>{{if .H.Guests}}<table>
-<thead><tr><th>ID</th><th>Name</th><th>Knoten</th><th>Sicherungen auf</th><th>USB-Platten</th><th>Letzte Sicherung</th><th>Restore-Test</th></tr></thead><tbody>
+<thead><tr><th>ID</th><th>Name</th><th>Knoten</th><th>Sicherungen auf</th><th>USB-Platten</th><th>Letzte Sicherung</th><th>Restore-Test</th><th>Dauer Wiederherstellung</th></tr></thead><tbody>
 {{range .H.Guests}}<tr><td class="num"><b>{{.ID}}</b> <span class="sub">{{.Type}}</span></td><td>{{.Name}}{{if not .InJob}} <span class="err">(in keinem Job)</span>{{end}}</td><td>{{.Node}}</td>
 <td>{{join .Fixed ", "}}{{if .Archive}}<div class="sub">Archiv: {{join .Archive ", "}}</div>{{end}}</td><td>{{join .USB ", "}}</td>
-<td class="nowrap num">{{day .Last}}</td><td class="nowrap num">{{day .LastTest}}</td></tr>{{end}}
+<td class="nowrap num">{{day .Last}}</td><td class="nowrap num">{{day .LastTest}}</td><td class="nowrap">{{.Restore}}</td></tr>{{end}}
 </tbody></table>{{else}}<p class="empty">Keine VMs und Container gefunden.</p>{{end}}</section>
 
 <section><h2>7. Wechsel- und Archiv-Platten</h2>{{range .H.Rotations}}

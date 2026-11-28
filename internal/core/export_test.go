@@ -128,3 +128,14 @@ func (c *Core) SyncParamsForTest(r Rotation, d RotDisk) map[string]any {
 
 // StartedJobForTest exposes startedJob.
 func (c *Core) StartedJobForTest(upid string) string { return c.startedJob(upid) }
+
+// RTOEstimatesForTest exposes rtoEstimates.
+func (c *Core) RTOEstimatesForTest(g []GuestCoverage, plans []RestoreTestPlan, runs []RestoreTestRun, now time.Time) {
+	c.rtoEstimates(g, plans, runs, now)
+}
+
+// CheckRTOForTest exposes checkRTO.
+func (c *Core) CheckRTOForTest(g []GuestCoverage, now time.Time) { c.checkRTO(g, now) }
+
+// RTOTextForTest exposes rtoText.
+var RTOTextForTest = rtoText

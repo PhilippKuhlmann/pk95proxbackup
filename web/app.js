@@ -3138,6 +3138,31 @@ function speedCell(sp) {
     ${sp.slow ? `<div class="t-sub warnc">langsamer – sonst ${mbs(sp.usual)} MB/s</div>` : sp.usual ? `<div class="t-sub">üblich ${mbs(sp.usual)} MB/s</div>` : ""}`;
 }
 
+// Recovery time (see core/rto.go): "25 Min.", "2 Std. 15 Min." like the appliance writes it.
+function minText(m) {
+  if (m >= 1440 && m % 1440 === 0) return m === 1440 ? "1 Tag" : m / 1440 + " Tage";
+  if (m < 60) return m + " Min.";
+  return m % 60 ? `${Math.floor(m / 60)} Std. ${m % 60} Min.` : m / 60 + " Std.";
+}
+const rtoText = (s) => s < 60 ? "unter 1 Min." : s < 3600 ? Math.round(s / 60) + " Min." : minText(Math.round(s / 300) * 5);
+const rtoTotal = (r) => r.secs + (r.boot || 0);
+const RTO_TARGETS = [15, 30, 60, 120, 240, 480, 1440, 2880];
+const RTO_BASIS = { measured: "gemessen", derived: "geschätzt", assumed: "angenommen" };
+function rtoBasisText(r) {
+  if (r.basis === "measured") return `Gemessen beim Restore-Test am ${fmtTime(r.tested, true).slice(0, 10)}${r.scaled ? ", hochgerechnet auf die inzwischen größeren Platten" : ""}`;
+  const data = `${fmtBytes(r.data)} Daten${r.rough ? " (Größe der Platten – noch kein Sicherungsprotokoll)" : ""}`;
+  return r.basis === "derived" ? `Geschätzt: ${data} mit ${r.rate} MB/s, so schnell waren die Restore-Tests` : `Angenommen: ${data} mit 100 MB/s – noch kein Restore-Test, der misst`;
+}
+function rtoCell(g) {
+  const r = g.rto;
+  if (!r) return "";
+  const tip = [rtoBasisText(r), r.boot ? `Wiederherstellen ${rtoText(r.secs)}, Start bis er antwortete ${rtoText(r.boot)}` : r.basis !== "measured" ? "Ohne den Start des Gastes" : "",
+    r.target ? `Ziel-Zeit ${minText(r.target)}${r.own_target ? " (eigene für diesen Gast)" : ""}` : "Keine Ziel-Zeit"].filter(Boolean).join("\n");
+  const sub = r.over ? `<span class="warnc">über Ziel ${minText(r.target)}</span>` : RTO_BASIS[r.basis] + (r.target ? ` · Ziel ${minText(r.target)}` : "");
+  const inner = `<div class="chain-cell">${r.over ? '<span class="chain-dot amber" aria-hidden="true"></span>' : ""}<span class="${r.over ? "warnc" : ""}">Restore ca. ${rtoText(rtoTotal(r))}</span></div><div class="t-sub">${sub}</div>`;
+  return can("admin") ? `<button class="cell-btn rto" type="button" data-rto="${esc(g.cluster)}|${g.vmid}" title="${esc(tip + "\n\nKlicken: Ziel-Zeit für diesen Gast")}">${inner}</button>` : `<div class="rto" title="${esc(tip)}">${inner}</div>`;
+}
+
 function chainCell(l, label) {
   if (!l) return "—";
   const tone = CHAIN_TONE[l.state] || "";
@@ -3154,7 +3179,7 @@ PAGES["/sicherungen"] = async (el, token) => {
   const q0 = new URLSearchParams(location.search);
   let filter = "", onlyIssues = q0.get("luecken") === "1";
   const showChecked = q0.get("auffaellig") === "1";
-  let data = null, anomalies = [];
+  let data = null, anomalies = [], rtoSet = { default: 0, guests: {} };
   // restoreHref opens the guest on the restore page (or the datastore when no Proxmox VE knows it).
   const restoreHref = (a) => {
     const g = data.guests.find((x) => String(x.vmid) === a.guest_id && (x.type === "lxc") === (a.type === "ct"));
@@ -3176,6 +3201,36 @@ PAGES["/sicherungen"] = async (el, token) => {
           ${!a.ack_at && can("operator") ? `<button class="btn sm" type="button" data-ack="${esc(a.id)}">${icon("check")} Geprüft</button>` : ""}</div></td></tr>`).join("")}
       </tbody></table></div></div>`;
   };
+  // applyRto takes new target times without reading all guests again.
+  const applyRto = (set) => {
+    rtoSet = set;
+    for (const g of data.guests) {
+      if (!g.rto) continue;
+      const own = set.guests[`${g.cluster}/${g.vmid}`];
+      g.rto.own_target = own !== undefined;
+      g.rto.target = own !== undefined ? Math.max(own, 0) : set.default;
+      g.rto.over = g.rto.target > 0 && rtoTotal(g.rto) > g.rto.target * 60;
+    }
+    draw();
+  };
+  // targetOptions lists the usual targets plus one set otherwise (API), so the dialog shows it.
+  const targetOptions = (cur) => [...new Set([...RTO_TARGETS, ...(cur > 0 ? [cur] : [])])].sort((a, b) => a - b).map((m) => [String(m), minText(m)]);
+  const rtoDefaultDialog = () => formDialog({
+    title: "Ziel-Zeit für die Wiederherstellung", ic: "clock",
+    text: "Wie lange darf es dauern, bis ein Server nach einem Ausfall wieder läuft? Die Appliance schätzt die Zeit je Gast aus den Restore-Tests und meldet, wenn sie darüber liegt. Einzelne Gäste bekommen unter „Restore-Test“ mit einem Klick auf ihre Wiederherstellungszeit eine eigene.",
+    fields: [{ name: "default", label: "Ziel-Zeit für alle Gäste", type: "select", value: String(rtoSet.default || 0), options: [["0", "Keine"], ...targetOptions(rtoSet.default)], wide: true }],
+    submit: async (v) => { applyRto(await PUT("/api/rto", { default: Number(v.default) })); toast("Ziel-Zeit gespeichert."); },
+  });
+  const rtoGuestDialog = (g) => {
+    const r = g.rto;
+    formDialog({
+      title: `Ziel-Zeit für ${g.vmid} ${g.name}`, ic: "clock",
+      text: `Geschätzt ca. ${esc(rtoText(rtoTotal(r)))}. ${esc(rtoBasisText(r))}.${r.over ? " Schneller geht es von einem lokalen Datastore statt von USB oder aus der Cloud, oder mit „Live-Restore“: Die VM startet, während die Daten noch kommen." : ""}`,
+      fields: [{ name: "minutes", label: "Ziel-Zeit", type: "select", wide: true, value: r.own_target ? String(r.target || -1) : "",
+        options: [["", `Wie alle Gäste (${rtoSet.default ? minText(rtoSet.default) : "keine"})`], ["-1", "Keine Ziel-Zeit"], ...targetOptions(r.own_target ? r.target : 0)] }],
+      submit: async (v) => { applyRto(await PUT(`/api/rto/guests/${enc(g.cluster)}/${g.vmid}`, { minutes: v.minutes === "" ? null : Number(v.minutes) })); toast("Ziel-Zeit gespeichert."); },
+    });
+  };
   const draw = () => {
     if (token !== pageToken || !data) return;
     const list = data.guests.filter((g) => {
@@ -3186,16 +3241,22 @@ PAGES["/sicherungen"] = async (el, token) => {
     const cnt = (st) => data.guests.filter((g) => g.chain.state === st).length;
     const summary = data.guests.length ? `<div class="chain-summary"><span><span class="chain-dot green"></span> ${cnt("ok")} vollständig</span><span><span class="chain-dot amber"></span> ${cnt("warn")} bald fällig</span><span><span class="chain-dot rose"></span> ${cnt("bad")} mit Lücke</span>
       <span class="muted small">Kette: Sicherung → Kopie außer Haus (zweiter Server oder Cloud) → USB-Platte → Restore-Test. Grau = für diesen Gast nicht vorgesehen.</span></div>` : "";
+    const withRto = data.guests.filter((g) => g.rto);
+    const over = withRto.filter((g) => g.rto.over).length, assumed = withRto.filter((g) => g.rto.basis === "assumed").length;
+    const rtoSummary = withRto.length ? `<div class="chain-summary"><span>Alles wiederherstellen: <b>ca. ${rtoText(withRto.reduce((a, g) => a + rtoTotal(g.rto), 0))}</b> nacheinander</span>
+      ${over ? `<span class="warnc"><span class="chain-dot amber"></span>${over} über der Ziel-Zeit</span>` : withRto.some((g) => g.rto.target) ? `<span><span class="chain-dot green"></span> alle in der Ziel-Zeit</span>` : ""}
+      <span class="muted small">${assumed ? `${assumed} ${assumed === 1 ? "Gast" : "Gäste"} ohne Messwert, angenommen 100 MB/s – ein Restore-Test misst die echte Zeit.` : "Aus den Restore-Tests und der Datenmenge je Gast."}</span>
+      ${can("admin") ? `<button class="btn gray sm" type="button" data-rto-default>${icon("clock")} Ziel-Zeit${rtoSet.default ? ": " + minText(rtoSet.default) : ""}</button>` : ""}</div>` : "";
     qs("[data-list]", el).innerHTML = anomalyPanel() + (data.errors || []).map((e) => {
       const c = state.clusters.find((x) => e.startsWith(x.name + ": "));
       return c && e.includes("fehlen Rechte") ? `<div style="margin:12px">${permCallout(c, (e.match(/\(([^)]*)\)/) || ["", ""])[1].split(", ").filter(Boolean))}</div>` : callout("red", "Nicht alles erreichbar", esc(e));
-    }).join("") + summary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Außer Haus</th><th>USB-Platte</th><th>Restore-Test</th><th>Tempo</th><th></th></tr></thead><tbody>
+    }).join("") + summary + rtoSummary + (list.length ? `<div class="panel flush"><div class="table-wrap"><table class="resp"><thead><tr><th>Gast</th><th>Sicherung</th><th>Außer Haus</th><th>USB-Platte</th><th>Restore-Test</th><th>Tempo</th><th></th></tr></thead><tbody>
       ${list.map((g) => { const where = [...g.backups, ...g.seen].map((b) => `${b.server_name} / ${b.store}: ${b.count} ${b.count === 1 ? "Stand" : "Stände"}${b.seen ? " (Platte zuletzt gelesen " + fmtAgo(b.seen) + ")" : ""}`).join("\n"); return `<tr>
         <td data-l="Gast"><div class="t-main"><span class="tag mono">${guestKind(g.type)}</span> ${g.vmid} ${esc(g.name)}</div><div class="t-sub">${g.status === "running" ? '<span class="dot green"></span> läuft' : '<span class="dot"></span> ' + esc(g.status)} · ${esc(g.node)}${state.clusters.length > 1 ? " · " + esc(g.cluster_name) : ""}</div></td>
         <td data-l="Sicherung"${where ? ` title="${esc(where)}"` : ""}>${chainCell(g.chain.backup, "Sicherung")}</td>
         <td data-l="Außer Haus">${chainCell(g.chain.copy, "Kopie außer Haus (zweiter Server oder Cloud)")}</td>
         <td data-l="USB-Platte">${chainCell(g.chain.usb, "USB-Platte")}</td>
-        <td data-l="Restore-Test">${chainCell(g.chain.test, "Restore-Test")}</td>
+        <td data-l="Restore-Test">${chainCell(g.chain.test, "Restore-Test")}${rtoCell(g)}</td>
         <td data-l="Tempo">${speedCell(g.speed)}</td>
         <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-backup="${g.cluster}|${g.vmid}">${icon("download")} Jetzt sichern</button>
           <button class="btn gray sm" type="button" data-restore="${g.cluster}|${g.vmid}" ${g.backups.length ? "" : "disabled"}>${icon("restore")} Wiederherstellen</button></div></td></tr>`; }).join("")}
@@ -3204,6 +3265,9 @@ PAGES["/sicherungen"] = async (el, token) => {
     const find = (v) => { const [c, id] = v.split("|"); return data.guests.find((g) => g.cluster === c && String(g.vmid) === id); };
     qsa("[data-backup]", el).forEach((b) => b.onclick = () => backupNow(find(b.dataset.backup)));
     qsa("[data-restore]", el).forEach((b) => b.onclick = () => { const g = find(b.dataset.restore); go(`/wiederherstellen?cluster=${enc(g.cluster)}&vmid=${g.vmid}`); });
+    qsa("[data-rto]", el).forEach((b) => b.onclick = () => rtoGuestDialog(find(b.dataset.rto)));
+    const def = qs("[data-rto-default]", el);
+    if (def) def.onclick = rtoDefaultDialog;
     qsa("[data-ack]", el).forEach((b) => b.onclick = async () => {
       const a = anomalies.find((x) => x.id === b.dataset.ack);
       const ok = await confirmDialog({ title: "Als geprüft markieren?", tone: "", ic: "check", button: "Geprüft",
@@ -3218,8 +3282,9 @@ PAGES["/sicherungen"] = async (el, token) => {
   qs("[data-q]", el).oninput = (e) => { filter = e.target.value.trim().toLowerCase(); draw(); };
   qs("[data-issues]", el).onchange = (e) => { onlyIssues = e.target.checked; draw(); };
   const load = async () => {
-    const [g, an] = await Promise.all([GET("/api/guests"), GET("/api/anomalies").catch(() => ({ anomalies: [] }))]);
+    const [g, an, rt] = await Promise.all([GET("/api/guests"), GET("/api/anomalies").catch(() => ({ anomalies: [] })), GET("/api/rto").catch(() => rtoSet)]);
     data = g;
+    rtoSet = rt;
     anomalies = an.anomalies || [];
     draw();
   };

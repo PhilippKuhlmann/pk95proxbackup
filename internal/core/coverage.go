@@ -66,6 +66,7 @@ func (c *Core) scheduleContentScan(now time.Time) {
 func (c *Core) RefreshCoverage(ctx context.Context) CoverageSummary {
 	guests, _ := c.Coverage(ctx)
 	c.saveCoverageSummary(guests)
+	c.checkRTO(guests, time.Now())
 	return c.CoverageSummaryInfo()
 }
 
@@ -109,6 +110,7 @@ type GuestCoverage struct {
 	LastBackup  int64       `json:"last_backup"`
 	Chain       Chain       `json:"chain"`
 	Speed       *GuestSpeed `json:"speed,omitempty"` // backup speed (see speed.go)
+	RTO         *GuestRTO   `json:"rto,omitempty"`   // recovery time (see rto.go)
 	seen        guestSeen
 }
 
@@ -366,6 +368,7 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 	for i := range out {
 		c.chainOf(&out[i], refs, rots, unreadSets, twoServers, plans, runs, now)
 	}
+	c.rtoEstimates(out, plans, runs, now)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].ClusterName != out[j].ClusterName {
 			return out[i].ClusterName < out[j].ClusterName

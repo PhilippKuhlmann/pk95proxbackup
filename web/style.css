@@ -763,6 +763,10 @@ input.otp-input::placeholder { letter-spacing: 0.3em; }
 .chain-dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: var(--faint); margin-right: 6px; vertical-align: 1px; flex: none; }
 .chain-dot.green { background: #16a34a; } .chain-dot.amber { background: #d97706; } .chain-dot.rose { background: #e11d48; }
 .chain-cell { display: flex; align-items: center; font-size: 14px; white-space: nowrap; }
+.rto { margin-top: 8px; }
+.cell-btn { display: block; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.cell-btn:hover .chain-cell span:last-child { text-decoration: underline dotted; text-underline-offset: 3px; }
+.cell-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 .chain-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin: 0 0 12px; padding: 0 4px; font-size: 14px; }
 
 /* Assistants in dialogs: one rhythm of 16 px, two or three columns */
