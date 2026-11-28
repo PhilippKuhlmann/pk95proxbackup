@@ -25,6 +25,7 @@ const (
 	KindRTPlan = "rtplan"
 	KindRTRun  = "rtrun"
 	rtTag      = "pk95-restoretest"
+	rtKeptTag  = "pk95-testsystem" // a test guest that stays after the test (see rtkeep.go)
 	rtPrefix   = "restoretest-"
 )
 
@@ -58,6 +59,15 @@ type RestoreTestPlan struct {
 	Limit        int    `json:"time_limit"` // minutes per guest for the restore
 	IDBase       int    `json:"id_base"`    // first VMID for test guests
 	KeepFail     bool   `json:"keep_failed"`
+	// Keep: the test guests stay on the node until the next run replaces them (a test system);
+	// KeepRunning leaves them switched on.
+	Keep        bool `json:"keep"`
+	KeepRunning bool `json:"keep_running"`
+	// Network: "" cuts every network card (link down); "bridge" connects them to Bridge (and
+	// VLAN, 0: none) – a network apart from production, never the one of the original.
+	Network string `json:"network"`
+	Bridge  string `json:"bridge"`
+	VLAN    int    `json:"vlan"`
 	// Services the test guests must offer: "100: 443, 3306" per line (see servicecheck.go).
 	Services string `json:"services,omitempty"`
 }
@@ -109,6 +119,8 @@ type RestoreTestRun struct {
 	Source   string              `json:"source,omitempty"` // backup server / datastore
 	Results  []RestoreTestResult `json:"results"`
 }
+
+var bridgeRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,19}$`)
 
 var hhmm = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 
@@ -165,6 +177,20 @@ func (p *RestoreTestPlan) Normalize() map[string]string {
 	}
 	if p.MaxMem < 0 {
 		errs["max_memory"] = "MiB, 0 = wie Original."
+	}
+	if p.Network == "bridge" {
+		p.Bridge = strings.TrimSpace(p.Bridge)
+		if !bridgeRe.MatchString(p.Bridge) {
+			errs["bridge"] = "Netzwerkkarte (Bridge) wählen."
+		}
+		if p.VLAN < 0 || p.VLAN > 4094 {
+			errs["vlan"] = "VLAN 1 bis 4094, leer = ohne."
+		}
+	} else {
+		p.Network, p.Bridge, p.VLAN = "", "", 0
+	}
+	if !p.Keep {
+		p.KeepRunning = false
 	}
 	return errs
 }
@@ -406,6 +432,7 @@ func (c *Core) runRestoreTest(ctx context.Context, plan RestoreTestPlan, run *Re
 		return
 	}
 	c.sweepRestoreTests(ctx, pve)
+	c.dropUnwantedKept(ctx, plan, todo)
 	bridges, _ := pve.Bridges(ctx, plan.Node)
 	storages := map[string]storageResult{}
 	for i, s := range todo {
@@ -426,6 +453,7 @@ func (c *Core) runRestoreTest(ctx context.Context, plan RestoreTestPlan, run *Re
 		c.testOne(ctx, plan, pve, pbs, storage, bridges, s, run, i)
 	}
 	c.finishRun(plan, cl, run, ctx.Err() != nil)
+	c.SyncTestExcludes(context.WithoutCancel(ctx))
 }
 
 type storageResult struct {
@@ -461,6 +489,14 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 	file := "qemu-server.conf.blob"
 	if snap.Type == "ct" {
 		typ, file = "lxc", "pct.conf.blob"
+	}
+	// A copy kept from the last run makes room for the new one.
+	var oldNote []string
+	if k, ok := c.keptGuest(plan.ID, snap.Type+"/"+snap.ID); ok {
+		set(func(r *RestoreTestResult) { r.Status, r.Phase = "running", "entfernt die Kopie vom letzten Lauf" })
+		if err := c.removeKept(ctx, plan.ID, snap.Type+"/"+snap.ID, k); err != nil {
+			oldNote = append(oldNote, "alte Kopie "+strconv.Itoa(k.VMID)+" nicht entfernt: "+err.Error())
+		}
 	}
 	set(func(r *RestoreTestResult) { r.Status, r.Phase = "running", "prüft Platz und Arbeitsspeicher" })
 
@@ -507,8 +543,12 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 
 	created := false
 	failed := false
+	isolated := false // only an isolated test guest may stay (see rtkeep.go)
 	defer func() {
 		if !created {
+			return
+		}
+		if plan.Keep && isolated && c.keepTestGuest(context.WithoutCancel(ctx), plan, pve, typ, testID, snap, run, idx) {
 			return
 		}
 		if failed && plan.KeepFail {
@@ -557,7 +597,7 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 		return
 	}
 	set(func(r *RestoreTestResult) {
-		r.Restore, r.Phase, r.RestoreEnd = int64(time.Since(start).Seconds()), "trennt Netzwerk und Geräte", time.Now().Unix()
+		r.Restore, r.Phase, r.RestoreEnd = int64(time.Since(start).Seconds()), "isoliert Netzwerk und Geräte", time.Now().Unix()
 	})
 	// Mark it first, so a later sweep recognises it even if the rest fails.
 	mark := prox.Params{"tags": rtTag, "onboot": false}
@@ -591,7 +631,10 @@ func (c *Core) testOne(ctx context.Context, plan RestoreTestPlan, pve *prox.PVE,
 		})
 		return
 	}
-	set(func(r *RestoreTestResult) { r.Notes, r.Phase = strings.Join(notes, "; "), "startet" })
+	isolated = true
+	set(func(r *RestoreTestResult) {
+		r.Notes, r.Phase = strings.Join(append(notes, oldNote...), "; "), "startet"
+	})
 
 	boot := time.Now()
 	if upid, err := pve.GuestAction(ctx, plan.Node, typ, testID, "start", nil); err != nil {
@@ -833,17 +876,11 @@ func isolate(cfg map[string]any, typ, origID string, testID int, plan RestoreTes
 			// raw lxc.* lines cannot be removed through the API
 			return nil, nil, errors.New("Die Konfiguration enthält rohe lxc.*-Einträge – der Test wird nicht gestartet.")
 		case netRe.MatchString(k):
-			parts := []string{}
-			for _, x := range strings.Split(v, ",") {
-				if !strings.HasPrefix(x, "link_down=") {
-					if strings.HasPrefix(x, "bridge=") && len(bridges) > 0 && !bridgeOK[strings.TrimPrefix(x, "bridge=")] {
-						notes = append(notes, k+": "+x+" fehlt, "+bridges[0]+" genutzt")
-						x = "bridge=" + bridges[0]
-					}
-					parts = append(parts, x)
-				}
+			val, note := testNet(k, v, plan, bridges, bridgeOK)
+			p[k] = val
+			if note != "" {
+				notes = append(notes, note)
 			}
-			p[k] = strings.Join(append(parts, "link_down=1"), ",")
 		case typ == "qemu" && diskRe.MatchString(k) && strings.Contains(v, "media=cdrom"):
 			if !strings.HasPrefix(v, "none") && !strings.HasPrefix(v, "cdrom") {
 				p[k] = "none,media=cdrom"
@@ -874,7 +911,10 @@ func isolate(cfg map[string]any, typ, origID string, testID int, plan RestoreTes
 	}
 	p["onboot"] = false
 	p["tags"] = rtTag
-	p["description"] = "PK95 ProxBackup: Wiederherstellungstest von " + origID + ". Wird nach dem Test automatisch gelöscht."
+	p["description"] = "PK95 ProxBackup: Wiederherstellungstest von " + origID + "."
+	if !plan.Keep {
+		p["description"] = p["description"].(string) + " Wird nach dem Test automatisch gelöscht."
+	}
 	if typ == "lxc" {
 		p["hostname"] = rtPrefix + origID
 	} else {
@@ -904,8 +944,78 @@ func isolate(cfg map[string]any, typ, origID string, testID int, plan RestoreTes
 	if len(del) > 0 {
 		p["delete"] = strings.Join(del, ",")
 	}
-	notes = append([]string{"Netzwerk getrennt"}, notes...)
+	net := "Netzwerk getrennt"
+	if plan.Network == "bridge" {
+		net = "Netzwerk an " + plan.netText()
+	}
+	notes = append([]string{net}, notes...)
 	return p, notes, nil
+}
+
+// netText: "vmbr1" or "vmbr1, VLAN 20".
+func (p RestoreTestPlan) netText() string {
+	if p.VLAN > 0 {
+		return p.Bridge + ", VLAN " + strconv.Itoa(p.VLAN)
+	}
+	return p.Bridge
+}
+
+// testNet builds the network card of a test guest: link down, or – when the plan connects the
+// guests – on the plan's bridge and VLAN. A card stays cut when that bridge is missing on the
+// node or would be the network of the original (same bridge, same VLAN): the copy has the same
+// addresses as the original.
+func testNet(key, v string, plan RestoreTestPlan, bridges []string, bridgeOK map[string]bool) (string, string) {
+	var parts []string
+	origBridge, origTag := "", 0
+	for _, x := range strings.Split(v, ",") {
+		k, val, _ := strings.Cut(x, "=")
+		switch k {
+		case "link_down":
+			continue
+		case "bridge":
+			origBridge = val
+		case "tag":
+			origTag, _ = strconv.Atoi(val)
+		}
+		parts = append(parts, x)
+	}
+	down := func(note string) (string, string) {
+		out := make([]string, 0, len(parts)+1)
+		for _, x := range parts {
+			if strings.HasPrefix(x, "bridge=") && len(bridges) > 0 && !bridgeOK[origBridge] {
+				// a bridge the node does not have would stop the start, cut or not
+				if note != "" {
+					note += "; "
+				}
+				note += key + ": " + x + " fehlt, " + bridges[0] + " genutzt"
+				x = "bridge=" + bridges[0]
+			}
+			out = append(out, x)
+		}
+		return strings.Join(append(out, "link_down=1"), ","), note
+	}
+	if plan.Network != "bridge" {
+		return down("")
+	}
+	switch {
+	case len(bridges) > 0 && !bridgeOK[plan.Bridge]:
+		return down(key + " getrennt: " + plan.Bridge + " gibt es auf " + plan.Node + " nicht")
+	case origBridge == plan.Bridge && origTag == plan.VLAN:
+		return down(key + " getrennt: " + plan.netText() + " ist das Netz des Originals")
+	}
+	out := make([]string, 0, len(parts)+2)
+	for _, x := range parts {
+		k, _, _ := strings.Cut(x, "=")
+		if k == "bridge" || k == "tag" || k == "trunks" {
+			continue
+		}
+		out = append(out, x)
+	}
+	out = append(out, "bridge="+plan.Bridge)
+	if plan.VLAN > 0 {
+		out = append(out, "tag="+strconv.Itoa(plan.VLAN))
+	}
+	return strings.Join(out, ","), ""
 }
 
 func agentEnabled(cfg map[string]any) bool {
@@ -971,9 +1081,27 @@ func (c *Core) destroyTestGuest(ctx context.Context, pve *prox.PVE, node, typ st
 	if typ == "lxc" {
 		name = fmt.Sprint(cfg["hostname"])
 	}
-	if !owned && (!strings.Contains(fmt.Sprint(cfg["tags"]), rtTag) || !strings.HasPrefix(name, rtPrefix)) {
+	if !owned && (!hasTag(fmt.Sprint(cfg["tags"]), rtTag) || !strings.HasPrefix(name, rtPrefix)) {
 		return fmt.Errorf("Gast %d ist nicht als Test markiert, wird nicht gelöscht", vmid)
 	}
+	return c.stopAndDestroy(ctx, pve, node, typ, vmid)
+}
+
+// hasTag reports whether a Proxmox VE tag list ("a;b", "a,b", "a b") holds tag.
+func hasTag(tags, tag string) bool {
+	for _, t := range strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' }) {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// isTestGuest: a guest of a restore test (running or kept) – not a server that needs backups.
+func isTestGuest(tags string) bool { return hasTag(tags, rtTag) || hasTag(tags, rtKeptTag) }
+
+// stopAndDestroy stops a guest and deletes it with its disks.
+func (c *Core) stopAndDestroy(ctx context.Context, pve *prox.PVE, node, typ string, vmid int) error {
 	if st, err := pve.GuestStatus(ctx, node, typ, vmid); err == nil && st.Status == "running" {
 		if upid, err := pve.GuestAction(ctx, node, typ, vmid, "stop", nil); err == nil {
 			_, _ = pve.WaitTask(ctx, upid, 3*time.Minute)
@@ -994,7 +1122,7 @@ func (c *Core) sweepRestoreTests(ctx context.Context, pve *prox.PVE) {
 		return
 	}
 	for _, g := range guests {
-		if strings.Contains(g.Tags, rtTag) && strings.HasPrefix(g.Name, rtPrefix) {
+		if hasTag(g.Tags, rtTag) && strings.HasPrefix(g.Name, rtPrefix) {
 			if err := c.destroyTestGuest(ctx, pve, g.Node, g.Type, g.VMID, false); err != nil {
 				log.Printf("restore test sweep %d: %v", g.VMID, err)
 			} else {
@@ -1058,6 +1186,13 @@ func (c *Core) finishRun(plan RestoreTestPlan, cl PVECluster, run *RestoreTestRu
 	d := &notify.Details{RowsTitle: "Getestete Server", Rows: rows, Link: "/api/restoretests/report?run=" + run.ID,
 		Facts: []notify.Fact{{Label: "System", Value: cl.Name}, {Label: "Getestet auf", Value: plan.Node + " / " + plan.Storage},
 			{Label: "Sicherungen aus", Value: plan.Store}, {Label: "Beginn", Value: fmtWhen(run.Start)}, {Label: "Dauer", Value: humanDuration(run.End - run.Start)}}}
+	if plan.Keep {
+		net := "Netzwerk getrennt"
+		if plan.Network == "bridge" {
+			net = "Netzwerk an " + plan.netText()
+		}
+		d.Facts = append(d.Facts, notify.Fact{Label: "Test-Gäste", Value: "bleiben auf " + plan.Node + " bis zum nächsten Lauf (" + net + ")"})
+	}
 	sev, title, body := "info", "", ""
 	forward := " Bitte leiten Sie diese Nachricht an Ihren IT-Betreuer weiter."
 	switch {
@@ -1117,6 +1252,14 @@ func allStart(n int) string {
 
 // scheduleRestoreTests starts plans whose weekday and time have come (called every minute).
 func (c *Core) scheduleRestoreTests(now time.Time) {
+	// kept test guests stay out of the backup jobs, also of jobs added or edited elsewhere
+	if c.tryNow("rtexclude", time.Hour, now) {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			c.SyncTestExcludes(ctx)
+		}()
+	}
 	plans, _ := c.RestoreTestPlans()
 	for _, p := range plans {
 		if !p.Enabled || p.Time == "" || now.Format("15:04") < p.Time || !p.DueOn(now) {

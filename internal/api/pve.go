@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -479,6 +480,21 @@ func (s *Server) nodeStorages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"storages": list})
 }
 
+// nodeBridges lists the network bridges of a node (for restore tests on a network of their own).
+func (s *Server) nodeBridges(w http.ResponseWriter, r *http.Request) {
+	pve, _, err := s.C.PVE(r.PathValue("id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	list, err := pve.Bridges(r.Context(), r.PathValue("node"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bridges": list})
+}
+
 // ---- backup jobs ----
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -504,7 +520,32 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	storages, _ := pve.Storages(r.Context())
 	guests, _ := pve.Guests(r.Context())
 	nodes, _ := pve.Nodes(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs, "storages": storages, "guests": guests, "nodes": nodes})
+	// The IDs of kept restore test guests the appliance excluded are not part of the choice
+	// an administrator edits; they are shown apart (and added again on saving).
+	type jobView struct {
+		prox.BackupJob
+		TestGuests []string `json:"test_guests,omitempty"`
+	}
+	ours := s.C.TestExcludesOf(r.PathValue("id"))
+	views := make([]jobView, len(jobs))
+	for i, j := range jobs {
+		v := jobView{BackupJob: j}
+		if ids := ours[j.ID]; len(ids) > 0 {
+			var keep []string
+			for _, id := range strings.Split(j.Exclude, ",") {
+				switch {
+				case id == "":
+				case slices.Contains(ids, id):
+					v.TestGuests = append(v.TestGuests, id) // only what the job really excludes
+				default:
+					keep = append(keep, id)
+				}
+			}
+			v.Exclude = strings.Join(keep, ",")
+		}
+		views[i] = v
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": views, "storages": storages, "guests": guests, "nodes": nodes})
 }
 
 type jobReq struct {
@@ -607,6 +648,7 @@ func (s *Server) saveJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.C.Event("info", cl.Name, "Sicherungsjob gespeichert", req.Schedule+" → "+req.Storage)
+	s.C.SyncTestExcludes(r.Context()) // kept restore test guests stay out of it
 	s.C.RequestRefresh()
 	ok(w)
 }

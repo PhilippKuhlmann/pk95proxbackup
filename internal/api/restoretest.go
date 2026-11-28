@@ -28,7 +28,7 @@ func (s *Server) listRestoreTests(w http.ResponseWriter, r *http.Request) {
 	for _, p := range plans {
 		views = append(views, planView{RestoreTestPlan: p, ScheduleText: p.ScheduleText(), Next: p.NextRuns(time.Now(), 3)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"plans": views, "runs": s.C.RestoreTestRuns(), "active": s.C.ActiveRestoreTest()})
+	writeJSON(w, http.StatusOK, map[string]any{"plans": views, "runs": s.C.RestoreTestRuns(), "active": s.C.ActiveRestoreTest(), "kept": s.C.KeptGuests()})
 }
 
 // previewSchedule describes a schedule and its next dates (while editing a plan).
@@ -80,9 +80,24 @@ func (s *Server) saveRestoreTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": p.ID})
 }
 
+// deleteRestoreTest removes a plan and the test guests it kept.
 func (s *Server) deleteRestoreTest(w http.ResponseWriter, r *http.Request) {
-	if err := s.C.St.Delete(core.KindRTPlan, r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	if err := s.C.DeleteKept(id, currentUser(r).Username); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := s.C.St.Delete(core.KindRTPlan, id); err != nil {
 		fail(w, err)
+		return
+	}
+	ok(w)
+}
+
+// deleteKept removes the test guests a plan kept (in the background).
+func (s *Server) deleteKept(w http.ResponseWriter, r *http.Request) {
+	if err := s.C.DeleteKept(r.PathValue("id"), currentUser(r).Username); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	ok(w)

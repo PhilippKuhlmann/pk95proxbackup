@@ -328,7 +328,7 @@ func (c *Core) Coverage(ctx context.Context) ([]GuestCoverage, []string) {
 			mu.Lock()
 			jobsOf[cl.ID] = jobs
 			for _, g := range list {
-				if g.Template == 0 {
+				if g.Template == 0 && !isTestGuest(g.Tags) {
 					out = append(out, GuestCoverage{Guest: g, Cluster: cl.ID, ClusterName: cl.Name, InJob: !nb[g.VMID]})
 				}
 			}

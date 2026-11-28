@@ -4059,9 +4059,9 @@ PAGES["/restoretests"] = async (el, token) => {
   const draw = async () => {
     const r = await GET("/api/restoretests");
     if (token !== pageToken) return;
-    const plans = r.plans || [], runs = r.runs || [], act = r.active;
+    const plans = r.plans || [], runs = r.runs || [], act = r.active, kept = r.kept || {};
     const cl = (id) => (state.clusters.find((c) => c.id === id) || {}).name || id;
-    el.innerHTML = pageHead("Restore-Tests", "Spielt regelmäßig die neueste Sicherung jedes Servers testweise zurück, startet sie abgeschottet vom Netzwerk, prüft ob das System hochkommt und löscht sie wieder. So weißt du, dass die Sicherungen im Ernstfall funktionieren.",
+    el.innerHTML = pageHead("Restore-Tests", "Spielt regelmäßig die neueste Sicherung jedes Servers testweise zurück, startet sie abgeschottet vom Netzwerk, prüft ob das System hochkommt und löscht sie wieder – oder lässt sie als Testsystem stehen. So weißt du, dass die Sicherungen im Ernstfall funktionieren.",
       `<button class="btn" type="button" data-add>${icon("plus")} Plan anlegen</button>`) +
       (act ? `<div class="panel"><div class="panel-head"><div><div class="panel-title">Läuft gerade: ${esc(act.plan_name)}</div><div class="muted small">gestartet ${fmtTime(act.start)} von ${esc(act.by)}</div></div>
         <button class="btn red sm" type="button" data-cancel>${icon("stop")} Abbrechen</button></div>${rtTable(act, true)}</div>` : "") +
@@ -4069,13 +4069,14 @@ PAGES["/restoretests"] = async (el, token) => {
         ${plans.length ? `<div class="table-wrap"><table class="resp"><thead><tr><th>Plan</th><th>Quelle</th><th>Getestet auf</th><th>Zeitplan</th><th>Auswahl</th><th></th></tr></thead><tbody>
         ${plans.map((p) => `<tr class="${p.enabled ? "" : "off"}"><td data-l="Plan"><div class="t-main">${esc(p.name)}</div>${p.enabled ? "" : '<div class="t-sub">Zeitplan aus</div>'}</td>
           <td data-l="Quelle" class="small">${esc(serverName(p.pbs))} / <b>${esc(p.store)}</b></td>
-          <td data-l="Getestet auf" class="small">${esc(cl(p.cluster))} · ${esc(p.node)}<div class="t-sub">Disks auf ${esc(p.storage)}</div></td>
+          <td data-l="Getestet auf" class="small">${esc(cl(p.cluster))} · ${esc(p.node)}<div class="t-sub">Disks auf ${esc(p.storage)} · ${p.network === "bridge" ? "Netzwerk " + esc(rtNetText(p)) : "Netzwerk getrennt"}${p.keep ? " · bleiben stehen" : ""}</div></td>
           <td data-l="Zeitplan" class="small">${esc(p.schedule_text || "—")}${!p.enabled ? `<div class="t-sub">Zeitplan aus – nur „Jetzt testen“</div>` : (p.next || []).length ? `<div class="next-runs"><span class="t-sub">Nächste Tests:</span>${p.next.slice(0, 3).map((t) => `<span class="next-run">${esc(new Date(t * 1000).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }))} ${esc(new Date(t * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }))}</span>`).join("")}</div>` : ""}</td>
           <td data-l="Auswahl" class="small">${p.select === "all" ? "alle Server" : (p.select === "include" ? "nur " : "alle außer ") + esc(p.vmids)}</td>
           <td class="act"><div class="row-actions"><button class="btn sm" type="button" data-run="${p.id}" ${act ? "disabled" : ""}>${icon("play")} Jetzt testen</button>
             <button class="ib" type="button" title="Bearbeiten" aria-label="Bearbeiten" data-edit="${p.id}">${icon("pencil")}</button>
             <button class="ib red" type="button" title="Löschen" aria-label="Löschen" data-del="${p.id}">${icon("trash")}</button></div></td></tr>`).join("")}
         </tbody></table></div>` : `<div class="flush-pad">${empty("Noch kein Plan", "Zum Beispiel: jeden Samstag um 02:00 alle Server aus dem Hauptspeicher auf pve1 testen.", `<button class="btn sm" type="button" data-add2>${icon("plus")} Plan anlegen</button>`, "shield")}</div>`}</div>
+      ${keptPanels(plans, kept, cl)}
       <div class="panel flush"><div class="panel-head"><div class="panel-title">Verlauf</div></div>
         ${runs.filter((x) => x.status !== "running").length ? `<div class="rows">${runs.filter((x) => x.status !== "running").map((x) => {
           const n = (st) => (x.results || []).filter((y) => y.status === st).length;
@@ -4083,13 +4084,27 @@ PAGES["/restoretests"] = async (el, token) => {
             <div class="grow"><div class="title"><b>${esc(x.plan_name)}</b> <span class="muted small">${x.end ? "Dauer " + fmtDur(x.start, x.end) : ""} · ${esc(x.by)}</span></div>
             <div class="flex" style="margin-top:4px"><a class="btn gray sm" href="/api/restoretests/report?run=${enc(x.id)}" target="_blank" rel="noopener" data-noshow>${icon("list")} Bericht</a>${n("ok") ? pill(n("ok") + " erfolgreich", "green") : ""}${n("warning") ? pill(n("warning") + " Hinweis", "amber") : ""}${n("error") ? pill(n("error") + " Fehler", "rose") : ""}${n("skipped") ? pill(n("skipped") + " übersprungen", "amber") : ""}${x.error ? `<span class="small bad">${esc(x.error)}</span>` : ""}</div></div>${icon("chevron-down")}</div>`;
         }).join("")}</div>` : `<div class="flush-pad">${empty("Noch kein Testlauf", "", "", "list")}</div>`}</div>
-      <div class="callout"><div class="ct"><div class="ch">So bleibt der Test vom Betrieb getrennt</div><div class="cb">Jeder Server wird unter einer freien Test-ID (ab 990000) mit neuen MAC-Adressen wiederhergestellt. Vor dem Start werden die Netzwerkkarten getrennt, durchgereichte PCI- und USB-Geräte, Bind-Mounts und eingelegte ISOs entfernt, CPU und RAM begrenzt und der Autostart abgeschaltet. Vorher prüft die Appliance, ob Platz und Arbeitsspeicher reichen – sonst wird der Server übersprungen. Nach dem Test wird alles gelöscht; Reste eines abgebrochenen Laufs räumt der nächste Lauf weg.</div></div></div>`;
+      <div class="callout"><div class="ct"><div class="ch">So bleibt der Test vom Betrieb getrennt</div><div class="cb">Jeder Server wird unter einer freien Test-ID (ab 990000) mit neuen MAC-Adressen wiederhergestellt. Vor dem Start werden die Netzwerkkarten getrennt, durchgereichte PCI- und USB-Geräte, Bind-Mounts und eingelegte ISOs entfernt, CPU und RAM begrenzt und der Autostart abgeschaltet. Vorher prüft die Appliance, ob Platz und Arbeitsspeicher reichen – sonst wird der Server übersprungen. Nach dem Test wird alles gelöscht; Reste eines abgebrochenen Laufs räumt der nächste Lauf weg. Ein Plan kann die Gäste stattdessen als Testsystem stehen lassen – wahlweise an einer eigenen Bridge oder einem eigenen VLAN; dann ersetzt jeder Lauf sie durch frische Kopien.</div></div></div>`;
     qsa("[data-add], [data-add2]", el).forEach((b) => b.onclick = () => rtPlanForm(null, draw));
     qsa("[data-edit]", el).forEach((b) => b.onclick = () => rtPlanForm(plans.find((p) => p.id === b.dataset.edit), draw));
     qsa("[data-del]", el).forEach((b) => b.onclick = async () => {
       const p = plans.find((x) => x.id === b.dataset.del);
-      if (await confirmDialog({ title: `Plan „${p.name}“ löschen?`, text: "Der Verlauf bleibt erhalten.", button: "Löschen" }))
+      const n = (kept[p.id] || []).length;
+      if (await confirmDialog({ title: `Plan „${p.name}“ löschen?`, text: `Der Verlauf bleibt erhalten.${n ? ` Die ${n === 1 ? "behaltene Test-VM wird" : n + " behaltenen Test-Gäste werden"} in Proxmox VE ebenfalls gelöscht.` : ""}`, button: "Löschen" }))
         run(b, async () => { await DEL(`/api/restoretests/${p.id}`); await draw(); }, "Gelöscht.");
+    });
+    qsa("[data-delkept]", el).forEach((b) => b.onclick = async () => {
+      const p = plans.find((x) => x.id === b.dataset.delkept), list = kept[p.id] || [];
+      if (await confirmDialog({ title: "Behaltene Test-Gäste löschen?", text: `${list.map((k) => `${k.vmid} ${esc(k.name)}`).join(", ")} ${list.length === 1 ? "wird" : "werden"} in Proxmox VE gestoppt und mit ihren Disks gelöscht. Der nächste Lauf von „${esc(p.name)}“ legt neue an.`, button: "Löschen" }))
+        run(b, async () => {
+          await POST(`/api/restoretests/${p.id}/kept/delete`);
+          // deleting runs in the background: wait until the guests are gone (at most a minute)
+          for (let i = 0; i < 20 && token === pageToken; i++) {
+            await sleep(3000);
+            if (!((await GET("/api/restoretests")).kept || {})[p.id]?.length) break;
+          }
+          await draw();
+        }, "Test-Gäste gelöscht.");
     });
     qsa("[data-run]", el).forEach((b) => b.onclick = async () => {
       if (await confirmDialog({ title: "Restore-Test jetzt starten?", text: "Die Server werden nacheinander auf dem gewählten Knoten wiederhergestellt und gestartet. Das belastet Speicher und Netzwerk – am besten außerhalb der Arbeitszeit.", button: "Starten", tone: "blue", ic: "play" }))
@@ -4112,6 +4127,23 @@ PAGES["/restoretests"] = async (el, token) => {
   const loop = async () => { active = await draw(); };
   every(5000, token, async () => { if (active || Math.random() < 0.2) await loop(); });
 };
+
+// rtNetText: "vmbr1" or "vmbr1, VLAN 20".
+const rtNetText = (p) => p.bridge + (p.vlan ? ", VLAN " + p.vlan : "");
+
+// keptPanels lists the test guests plans left standing (a test system), one panel per plan.
+function keptPanels(plans, kept, cl) {
+  return plans.filter((p) => (kept[p.id] || []).length).map((p) => `<div class="panel flush"><div class="panel-head"><div><div class="panel-title">Testsystem: ${esc(p.name)}</div>
+      <div class="muted small">Diese Test-Gäste bleiben auf ${esc(cl(p.cluster))} · ${esc(p.node)} stehen, bis der nächste Lauf sie durch frische Kopien ersetzt. Sie haben dieselben IP-Adressen wie die Originale. Sicherungsjobs mit „Alle“ sichern sie nicht mit – die Appliance trägt sie dort als Ausnahme ein.</div></div>
+      ${can("admin") ? `<button class="btn gray sm" type="button" data-delkept="${esc(p.id)}">${icon("trash")} Alle löschen</button>` : ""}</div>
+    <div class="table-wrap"><table class="resp"><thead><tr><th>Test-Gast</th><th>Kopie von</th><th>Sicherung vom</th><th>Netzwerk</th><th>Test</th></tr></thead><tbody>
+    ${kept[p.id].map((k) => `<tr><td data-l="Test-Gast"><div class="t-main"><span class="tag mono">${k.type === "lxc" ? "CT" : "VM"}</span> ${k.vmid} ${esc(k.name)}</div><div class="t-sub">${k.running ? '<span class="dot green"></span> lief nach dem Test weiter' : '<span class="dot"></span> nach dem Test ausgeschaltet'}</div></td>
+      <td data-l="Kopie von">${esc(k.orig.split("/")[1])} ${esc(k.orig_name || "")}</td>
+      <td data-l="Sicherung vom" class="small nowrap">${fmtTime(k.backup, true)}<div class="t-sub">zurückgespielt ${fmtAgo(k.restored)}</div></td>
+      <td data-l="Netzwerk" class="small">${esc(k.network)}</td>
+      <td data-l="Test">${rtPill(k.status)}</td></tr>`).join("")}
+    </tbody></table></div></div>`).join("");
+}
 
 function rtTable(x, live) {
   return `<div class="table-wrap"><table class="resp"><thead><tr><th>Server</th><th>Status</th><th>Sicherung vom</th><th>Dauer</th><th>Ergebnis</th>${live ? "" : "<th>Bild</th>"}</tr></thead><tbody>
@@ -4163,6 +4195,15 @@ function rtPlanForm(p, done, preset = {}) {
       { name: "boot_wait", label: "Wartezeit nach dem Start (s)", type: "number", min: 30, value: p.boot_wait, hint: "Bis zum Screenshot; mit Gast-Agent endet sie früher." },
       { name: "time_limit", label: "Zeitlimit je Restore (Min.)", type: "number", min: 1, value: p.time_limit },
       { name: "id_base", label: "Test-IDs ab", type: "number", min: 100, value: p.id_base, mono: true },
+      { type: "html", wide: true, html: `<div class="section-title">Netzwerk der Test-Gäste</div>` },
+      { name: "network", type: "radio", label: "Netzwerkkarten", value: p.network || "", wide: true, options: [["", "Getrennt", "Ohne Verbindung – der sichere Standard"], ["bridge", "Mit einem Netz verbinden", "Eine Bridge, z. B. ein eigenes Testnetz"]] },
+      { name: "bridge", label: "Bridge", type: "select", options: [["", "Lade …"]] },
+      { name: "vlan", label: "VLAN (optional)", type: "number", min: 1, max: 4094, value: p.vlan || "", placeholder: "ohne" },
+      { type: "html", wide: true, name: "net_warn", html: callout("yellow", "Nur ein vom Betrieb getrenntes Netz", "Die Test-Gäste bekommen neue MAC-Adressen, haben aber dieselben IP-Adressen und Rechnernamen wie die Originale. Wähle eine eigene Bridge ohne Verbindung zum Produktivnetz oder ein eigenes VLAN. Dieselbe Bridge mit demselben VLAN wie beim Original lässt die Appliance getrennt.") },
+      { type: "html", wide: true, html: `<div class="section-title">Nach dem Test</div>` },
+      { name: "keep", label: "Test-Gäste stehen lassen (Testsystem)", type: "checkbox", value: p.keep, wide: true,
+        hint: "Die zurückgespielten Gäste bleiben auf dem Knoten und lassen sich dort ausprobieren. Der nächste Lauf ersetzt sie durch frische Kopien der neuesten Sicherung; Gäste, die der Plan nicht mehr testet, werden gelöscht. Aus Sicherungsjobs mit „Alle“ nimmt die Appliance sie aus." },
+      { name: "keep_running", label: "Eingeschaltet lassen", type: "checkbox", value: p.keep_running, wide: true, hint: "Sonst werden sie nach dem Test heruntergefahren." },
       { name: "keep_failed", label: "Fehlgeschlagene Test-VMs zur Untersuchung behalten (bis zum nächsten Lauf)", type: "checkbox", value: p.keep_failed, wide: true },
     ],
     onMount: async (d) => {
@@ -4194,6 +4235,9 @@ function rtPlanForm(p, done, preset = {}) {
         qs('[data-field="start_month"]', d).hidden = weekly || Number(v.every_months) <= 1;
         ["month_week", "month_weekday"].forEach((k) => { qs(`[data-field="${k}"]`, d).hidden = weekly || byDay; });
         qs('[data-field="month_day"]', d).hidden = weekly || !byDay;
+        ["bridge", "vlan", "net_warn"].forEach((k) => { qs(`[data-field="${k}"]`, d).hidden = v.network !== "bridge"; });
+        qs('[data-field="keep_running"]', d).hidden = !v.keep;
+        qs('[data-field="keep_failed"]', d).hidden = !!v.keep;
         preview();
       };
       form.addEventListener("change", show);
@@ -4206,22 +4250,29 @@ function rtPlanForm(p, done, preset = {}) {
           sel.innerHTML = r.storages.map((x) => `<option value="${esc(x.storage)}" ${x.storage === val ? "selected" : ""}>${esc(x.storage)} (${fmtBytes(x.avail)} frei)</option>`).join("");
         } catch (e) { sel.innerHTML = ""; }
       };
+      const fillBridges = async (val) => {
+        const sel = qs('[name="bridge"]', d);
+        try {
+          const r = await GET(`/api/pve/${qs('[name="cluster"]', d).value}/nodes/${enc(qs('[name="node"]', d).value)}/bridges`);
+          sel.innerHTML = r.bridges.map((b) => `<option ${b === val ? "selected" : ""}>${esc(b)}</option>`).join("") || `<option value="">Keine Bridge auf diesem Knoten</option>`;
+        } catch (e) { sel.innerHTML = `<option value="">${esc(e.message)}</option>`; }
+      };
       const fillNodes = async (val, sval) => {
         const sel = qs('[name="node"]', d);
         try {
           const r = await GET(`/api/pve/${qs('[name="cluster"]', d).value}/storages`);
           sel.innerHTML = (r.nodes || []).map((n) => `<option ${n.node === val ? "selected" : ""}>${esc(n.node)}</option>`).join("");
         } catch (e) { sel.innerHTML = ""; }
-        await fillStorage(sval);
+        await Promise.all([fillStorage(sval), fillBridges(p.bridge)]);
       };
       qs('[name="pbs"]', d).onchange = () => fillStore("");
       qs('[name="cluster"]', d).onchange = () => fillNodes("", "");
-      qs('[name="node"]', d).onchange = () => fillStorage("");
+      qs('[name="node"]', d).onchange = () => { fillStorage(""); fillBridges(""); };
       await Promise.all([fillStore(p.store), fillNodes(p.node, p.storage)]);
     },
     submit: async (v, d) => {
       v.weekdays = pickedDays(d);
-      ["max_cores", "max_memory", "boot_wait", "time_limit", "id_base", "every_weeks", "month_weekday", "month_day", "every_months", "start_month"].forEach((k) => { v[k] = Number(v[k]) || 0; });
+      ["max_cores", "max_memory", "boot_wait", "time_limit", "id_base", "every_weeks", "month_weekday", "month_day", "every_months", "start_month", "vlan"].forEach((k) => { v[k] = Number(v[k]) || 0; });
       if (edit) await PUT(`/api/restoretests/${p.id}`, v); else await POST("/api/restoretests", v);
       toast("Gespeichert."); done();
     },
@@ -4546,7 +4597,7 @@ PAGES["/jobs"] = async (el, token) => {
         ${r.jobs.map((j) => { const names = Object.fromEntries(r.guests.map((g) => [String(g.vmid), g.name])); const ids = (j.vmid || j.exclude || "").split(",").filter(Boolean);
           return `<tr class="${j.enabled === 0 ? "off" : ""}"><td data-l="Job"><div class="t-main">${esc(j.comment || j.id)} ${j.enabled === 0 ? pill("aus") : ""}</div><div class="t-sub mono">${esc(j.id)}</div></td>
           <td data-l="Zeitplan"><span class="mono">${esc(j.schedule)}</span>${j["next-run"] ? `<div class="t-sub">nächster: ${fmtTime(j["next-run"])}</div>` : ""}</td>
-          <td data-l="Was" class="small">${j.all ? (j.exclude ? "alle außer " + ids.map((i) => `${i} ${esc(names[i] || "")}`).join(", ") : "alle VMs & Container") : ids.map((i) => `${i} ${esc(names[i] || "")}`).join(", ")}${j.node ? `<div class="t-sub">nur Knoten ${esc(j.node)}</div>` : ""}</td>
+          <td data-l="Was" class="small">${j.all ? (j.exclude ? "alle außer " + ids.map((i) => `${i} ${esc(names[i] || "")}`).join(", ") : "alle VMs & Container") : ids.map((i) => `${i} ${esc(names[i] || "")}`).join(", ")}${j.node ? `<div class="t-sub">nur Knoten ${esc(j.node)}</div>` : ""}${(j.test_guests || []).length ? `<div class="t-sub" title="Stehen gelassene Kopien aus Restore-Tests – die Appliance nimmt sie aus und trägt sie wieder aus, wenn sie gelöscht werden.">ohne Test-Gäste ${j.test_guests.map(esc).join(", ")}</div>` : ""}</td>
           <td data-l="Ziel"><b>${esc(j.storage)}</b><div class="t-sub">${esc({ snapshot: "Snapshot", suspend: "Anhalten", stop: "Stopp" }[j.mode] || j.mode || "Snapshot")}</div></td>
           <td data-l="Aufbewahrung" class="small">${esc((j["prune-backups"] || "").replace(/keep-/g, "").replace(/,/g, ", ")) || '<span class="muted">vom Speicher</span>'}</td>
           <td class="act"><div class="row-actions"><button class="btn gray sm" type="button" data-run="${c.id}|${esc(j.id)}">${icon("play")} Jetzt</button>
